@@ -306,8 +306,12 @@ game.daemons.script(({ self, enemies }) => {
 
 ## 10. Infrastructure and deploy
 
-1. **S1:** power on, verify SSH/Docker/CA cert/`runner`; register runner
-   `s1-daemonet` (label `daemonet`) for `Zaphiruz/daemonet`.
+1. **S1:** power on, verify SSH/Docker/CA cert/`runner`; create the
+   **private** repo `Zaphiruz/daemonet` with a read-only deploy key for
+   `runner` (SSH alias `github.com-daemonet`, key also stored in Vault at
+   `deploy-keys/daemonet`); register runner `s1-daemonet` (label `daemonet`).
+   The SDK package metadata and `examples/` README must not link to the repo
+   or its issues (game design §4.3).
 2. **Shared-infra on S2:** publish PostgreSQL `192.168.40.20:5432` and Redis
    `192.168.40.20:6379`; `pg_hba` host rule for `daemonet` from
    `192.168.40.21/32`; Redis ACL user `daemonet` (`~daemonet:*`, password in

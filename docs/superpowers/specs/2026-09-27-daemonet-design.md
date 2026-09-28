@@ -123,6 +123,11 @@ PostgreSQL 17 + Redis on S2 shared-infra, reached from S1 over the VLAN 40 LAN
   `TRUST_PROXY_HOPS=3`.
 - `OPERATIONS.md` runbook in the repo. New DB is covered by the existing
   nightly `pg_dumpall` chain automatically.
+- **Repository:** `Zaphiruz/daemonet`, **private**. Because players cannot see
+  it, **no player-facing surface (client, SDK messages, error text, docs
+  shipped to players) may link to GitHub issues or the repo.** Any future
+  in-game feedback feature files issues server-side and shows players only an
+  in-game confirmation, never an issue URL.
 
 ### 4.4 S1 / shared-infra prerequisites
 
