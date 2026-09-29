@@ -90,19 +90,23 @@ Each move is `physical` or `special`. Four per type: one cheap filler (256–512
 single-target, one area move (cone or circle), and one heavy move
 (4096–8192 ms, high energy). One Crypto move applies *throttled* (+50% own
 cooldowns for 4096 ms); one Glitch move applies *stalled* (cannot move for
-2048 ms). Both statuses add capture integrity (§5.4).
+2048 ms). Both statuses halve capture-challenge size (§5.4).
 
 ### 3.4 Items (5)
 
 `sniff`, `tap`, `mirror`, `dump` capture tools and `restore` (fully restores
 one daemon out of combat). New operators receive 8 `sniff` and 2 `restore`.
 
-| Tool | Range (tiles) | Duration (ms) | Base integrity |
-|---|---|---|---|
-| sniff | 4 | 2048 | 0.25 |
-| tap | 6 | 2048 | 0.40 |
-| mirror | 8 | 2048 | 0.55 |
-| dump | 8 | 1024 | 0.70 |
+Tool range, deadline and noise are as in game design §6.4.
+
+### 3.6 Capture-challenge families
+
+SP1 implements the four families for its content types — **Packet**
+(fragment reassembly → checksum), **Crypto** (repeating-XOR key recovery →
+plaintext), **Glitch** (Hamming(7,4) correction → bytes) and **Null** (pointer
+chase → sum) — exactly as specified in game design §6.4, including chained
+challenges (not needed by SP1 species, but the chaining mechanism is built and
+tested with a synthetic dual-type fixture). The other 12 families are SP3.
 
 ### 3.5 Subnet
 
@@ -126,10 +130,12 @@ function takes an `Rng` (seedable, `xoshiro128**`) as an argument.
   down to ms; *throttled* multiplies by 1.5.
 - `energy.ts` — regen per tick `= 1 + energyStat / 64` energy points / second,
   applied per tick, cap 128.
-- `capture.ts` — integrity
-  `= toolBase + 0.5 · (1 − hp/maxHp) + 0.15 (if statused) − 0.25 (if hardened) − 0.01 · max(0, targetLevel − operatorBestLevel)`,
-  clamped to [0.01, 0.99], where `operatorBestLevel` is the highest level in
-  the operator's RAM.
+- `capture/` — `challengeSize(target, tool)` per game design §6.4, and one
+  module per family exporting `generate(size, noise, rng) → { params,
+  payload, answer }` and `check(expected, submitted) → boolean`, plus a zod
+  schema for that family's answer. `chain(families, …)` composes dual-type
+  challenges. **Reference solvers live only under `test/`** — never exported
+  from `rules`, so they cannot leak into the SDK bundle.
 - `spawn.ts` — `rollSpawn(species, level, rng, odds = DEFAULT_ODDS)` (odds
   injectable for tests only): clean with p = 2⁻¹²; if clean
   all IVs = 31 and roll signature: tier = number of consecutive successes of a
@@ -163,7 +169,8 @@ function takes an `Rng` (seedable, `xoshiro128**`) as an argument.
 3. Wild AI (behaviour profiles, aggro, flee).
 4. Move execution: cooldown/energy/range checks, hits, statuses.
 5. Crash resolution, tag expiry, XP awards.
-6. Capture progress: packet-loss checks, completion → integrity roll.
+6. Capture progress: packet-loss checks, deadline expiry, verification of
+   submitted answers (from step 1).
 7. Spawner.
 8. Energy regen and status expiry.
 9. Emit events and per-connection deltas.
@@ -180,11 +187,25 @@ function takes an `Rng` (seedable, `xoshiro128**`) as an argument.
 ### 5.4 Capture flow
 
 `capture(targetId, tool)` → validate tool in inventory, target wild, not
-tagged by another operator, within range → consume the tool → capture runs
-for the tool's duration. Taking any damage or leaving range → `captureResult
-{ ok: false, reason: 'packet_loss' }`. On completion roll integrity; success
-enqueues a durable `capture` event; the result is emitted only after the DB
-commit (§6.3). Failure → target hardened for 8192 ms; `timid` targets flee.
+tagged by another operator (it becomes tagged by this operator), within range,
+no capture already active for this operator → consume the tool → generate the
+challenge from the subnet RNG (the expected answer stays server-side) → emit
+`captureStart { captureId, family, params, payload, deadlineTick }` to the
+operator only. The target keeps fighting during the capture.
+
+`submitCapture(captureId, answer)` — one submission per capture. The answer
+is validated against the family's zod schema (malformed → `err E_INVALID`,
+capture still open), then checked. Outcomes, emitted as `captureResult`:
+
+- correct → durable `capture` event; `{ ok: true, daemon }` is emitted only
+  after the DB commit (§6.3);
+- wrong → `{ ok: false, reason: 'wrong_answer' }`;
+- deadline passed → `{ ok: false, reason: 'timeout' }`;
+- operator hit or out of tool range → `{ ok: false, reason: 'packet_loss' }`.
+
+Any failure → target hardened for 8192 ms (next challenge ×2 size); `timid`
+targets flee. `submitCapture` messages may be up to 16 KiB (the 4 KiB limit
+applies to all other commands).
 
 ### 5.5 Crash and restore
 
@@ -204,6 +225,7 @@ the operator is teleported to the host node.
 | operator | `recall` | `{ daemonId }` |
 | operator | `swap` | `{ outId, inId }` |
 | operator | `capture` | `{ targetId, tool }` |
+| operator | `submitCapture` | `{ captureId, answer }` |
 | operator | `useItem` | `{ item: 'restore', daemonId }` |
 | operator | `restoreAll` | — |
 | operator | `claimStarter` | `{ species, operatorName }` (once) |
@@ -285,6 +307,11 @@ game.operator.script(({ me, world }) => {
   if (target && target.hpPct < 0.25) me.capture(target, 'sniff');
 });
 
+game.on('captureStart', async ({ captureId, family, params, payload }) => {
+  const solve = solvers[family];            // the player's own solvers
+  if (solve) await game.operator.submitCapture(captureId, solve(params, payload));
+});
+
 game.daemons.script(({ self, enemies }) => {
   const foe = enemies.nearest();
   if (foe) self.use(self.bestMoveAgainst(foe), foe);
@@ -301,6 +328,9 @@ game.daemons.script(({ self, enemies }) => {
   A local budget prevents a script from exceeding 8 commands per tick.
 - Read-only world view: `world.wild`, `world.operators`, `world.map`
   (collision queries), `me.ram`, `me.inventory`.
+- The SDK exports challenge **types** (params/payload/answer shapes per
+  family) but **no solvers**. `examples/starter-bot` includes a Packet solver
+  only.
 - Works in Node 22+; no browser build until SP2 (keep it free of Node-only
   imports outside `deviceLogin`'s token cache).
 
@@ -342,12 +372,16 @@ game.daemons.script(({ self, enemies }) => {
 **Automated**
 
 - `rules`: unit tests for every formula; fast-check properties (damage ≥ 1,
-  integrity within bounds, stats monotonic in level/IV); statistical test of
+  stats monotonic in level/IV, challenge size ≥ 8); for each challenge
+  family, property tests that the test-only reference solver's answer on any
+  generated challenge passes `check`, that a mutated answer fails, and that
+  generation is deterministic per seed and stays under 64 KiB; statistical test of
   `rollSpawn` over 2²⁴ seeded rolls with an injected clean probability of ¼ to
   verify the clean → signature chain.
 - `sim/core`: golden replays — seed + command log → expected event stream;
-  scenarios: capture success, packet loss by range and by damage, tag
-  protection, crash → restore, swap cooldown, full RAM → Disk.
+  scenarios: capture success, wrong answer, timeout, malformed answer
+  (`E_INVALID`, capture stays open), second submission rejected, packet loss
+  by range and by damage, hardened ×2 size, tag protection, crash → restore, swap cooldown, full RAM → Disk.
 - Integration (CI with PostgreSQL service): sim + two SDK bots using
   `AUTH_DEV_BYPASS`: both see each other; capture persists across a sim
   restart; duplicate `capture` delivery applies once; rate limit returns

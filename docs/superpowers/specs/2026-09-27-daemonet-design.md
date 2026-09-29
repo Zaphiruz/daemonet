@@ -47,7 +47,7 @@ wherever that is reasonable.
 | Trainer / player | **Operator** |
 | Capture orb | **Capture tool**, 4 tiers: `sniff` → `tap` → `mirror` → `dump` |
 | Catch | **Capture** — open a tap on the target and hold the link while its memory copies |
-| Catch chance | **Copy integrity** |
+| Catch minigame | **Capture challenge** — a type-specific decoding puzzle the operator's code must solve |
 | Party (8) | **RAM** — 8 loaded daemons, 2 **running** |
 | Box (256) | **Disk** — stored images |
 | Faint | **Crash** (segfault) |
@@ -94,7 +94,7 @@ PostgreSQL 17 + Redis on S2 shared-infra, reached from S1 over the VLAN 40 LAN
 
 | Package | Purpose |
 |---|---|
-| `packages/rules` | Pure game rules and content data: types, stats, damage, cooldowns, capture integrity, spawn/IV/signature rolls, XP, evolution. No I/O. |
+| `packages/rules` | Pure game rules and content data: types, stats, damage, cooldowns, capture-challenge generators + expected answers, spawn/IV/signature rolls, XP, evolution. No I/O. |
 | `packages/shared` | Protocol message types + zod schemas, error codes, shared constants |
 | `packages/db` | Prisma schema, migrations and generated client, shared by `sim` and `api` |
 | `packages/sdk` | Player-facing API; runs in browser (sandboxed iframe) and Node |
@@ -188,16 +188,69 @@ PostgreSQL 17 + Redis on S2 shared-infra, reached from S1 over the VLAN 40 LAN
 
 ### 6.4 Capture
 
-1. Weaken the target — lower HP means less encrypted traffic, which raises
-   copy integrity. Status effects (e.g. *stalled*, *throttled*) add more.
-2. The operator opens a **capture** with a tool on a target in range. The
-   capture holds for the tool's duration (2048 ms; `dump` 1024 ms).
-3. The capture fails with **packet loss** if the operator takes damage or
-   leaves tool range before it completes.
-4. At completion the server rolls copy integrity. Success → the image goes to
-   RAM (or Disk if RAM is full). Failure → the target becomes **hardened** for
-   8192 ms (integrity penalty) and may flee.
-5. Tools: longer range, shorter duration and higher base integrity per tier.
+Capture is a **code challenge**: reconstructing a daemon's memory image from
+its sniffed traffic. There is no integrity dice roll — a correct answer
+captures.
+
+1. **Weaken** the target. Lower HP means less encrypted traffic, which makes
+   the challenge smaller. Status effects (*stalled*, *throttled*) shrink it
+   further.
+2. The operator starts a **capture** with a tool on a target in range. The
+   server sends a `captureStart` event carrying a **challenge**
+   `{ captureId, family, params, payload, deadlineTick }`.
+3. The operator's script solves it and calls `submitCapture(captureId, answer)`
+   before the deadline, while **holding the link**: taking damage or leaving
+   tool range is **packet loss** and fails the capture immediately.
+4. Correct answer → the image goes to RAM (or Disk if RAM is full). Wrong
+   answer, timeout or packet loss → the target becomes **hardened** for
+   8192 ms (its next challenge is one size step larger) and `timid` targets
+   flee.
+
+**Challenge families (one per type).** Dual-type daemons get a **chained**
+challenge: the primary type's answer is the input to the secondary type's
+challenge.
+
+| Type | Challenge | Answer |
+|---|---|---|
+| Kernel | Round-robin schedule a process list with a given quantum | completion order |
+| Packet | Reassemble out-of-order, duplicated fragments by sequence number | checksum of payload |
+| Crypto | Recover a repeating-XOR key from a known plaintext prefix, decrypt | plaintext |
+| Cache | Simulate an LRU cache of size k over an access trace | hit count |
+| Thread | Order events by happens-before from lock/unlock/read/write trace | the racing access pair |
+| Signal | Apply masks, pending and delivery rules to a signal sequence | handler run order |
+| Socket | Run a TCP state machine over a segment trace | final state per connection |
+| Buffer | Apply writes/reads to an overwriting ring buffer | final contents |
+| Shell | Evaluate a small pipeline (`grep`/`sort`/`uniq`/`cut`/`wc` subset) over lines | output |
+| Root | Evaluate mode bits and ACL entries for a list of access requests | allow/deny bitstring |
+| Null | Chase pointers through a memory dump until a null pointer | sum of visited values |
+| Glitch | Decode Hamming(7,4) blocks with single-bit errors | corrected bytes |
+| Proxy | Unwrap nested encapsulation layers (hex / base64 / XOR / length-prefix) | inner payload |
+| Cloud | Place keys on a consistent-hashing ring with virtual nodes | node per key |
+| Stack | Execute a short stack-machine bytecode | top of stack |
+| Heap | Replay alloc/free events | leaked block IDs |
+
+**Challenge sizing.** `size = 16 · 2^stage · (1 + hpFraction)`, rounded to an
+integer, doubled for clean images and doubled again for signature ≥ 1,
+doubled if hardened, halved if the target has a status effect, minimum 8,
+where `stage` is 0 for base forms. Size means
+fragments, instructions, accesses, and so on, per family.
+
+**Tools** change the conditions, not the odds:
+
+| Tool | Range (tiles) | Deadline | Noise |
+|---|---|---|---|
+| sniff | 4 | 2048 ms | decoy data mixed into the payload |
+| tap | 6 | 4096 ms | less decoy data |
+| mirror | 8 | 4096 ms | none |
+| dump | 8 | 8192 ms | none, plus the size is halved |
+
+**Properties.** Challenges are generated from the subnet's seeded RNG by pure
+functions in `packages/rules` that also produce the expected answer, so
+generation and verification are cheap (linear) and reproducible in tests.
+Parameters are random per capture, so lookup tables do not work; sharing
+solvers is expected and fine. Payloads are capped at 64 KiB. The SDK's
+example bot ships with **only the Packet solver** as a tutorial; every other
+solver is the player's to write.
 
 **Tagging:** the first operator (or cluster) to damage a wild daemon owns it
 until 8192 ms after their last hit. Others cannot damage or capture it.
