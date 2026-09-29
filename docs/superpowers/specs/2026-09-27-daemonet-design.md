@@ -241,14 +241,40 @@ Content (species, moves, types, natures, traits, items) is **typed data in
 - **Traits:** 2 possible per species, one rolled at spawn.
 - **Held item:** 1 slot.
 - **Levels:** 1–64; XP to reach level n = `8·n³`.
-- **Evolution:** each line has 1–4 forms, triggered by level or item. Evolving
-  keeps IVs, bonus points, signature, nature, trait slot and capture log.
+- **Evolution:** branching trees at power-of-2 levels — see §7.1 and the
+  bestiary spec.
 - **Types:** 16, multipliers ×2 / ×½ / ×0.
 - **Items:** capture tools (4 tiers), restores, energy potions, Bit Flippers
   (+1 IV to a chosen stat, capped at 31), Patches (teach moves), held items.
-- **Launch content:** 32 species, ~64 moves, 16 items.
+- **Launch content:** 50 lines / 256 species (`2026-09-29-daemonet-bestiary-design.md`),
+  16 evolution items, moves and other items authored in SP3.
+- **Dual types:** base forms are single-typed; evolutions may add a second
+  type (max 2); multipliers stack.
 - **Capture log:** original operator, timestamp, subnet, tool, signature.
   Survives trades.
+### 7.1 Evolution
+
+- **Levels:** 8, 16, 32, and 64 (capstones). Tree shapes: linear, split
+  once, split twice, wide (1 of 4), plus 8 secret level-64 capstones.
+- **Choice + requirements:** reaching a threshold makes a daemon
+  *evolution-ready* (it can stay that way indefinitely). The operator calls
+  `evolve(daemonId, formId)`; the server checks that form's requirements
+  (vocabulary in the bestiary §2). Held evolution items are consumed.
+- **Discovery:** hidden requirements show as `???` in the Codex until the
+  first operator meets one — server-wide announcement, name recorded — then
+  they become public.
+- **Evolution resolves in this order:**
+  1. **IV growth:** every IV below 31 gains +1 with probability ½.
+  2. **Clean check:** if all 8 IVs are now 31 and the daemon is not
+     **patched**, it becomes clean (entering at signature T0 if it had none).
+  3. **Signature upgrade:** if clean, 1/256 chance of +1 tier (max 15), which
+     also grants +1 bonus IV to a random stat.
+  4. **Capture log entry:** new form, level, and any IV/clean/signature change.
+- **Patched:** using any Bit Flipper on a daemon marks it patched, forever.
+  Patched daemons can never become clean, so items never create rares.
+- Evolving keeps nature, trait slot (mapped to the new form's traits), bonus
+  points, signature and capture log.
+
 - **Breeding (future):** the IV vector, nature and trait slot are the genome;
   add a pure `inherit(a, b, rng)` in `rules` plus parent IDs.
 
