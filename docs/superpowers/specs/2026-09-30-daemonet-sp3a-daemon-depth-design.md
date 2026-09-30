@@ -147,7 +147,7 @@ Same framework as SP1; each: `generate(size, noise, rng)`, `check`, answer schem
 | cache | `capacity`, `trace: key[]` → `{ hits }` (LRU) |
 | thread | events `[{ t, thread, op: 'lock'|'unlock'|'read'|'write', obj }]` → `{ race: [i, j] }` (the first pair of accesses to the same obj from different threads with no lock held in common, by index) |
 | signal | `masked: number[]`, `signals: [{ t, sig }]`, `unmaskAt: t` → `{ order: sig[] }` (delivery order: unmasked immediately, masked delivered in ascending sig at `unmaskAt`) |
-| socket | `segments: [{ conn, flag: 'SYN'|'SYNACK'|'ACK'|'FIN'|'RST' }]` → `{ states: Record<conn, state> }` (a fixed 6-state TCP machine; invalid transitions ignored) |
+| socket | `segments: [{ conn, flag: 'SYN'|'SYNACK'|'ACK'|'FIN'|'RST' }]` → `{ states: Record<conn, state> }` (a fixed five-state TCP machine: CLOSED → SYN_RCVD → ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED, RST resets; invalid transitions ignored) |
 | buffer | `capacity`, `ops: ('w:<hex byte>' | 'r')[]` → `{ contents: hex }` (overwriting ring: writes drop the oldest when full; reads remove the oldest) |
 | shell | `lines: string[]`, `pipeline: string` from `grep <pat> | sort | uniq | cut -d<c> -f<n> | wc -l` (subset) → `{ output: string[] }` |
 | root | `mode: 'rwxr-x---'`, `owner`, `group`, `acl: [{ who, perms }]`, `requests: [{ user, groups, op }]` → `{ allowed: '10110' }` |
