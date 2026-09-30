@@ -113,9 +113,9 @@ tested with a synthetic dual-type fixture). The other 12 families are SP3.
 
 ### 3.5 Subnet
 
-`lo` — 128 × 128 tiles authored as JSON (`packages/rules/src/content/subnets/lo.json`):
-collision tiles, one host node (restore point and spawn point for new
-operators), and 4 spawn regions each with a species weight table and a level
+`lo` — 128 × 128 tiles authored as typed data (`packages/rules/src/content/subnets.ts`):
+wall rectangles (the outer border is always blocked), one host node (restore
+and store/load point), a spawn point for new operators, and 4 spawn regions each with a species weight table and a level
 range (2–6, 5–10, 9–16, 14–24). Each region keeps up to 16 wild daemons alive,
 respawning one every 4096 ms when below cap.
 
@@ -169,7 +169,10 @@ function takes an `Rng` (seedable, `xoshiro128**`) as an argument.
 1. Drain queued commands (arrival order, ≤ 8 per operator per tick).
 2. Operator and daemon movement (collision). Operators move at a fixed
    4 tiles/second; daemons at `2 + speed / 32` tiles/second.
-3. Wild AI (behaviour profiles, aggro, flee).
+3. Wild AI (behaviour profiles, aggro, flee). During a capture, `territorial`
+   targets attack the capturing operator and `timid` targets flee; a hit on an
+   operator does no damage but causes packet loss. When a wild daemon's tag
+   expires it returns to full HP.
 4. Move execution: cooldown/energy/range checks, hits, statuses.
 5. Crash resolution, tag expiry, XP awards.
 6. Capture progress: packet-loss checks, deadline expiry, verification of
@@ -222,11 +225,11 @@ the operator is teleported to the host node.
 
 | Actor | Command | Args |
 |---|---|---|
-| operator | `moveTo` | `{ x, y }` (server paths with A* over the tile grid, ≤ 256 nodes) |
+| operator | `moveTo` | `{ x, y }` (server paths with 8-directional A* over the tile grid; paths longer than 256 tiles are refused) |
 | operator | `stop` | — |
 | operator | `run` | `{ daemonId }` (≤ 2 running) |
 | operator | `recall` | `{ daemonId }` |
-| operator | `swap` | `{ outId, inId }` |
+| operator | `swap` | `{ outId, inId }` (`run`, `recall` and `swap` share the 4096 ms cooldown) |
 | operator | `capture` | `{ targetId, tool }` |
 | operator | `submitCapture` | `{ captureId, answer }` |
 | operator | `useItem` | `{ item: 'restore', daemonId }` |
@@ -256,14 +259,16 @@ the operator is teleported to the host node.
 
 ### 6.2 Checkpoints
 
-Every 512 ticks (32 s) and on disconnect: operator position and each RAM
-daemon's HP/energy/crashed, batched in one transaction.
+Every 512 ticks (32 s) and on disconnect: operator position, bits, inventory,
+and each RAM daemon's level/XP/moves/HP/energy/crashed, batched in one
+transaction. XP, level-ups and item use therefore survive a sim crash up to
+the last checkpoint (at most 32 s lost) — never a daemon.
 
 ### 6.3 Durable events
 
-`capture`, `levelUp`, `itemUse`, `claimStarter`, `store/load` go through a
-queue that writes each in its own transaction with an `AppliedAction`
-idempotency key. The sim applies the effect to world state and emits the event
+`claimStarter`, `capture`, `store` and `load` are emitted by the core as
+*intents* and go through a queue that writes each in its own transaction with
+an `AppliedAction` idempotency key. The sim applies the effect to world state and emits the event
 **only after commit**. Three retries with backoff (128/512/2048 ms); then the
 action fails with `E_STATE` and, for captures, the consumed tool is refunded in
 the same compensating transaction. Full RAM → captured image goes to the first
