@@ -268,7 +268,8 @@ until 8192 ms after their last hit. Others cannot damage or capture it.
 - Visual flair per tier (glow, aura, trail, palette); server-wide announcement
   for high tiers; permanent capture log.
 - Signature and clean status are **visible at spawn**; IVs are hidden until
-  captured.
+  captured unless the operator's Codex research for that line unlocks
+  scanning (§7.2).
 
 | Tier | Odds per encounter |
 |---|---|
@@ -327,6 +328,35 @@ Content (species, moves, types, natures, traits, items) is **typed data in
   Patched daemons can never become clean, so items never create rares.
 - Evolving keeps nature, trait slot (mapped to the new form's traits), bonus
   points, signature and capture log.
+
+### 7.2 Codex research
+
+Every capture of any form in a line adds 1 research to that line (per
+operator). Research unlocks scanning of wild daemons of that line:
+
+| Research | Unlock |
+|---|---|
+| 1 | Codex entry: types, moves, stat identity |
+| 4 | Scan shows exact HP and nature |
+| 16 | Scan shows each IV as a bucket of 8 (0–7, 8–15, 16–23, 24–31) |
+| 64 | Scan shows exact IVs |
+| 256 | One hint per hidden branch requirement in the line (the requirement's kind, e.g. "involves a subnet") |
+
+Scans are part of the entity data the operator receives; the server only
+includes the fields the operator has unlocked.
+
+### 7.3 Decompile and crafting
+
+- `decompile(daemonId)` at a host destroys the daemon and yields
+  **fragments** of its type(s): `floor(2^stage · (1 + level/16))` of each type
+  (dual types yield that amount of each). Durable event, capture log archived.
+- Clean or signature daemons require `confirm: true`; locked or listed daemons
+  cannot be decompiled.
+- **Crafting** at a host turns fragments (+ bits) into capture tools, restores,
+  the 16 evolution items and Bit Flippers. Recipes are content data in
+  `rules`.
+- Fragments are fungible and trade on the Exchange order book.
+- There is **no NPC that buys daemons for bits**.
 
 - **Breeding (future):** the IV vector, nature and trait slot are the genome;
   add a pure `inherit(a, b, rng)` in `rules` plus parent IDs.
@@ -395,7 +425,8 @@ Content (species, moves, types, natures, traits, items) is **typed data in
 
 - Server authoritative; all RNG server-side from per-subnet PRNGs seeded from a
   CSPRNG. Seeds are logged so signature rolls are auditable.
-- Clients receive only entities within their interest radius; wild IVs hidden.
+- Clients receive only entities within their interest radius; wild IVs and
+  other scan fields are sent only when that operator's research unlocks them.
 - **Browser scripts run in a sandboxed iframe with an opaque origin**
   (`sandbox="allow-scripts"`): no cookies, no API access. They talk to the
   host page via `postMessage`; the host relays only game commands. Pasting
@@ -430,8 +461,9 @@ Each is its own spec → plan → implementation.
    persistence, bot login via device flow.
 2. **SP2 — Web client + API:** OIDC login, sandboxed script runner, Monaco
    editor, canvas world view, logs, RAM/Disk management.
-3. **SP3 — Daemon depth:** full launch content (32 species), traits, held
-   items, evolution, Bit Flippers, Patches, more subnets and hosts.
+3. **SP3 — Daemon depth:** full bestiary (50 lines / 256 species), the other
+   12 challenge families, traits, held items, evolution, Codex research,
+   decompile + crafting, Bit Flippers, Patches, more subnets and hosts.
 4. **SP4 — Social:** clusters, Incidents, orgs, chat.
 5. **SP5 — Exchange:** direct trades, order book, listings, bot REST API.
 6. **SP6 — Arena:** matchmaking, Glicko-2 ladder, seasons.
