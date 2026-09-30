@@ -252,7 +252,8 @@ the operator is teleported to the host node.
   `slot` (RAM 0–7 / Disk 0–255, unique per operator+location), capture log:
   `originalOperatorId`, `capturedAt`, `captureSubnet`, `captureTool`,
   `spawnSeedId`, `spawnIndex`.
-- `InventoryItem` — `(operatorId, itemId)` unique, `qty` ≥ 0.
+- Inventory is a JSON column on `Operator` (`item id → count`); a separate table
+  arrives with the Exchange (SP5).
 - `SubnetSeed` — `id`, `subnet`, `seed` (hex), `startedAt`. Written at sim
   start per subnet; spawn index + seed reproduces any spawn roll.
 - `AppliedAction` — `key` unique (idempotency), `createdAt`.
@@ -354,8 +355,8 @@ game.daemons.script(({ self, enemies }) => {
    `192.168.40.20:6379`; `pg_hba` host rule for `daemonet` from
    `192.168.40.21/32`; Redis ACL user `daemonet` (`~daemonet:*`, password in
    Vault); `DOCKER-USER` iptables rules on S2 allowing those ports only from
-   S1; verify existing apps unaffected. (Redis is provisioned now but SP1 uses
-   it only for the readiness check.)
+   S1; verify existing apps unaffected. (Redis is provisioned now; the SP1 sim does
+   not connect to it — readiness checks PostgreSQL only.)
 3. **PostgreSQL:** user + DB `daemonet` (`TEMPLATE template0`).
 4. **Authentik:** public client `daemonet-bot` with device code flow enabled
    (brand device-code flow configured); groups `daemonet-users` (bound) and
