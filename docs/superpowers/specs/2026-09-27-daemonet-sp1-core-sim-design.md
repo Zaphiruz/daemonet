@@ -82,7 +82,7 @@ Each species has 8 base stats in 1–256, 2 trait IDs (rolled and stored; no
 effects in SP1), a behaviour profile (`timid` flees at low HP, `territorial`
 aggros within 6 tiles, `wanderer` ignores until hit), a `baseYield` for XP,
 and a level-up learnset.
-Base-stat totals: starters ~ 320, non-starters ~ 360.
+Base-stat totals (bestiary budget): starters 285, other base forms 300.
 
 ### 3.3 Moves (16)
 
@@ -379,7 +379,7 @@ game.daemons.script(({ self, enemies }) => {
   family, property tests that the test-only reference solver's answer on any
   generated challenge passes `check`, that a mutated answer fails, and that
   generation is deterministic per seed and stays under 64 KiB; statistical test of
-  `rollSpawn` over 2²⁴ seeded rolls with an injected clean probability of ¼ to
+  `rollSpawn` over 2²⁰ seeded rolls with an injected clean probability of ¼ to
   verify the clean → signature chain.
 - `sim/core`: golden replays — seed + command log → expected event stream;
   scenarios: capture success, wrong answer, timeout, malformed answer
