@@ -96,6 +96,9 @@ cooldowns for 4096 ms); one Glitch move applies *stalled* (cannot move for
 
 `sniff`, `tap`, `mirror`, `dump` capture tools and `restore` (fully restores
 one daemon out of combat). New operators receive 8 `sniff` and 2 `restore`.
+SP1 has no shop or bits income, so as a **temporary SP1-only rule**
+`restoreAll` at the host also tops `sniff` back up to 8. SP3 removes this when
+the NPC shop and Tickets arrive.
 
 Tool range, deadline and noise are as in game design §6.4.
 

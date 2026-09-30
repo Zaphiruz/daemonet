@@ -414,6 +414,24 @@ includes the fields the operator has unlocked.
   sales. Direct two-sided trades confirmed by both operators at a host. Full
   REST API for trading bots. Every transfer is one PostgreSQL transaction with
   row locks and idempotency keys.
+- **Economy (bits).** Principle: *automation produces materials; bits come
+  only from capped sources and circulate between players.*
+  - **Faucets (capped per operator):** **Tickets** — a helpdesk board at each
+    host posts delivery / capture-with-conditions / clear-a-subnet jobs,
+    8 per operator per day, board rotates daily; **Incidents** —
+    contribution-scaled payouts; **Arena** — season-end payouts by rating band
+    plus a small bonus for up to 16 ranked wins per day; **Signature
+    bounties** — server-wide bonus for the first capture of each signature
+    tier per season. **Nothing else creates bits:** wild daemons give XP only,
+    and no NPC buys items or daemons.
+  - **Sinks:** NPC shop (capture tools, restores; higher tools cost
+    exponentially more), crafting recipes (fragments + bits), the 1/16
+    Exchange fee, Disk expansion (+32 slots, price doubles each purchase),
+    vanity (rename, org creation, org tag change).
+  - All prices, caps and rewards are content data in `rules`. An admin economy
+    view tracks total bits supply and daily bits created vs destroyed.
+  - Bits are integers; the UI formats them in binary units
+    (8 bits = 1 byte, 1 KiB = 8,192 bits).
 - **Arena:** Glicko-2 ranked ladder with monthly seasons, plus unranked
   challenges. Both operators must be connected; instanced arena subnet; bring
   8, run 2; lose when all 8 crash; 4-minute limit, then HP% decides.
@@ -463,7 +481,8 @@ Each is its own spec → plan → implementation.
    editor, canvas world view, logs, RAM/Disk management.
 3. **SP3 — Daemon depth:** full bestiary (50 lines / 256 species), the other
    12 challenge families, traits, held items, evolution, Codex research,
-   decompile + crafting, Bit Flippers, Patches, more subnets and hosts.
+   decompile + crafting, NPC shop, Tickets, Disk expansion, Bit Flippers,
+   Patches, more subnets and hosts.
 4. **SP4 — Social:** clusters, Incidents, orgs, chat.
 5. **SP5 — Exchange:** direct trades, order book, listings, bot REST API.
 6. **SP6 — Arena:** matchmaking, Glicko-2 ladder, seasons.
