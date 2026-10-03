@@ -263,6 +263,51 @@ describe('leave vs connect', () => {
   });
 });
 
+const replyRoutes = (game: Game) => (game as unknown as { replyTo: Map<string, unknown> }).replyTo;
+
+describe('reply routing across connections', () => {
+  const withReq = (reqId: string, c: Record<string, unknown>) => JSON.stringify({ t: 'cmd', seq: 1, d: { reqId, ...c } });
+
+  it('a reused reqId on a new connection never receives the old connection’s intent reply', async () => {
+    const { game } = setup();
+    const first = await join(game, 'alice');
+    await game.message(first, withReq('same', { cmd: 'claimStarter', actor: 'self', args: { species: 'pingling', operatorName: 'alice' } }));
+    game.tick(); // the claim becomes an intent; persistence starts
+    const second = await join(game, 'alice'); // takeover; the SDK restarts reqIds per process
+    await game.message(second, withReq('same', { cmd: 'stop', actor: 'self', args: {} }));
+    await game.flush(); // the claim completes before the next tick
+    game.tick();
+    const acks = second.of('ack').filter((a) => a.d.reqId === 'same');
+    expect(acks).toHaveLength(1);
+    expect(acks[0]!.d.result).toBeUndefined(); // the stop ack, not the claim's { daemonId }
+    expect(first.of('ack')).toHaveLength(0);
+    expect(replyRoutes(game).size).toBe(0);
+  });
+
+  it('holds no routes for an operator that left while its intent was pending', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const store = new MemoryStore();
+    const apply = store.applyIntent.bind(store);
+    store.applyIntent = async (...args) => {
+      await gate;
+      return apply(...args);
+    };
+    const { game, world } = setup(store);
+    const conn = await join(game, 'alice');
+    await game.message(conn, cmd({ cmd: 'claimStarter', actor: 'self', args: { species: 'pingling', operatorName: 'alice' } }));
+    game.tick(); // the claim becomes an intent; its persistence waits on the gate
+    expect(replyRoutes(game).size).toBe(1);
+    game.disconnect(conn);
+    for (let i = 0; i < 5; i++) game.tick();
+    expect(world.operators.size).toBe(0);
+    release();
+    await game.flush();
+    game.tick();
+    expect(replyRoutes(game).size).toBe(0);
+  });
+});
+
 describe('restart', () => {
   it('a captured daemon survives a restart with the same store', async () => {
     const store = new MemoryStore();

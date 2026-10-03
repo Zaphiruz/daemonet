@@ -51,6 +51,14 @@ interface ConnState {
   role: Role | null;
   known: Map<string, Entity>;
   lastSelf: string | null;
+  /** Keys of this connection's entries in `Game.replyTo`, removed when it detaches. */
+  routes: Set<string>;
+}
+
+interface ReplyRoute {
+  st: ConnState;
+  /** The reqId the client sent (the world sees the connection-scoped key instead). */
+  reqId: string;
 }
 
 interface Session {
@@ -99,8 +107,11 @@ export class Game {
   private readonly loads = new Map<string, Set<{ stale: boolean }>>();
   private readonly inflight = new Set<Promise<void>>();
   private inputs: Input[] = [];
-  /** The connection that sent each pending command, so replies are not delivered to a later controller. */
-  private readonly replyTo = new Map<string, ConnState>();
+  /**
+   * Pending command replies keyed `conn.id:reqId` (the key is the reqId the world sees), so a later connection that
+   * reuses a reqId never receives an earlier connection's reply.
+   */
+  private readonly replyTo = new Map<string, ReplyRoute>();
   private radius = INTEREST_RADIUS;
   private readonly tickMs: number[] = [];
 
@@ -124,7 +135,7 @@ export class Game {
     const t = this.world.tick;
     this.conns.set(conn.id, {
       conn, seq: 0, phase: 'new', openedTick: t, lastSeenTick: t, bucket: BUCKET_MAX,
-      sub: null, operatorId: null, role: null, known: new Map(), lastSelf: null,
+      sub: null, operatorId: null, role: null, known: new Map(), lastSelf: null, routes: new Set(),
     });
   }
 
@@ -292,8 +303,10 @@ export class Game {
       return this.violation(st);
     }
     session.commandsThisTick++;
-    this.replyTo.set(`${session.operatorId}:${reqId}`, st);
-    this.inputs.push({ operatorId: session.operatorId, reqId, command });
+    const key = `${st.conn.id}:${reqId}`;
+    this.replyTo.set(key, { st, reqId });
+    st.routes.add(key);
+    this.inputs.push({ operatorId: session.operatorId, reqId: key, command });
   }
 
   private violation(st: ConnState): void {
@@ -325,6 +338,8 @@ export class Game {
     if (st.phase === 'closed' && !this.conns.has(st.conn.id)) return;
     st.phase = 'closed';
     this.conns.delete(st.conn.id);
+    for (const key of st.routes) this.replyTo.delete(key);
+    st.routes.clear();
     const session = st.operatorId ? this.sessions.get(st.operatorId) : undefined;
     if (!session) return;
     session.spectators.delete(st);
@@ -352,12 +367,14 @@ export class Game {
     for (const s of this.sessions.values()) s.commandsThisTick = 0;
 
     for (const r of result.replies) {
-      const key = `${r.operatorId}:${r.reqId}`;
-      const st = this.replyTo.get(key);
-      this.replyTo.delete(key);
-      if (!st || st.phase === 'closed') continue;
-      if (r.ok) this.send(st, { t: 'ack', seq: 0, d: r.result === undefined ? { reqId: r.reqId } : { reqId: r.reqId, result: r.result } });
-      else this.error(st, r.code, r.message, r.reqId);
+      const route = this.replyTo.get(r.reqId);
+      if (!route) continue;
+      this.replyTo.delete(r.reqId);
+      const { st, reqId } = route;
+      st.routes.delete(r.reqId);
+      if (st.phase === 'closed') continue;
+      if (r.ok) this.send(st, { t: 'ack', seq: 0, d: r.result === undefined ? { reqId } : { reqId, result: r.result } });
+      else this.error(st, r.code, r.message, reqId);
     }
     for (const intent of result.intents) this.persist(intent);
 
@@ -410,6 +427,11 @@ export class Game {
     this.world.removeOperator(session.operatorId);
     this.sessions.delete(session.operatorId);
     for (const st of [...session.spectators]) this.kick(st, 'operator left', CLOSE.left);
+    for (const [key, route] of this.replyTo) {
+      if (route.st.operatorId !== session.operatorId) continue;
+      this.replyTo.delete(key);
+      route.st.routes.delete(key);
+    }
     const done = this.store
       .checkpoint([record])
       .catch((err: Error) => this.log.error({ sub: session.sub, err: err.message }, 'leave checkpoint failed'))
