@@ -10,6 +10,21 @@ describe('createRng', () => {
     expect(seqA).toEqual(seqB);
   });
 
+  it('known-answer vectors: if this fails, every stored seed (worlds, spawns, challenges) changed meaning', () => {
+    const a = createRng('daemonet');
+    expect(Array.from({ length: 8 }, () => a.nextU32())).toEqual([
+      3973193252, 4213614336, 747281684, 666441711, 2320745594, 2850780174, 3205132184, 2843199836,
+    ]);
+    const b = createRng(42);
+    expect(Array.from({ length: 8 }, () => b.nextU32())).toEqual([
+      660444221, 3652823732, 77672526, 910233633, 2297337756, 3786072677, 3123505064, 1891482476,
+    ]);
+    const c = createRng(7);
+    expect(Array.from({ length: 4 }, () => c.float())).toEqual([
+      0.04900959390215576, 0.16556235309690237, 0.9298532083630562, 0.952130623627454,
+    ]);
+  });
+
   it('differs for different seeds', () => {
     const a = createRng('daemonet');
     const b = createRng('daemonet2');
