@@ -79,6 +79,8 @@ function setup() {
   let listener: ((ev: { source: unknown; data: unknown }) => void) | null = null;
   const clock = { now: 1_000 };
   const ports: MessagePort[] = [];
+  const timers: { at: number; fn: () => void; cancelled: boolean }[] = [];
+  const online = { value: true };
   const env: SandboxEnv = {
     createFrame: () => {
       const f = new FakeFrame();
@@ -98,6 +100,23 @@ function setup() {
     },
     log,
     now: () => clock.now,
+    setTimer: (fn, ms) => {
+      const t = { at: clock.now + ms, fn, cancelled: false };
+      timers.push(t);
+      return () => {
+        t.cancelled = true;
+      };
+    },
+    isOnline: () => online.value,
+  };
+  /** Moves the clock and runs the timers that are due. */
+  const advance = (ms: number) => {
+    clock.now += ms;
+    for (const t of timers.splice(0)) {
+      if (t.cancelled) continue;
+      if (t.at <= clock.now) t.fn();
+      else timers.push(t);
+    }
   };
   const runner = createSandboxRunner(env);
   const client = new FakeClient();
@@ -113,6 +132,8 @@ function setup() {
     texts,
     fromFrame,
     clock,
+    advance,
+    online,
     hasListener: () => listener !== null,
     cleanup: () => ports.forEach((p) => p.close()),
   };
@@ -266,10 +287,14 @@ describe('sandbox runner', () => {
     const f = t.frames[0]!;
     for (let i = 0; i < 100; i++) t.fromFrame(f.contentWindow, { type: 'log', level: 'log', args: [`line ${i}`] });
     expect(t.texts().filter((x) => x.startsWith('script:'))).toHaveLength(LOG_LINES_PER_SECOND);
-    t.clock.now += 1_000;
+    t.advance(999);
+    expect(t.texts().some((x) => x.includes('suppressed'))).toBe(false);
+    // the summary arrives when the window ends, without waiting for another message
+    t.advance(1);
+    expect(t.texts().at(-1)).toBe(`system:${100 - LOG_LINES_PER_SECOND} script log lines suppressed`);
     t.fromFrame(f.contentWindow, { type: 'log', level: 'log', args: ['later'] });
-    expect(t.texts()).toContain(`system:${100 - LOG_LINES_PER_SECOND} script log lines suppressed`);
     expect(t.texts().at(-1)).toBe('script:later');
+    expect(t.texts().filter((x) => x.includes('suppressed'))).toHaveLength(1);
   });
 
   it('rebuilds channel, bridge and frame after a host reconnect and re-posts init once state is back', async () => {
@@ -311,6 +336,28 @@ describe('sandbox runner', () => {
     expect(f.removed).toBe(true);
     expect(t.runner.getStatus()).toBe('errored');
     expect(t.texts()).toContain('error:script stopped: flooding');
+  });
+
+  it('refuses to start while the host socket is not online', async () => {
+    const t = (current = setup());
+    t.online.value = false;
+    await t.runner.start(t.asClient, 'x');
+    expect(t.frames).toHaveLength(0);
+    expect(t.runner.getStatus()).toBe('stopped');
+    expect(t.texts().some((x) => x.startsWith('error:script not started: not connected'))).toBe(true);
+  });
+
+  it('gives the script 6 commands per tick (the host keeps 2 of the server budget)', async () => {
+    const t = (current = setup());
+    await t.runner.start(t.asClient, 'x');
+    t.frames[0]!.load();
+    const port = t.frames[0]!.port();
+    const sb = listen(port);
+    port.postMessage(auth);
+    await until(() => sb.frames().length >= 2);
+    for (let i = 0; i < 8; i++) port.postMessage(cmd(2 + i, `r${i}`));
+    await until(() => sb.frames().filter((f) => f.t === 'err').length >= 2);
+    expect(t.client.sent).toHaveLength(6);
   });
 
   it('a new start replaces the running sandbox', async () => {

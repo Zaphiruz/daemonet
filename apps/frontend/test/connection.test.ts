@@ -1,11 +1,11 @@
 import type { ConnectOptions, GameClient } from '@daemonet/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchTicket, TicketError } from '../src/api.ts';
-import { createConnection, RETRY_MAX_MS, RETRY_MIN_MS, type ConnectionDeps } from '../src/game/connection.ts';
+import { createConnection, MAX_UNAUTHORIZED_RETRIES, RETRY_MAX_MS, RETRY_MIN_MS, type ConnectionDeps } from '../src/game/connection.ts';
 import { createLog } from '../src/game/log.ts';
 
 type Handler = (v: unknown) => void;
-type Outcome = { kind: 'ready' } | { kind: 'fail'; kick?: string; message: string };
+type Outcome = { kind: 'ready' } | { kind: 'hang' } | { kind: 'fail'; kick?: string; message: string };
 
 /** Stands in for GameClient: start() mints a token like the SDK does, then settles as the test says. */
 class FakeClient {
@@ -28,6 +28,8 @@ class FakeClient {
   async start(): Promise<void> {
     this.token = await this.opts.auth.getToken();
     if (this.outcome.kind === 'ready') return;
+    // like the SDK while its socket is still connecting: settles only if the test closes it... or never
+    if (this.outcome.kind === 'hang') return new Promise<void>(() => {});
     if (this.outcome.kick) this.emit('kick', this.outcome.kick);
     throw new Error(this.outcome.message);
   }
@@ -175,7 +177,8 @@ describe('connection store', () => {
     expect(t.stopSandbox).toHaveBeenCalledTimes(1); // only open() stopped a previous script
     c.emit('kick', 'takeover');
     c.emit('disconnect', { code: 4003, reason: 'takeover' });
-    expect(t.conn.get()).toMatchObject({ status: 'kicked', kickReason: 'takeover' });
+    expect(t.conn.get()).toMatchObject({ status: 'kicked', kickReason: 'takeover', client: null });
+    expect(c.closed).toBe(true);
     expect(t.stopSandbox).toHaveBeenCalledTimes(2);
     expect(t.texts()).toContain('system:kicked: takeover');
   });
@@ -192,7 +195,45 @@ describe('connection store', () => {
     await expect(c.opts.auth.getToken()).rejects.toBeInstanceOf(TicketError);
     await vi.advanceTimersByTimeAsync(0);
     expect(c.closed).toBe(true);
+    expect(t.conn.get()).toMatchObject({ status: 'failed', client: null });
+  });
+
+  it('a second open() cancels the first one still connecting', async () => {
+    const t = setup([{ kind: 'hang' }, { kind: 'ready' }]);
+    let firstSettled = false;
+    const first = t.conn.open('controller').then(() => (firstSettled = true));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.clients).toHaveLength(1);
+    await t.conn.open('controller');
+    await first;
+    expect(firstSettled).toBe(true);
+    expect(t.clients[0]!.closed).toBe(true);
+    expect(t.clients[1]!.closed).toBe(false);
+    expect(t.conn.get()).toMatchObject({ status: 'online', client: t.clients[1] });
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 2);
+    expect(t.clients).toHaveLength(2);
+  });
+
+  it('close() while connecting leaves no live client', async () => {
+    const t = setup([{ kind: 'hang' }]);
+    const p = t.conn.open('controller');
+    await vi.advanceTimersByTimeAsync(0);
+    t.conn.close();
+    await p;
+    expect(t.clients[0]!.closed).toBe(true);
+    expect(t.conn.get()).toMatchObject({ status: 'idle', client: null });
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 2);
+    expect(t.clients).toHaveLength(1);
+  });
+
+  it(`gives up after ${MAX_UNAUTHORIZED_RETRIES} unauthorized kicks in a row`, async () => {
+    const t = setup(Array.from({ length: 10 }, () => ({ kind: 'fail', kick: 'unauthorized', message: 'unauthorized' }) as Outcome));
+    const p = t.conn.open('controller').catch((e: Error) => e);
+    await vi.advanceTimersByTimeAsync(RETRY_MAX_MS * 10);
+    expect(await p).toBeInstanceOf(Error);
+    expect(t.clients).toHaveLength(MAX_UNAUTHORIZED_RETRIES);
     expect(t.conn.get().status).toBe('failed');
+    expect(t.conn.get().kickReason).toMatch(/unauthorized.*sign in/);
   });
 
   it('ignores events from a replaced client', async () => {

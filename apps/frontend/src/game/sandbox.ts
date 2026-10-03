@@ -53,10 +53,20 @@ export interface SandboxEnv {
   onMessage(listener: (ev: { source: unknown; data: unknown }) => void): () => void;
   log: Log;
   now(): number;
+  /** Runs `fn` after `ms`; returns a cancel function. */
+  setTimer(fn: () => void, ms: number): () => void;
+  /** Whether the host's real socket is up: a script only starts on a live connection. */
+  isOnline(): boolean;
 }
 
 /** The parts of the host's GameClient the runner uses. */
 export type SandboxClient = Pick<GameClient, 'on' | 'sendFrame' | 'operatorId' | 'role' | 'tick' | 'subnet' | 'self' | 'entities'>;
+
+let connectionOnline: () => boolean = () => false;
+/** The connection store registers how to tell whether the host socket is up (avoids an import cycle). */
+export function setConnectionProbe(probe: () => boolean): void {
+  connectionOnline = probe;
+}
 
 /** The real embedding: `<iframe sandbox="allow-scripts" src="/sandbox.html">` (never srcdoc, never allow-same-origin). */
 export function createBrowserSandboxEnv(): SandboxEnv {
@@ -79,6 +89,11 @@ export function createBrowserSandboxEnv(): SandboxEnv {
     },
     log: appLog,
     now: () => Date.now(),
+    setTimer(fn, ms) {
+      const t = setTimeout(fn, ms);
+      return () => clearTimeout(t);
+    },
+    isOnline: () => connectionOnline(),
   };
 }
 
@@ -117,6 +132,8 @@ interface Session {
   windowStart: number;
   shown: number;
   suppressed: number;
+  /** Cancels the pending "N lines suppressed" summary. */
+  cancelFlush: (() => void) | null;
   lastNotice: Partial<Record<BridgeViolation, number>>;
 }
 
@@ -139,6 +156,8 @@ export function createSandboxRunner(env: SandboxEnv) {
   };
 
   const flushSuppressed = (s: Session) => {
+    s.cancelFlush?.();
+    s.cancelFlush = null;
     if (s.suppressed > 0) env.log.push('system', `${s.suppressed} script log lines suppressed`);
     s.suppressed = 0;
   };
@@ -153,6 +172,11 @@ export function createSandboxRunner(env: SandboxEnv) {
     }
     if (s.shown >= LOG_LINES_PER_SECOND) {
       s.suppressed++;
+      // summarise when the window ends, even if the script goes quiet
+      s.cancelFlush ??= env.setTimer(() => {
+        s.cancelFlush = null;
+        if (session === s) flushSuppressed(s);
+      }, Math.max(0, s.windowStart + 1_000 - now));
       return;
     }
     s.shown++;
@@ -202,6 +226,7 @@ export function createSandboxRunner(env: SandboxEnv) {
       port: channel.port1,
       send: (raw) => s.client.sendFrame(raw),
       state: () => hostState(s.client),
+      commandsPerTick: SCRIPT_COMMANDS_PER_TICK,
       onViolation: (kind) => onViolation(s, r, kind),
     });
     r.frame = env.createFrame();
@@ -266,20 +291,26 @@ export function createSandboxRunner(env: SandboxEnv) {
 
   function stop(): void {
     if (!session) return;
+    // Removing the frame (in endSession) is what ends the script: it takes the worker with it, even
+    // in an endless loop. The `stop` message only lets the frame end the worker a moment earlier.
     if (run?.posted) {
       try {
         run.frame.contentWindow?.postMessage({ type: 'stop' }, '*');
       } catch {
-        // the frame is removed below either way, which also ends the worker
+        // ignored: the removal below ends the worker either way
       }
     }
     env.log.push('system', 'script stopped');
     endSession('stopped');
   }
 
-  /** Runs `source` in a fresh sandbox wired to `client` (replacing any running script). */
+  /** Runs `source` in a fresh sandbox wired to `client` (replacing any running script); refuses while offline. */
   async function start(client: SandboxClient, source: string): Promise<void> {
     stop();
+    if (!env.isOnline()) {
+      env.log.push('error', 'script not started: not connected to the game (wait until the status is online)');
+      return;
+    }
     let init: SandboxInit;
     try {
       init = createSandboxInit(source);
@@ -298,6 +329,7 @@ export function createSandboxRunner(env: SandboxEnv) {
       windowStart: env.now(),
       shown: 0,
       suppressed: 0,
+      cancelFlush: null,
       lastNotice: {},
     };
     session = s;
@@ -345,7 +377,7 @@ export function start(client: GameClient, source: string): Promise<void> {
   return page().start(client, source);
 }
 
-/** Stops the script (posts `stop`, then removes the frame, which ends its worker in any case). */
+/** Stops the script: removes its frame, which ends the worker (a `stop` message is posted first). */
 export function stop(): void {
   runner?.stop();
 }

@@ -2,7 +2,7 @@ import { GameClient, type ConnectOptions, type TokenSource } from '@daemonet/sdk
 import { useSyncExternalStore } from 'react';
 import { fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
 import { log as appLog, type Log } from './log.ts';
-import { stop as stopSandbox } from './sandbox.ts';
+import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
 
 export type Role = 'controller' | 'spectator';
 /**
@@ -44,6 +44,9 @@ const RETRYABLE_KICKS: ReadonlySet<string> = new Set(['idle', 'auth timeout', 's
 /** Kicks after which the SDK reconnects an established connection by itself (its TRANSIENT_KICKS). */
 const TRANSIENT_KICKS: ReadonlySet<string> = new Set(['idle', 'auth timeout', 'server shutting down']);
 const SIGNED_OUT = 'session expired: sign in again';
+/** Consecutive `unauthorized` kicks before the first snapshot after which the store gives up. */
+export const MAX_UNAUTHORIZED_RETRIES = 5;
+const REJECTED = 'the game server keeps rejecting this session (unauthorized): sign in again';
 
 const isSignedOut = (err: unknown): boolean => err instanceof TicketError && err.signedOut;
 
@@ -67,6 +70,16 @@ export function createConnection(deps: ConnectionDeps) {
   let generation = 0;
   let wake: (() => void) | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The client of the attempt in flight (not online yet) and how to abandon it. */
+  let pending: { client: GameClient; cancel: () => void } | null = null;
+
+  /** Closes the in-flight attempt's client and makes that attempt resolve as cancelled. */
+  const cancelPending = () => {
+    const p = pending;
+    pending = null;
+    p?.cancel();
+    p?.client.close();
+  };
 
   const cancelRetry = () => {
     if (retryTimer !== null) clearTimeout(retryTimer);
@@ -92,7 +105,7 @@ export function createConnection(deps: ConnectionDeps) {
     if (!current(gen, client)) return;
     deps.stopSandbox();
     client.close();
-    set({ status, kickReason: reason });
+    set({ status, kickReason: reason, client: null });
   };
 
   async function attempt(gen: number, role: Role): Promise<Attempt> {
@@ -143,14 +156,23 @@ export function createConnection(deps: ConnectionDeps) {
     on('signatureSpawn', (e) => deps.log.push('event', `${e.clean ? 'clean' : ''}${e.signature ? ` T${e.signature}` : ''} ${e.species} spawned somewhere in the subnet`));
     on('crash', (e) => deps.log.push('event', `${e.daemon} crashed`));
 
+    // The SDK's start() does not settle when closed while it is still fetching the ticket, so a
+    // cancelled attempt is settled through this race instead.
+    let cancel!: () => void;
+    const cancelled = new Promise<'cancelled'>((resolve) => (cancel = () => resolve('cancelled')));
+    const mine = { client: c, cancel };
+    pending = mine;
     try {
-      await c.start();
+      const r = await Promise.race([c.start(), cancelled]);
+      if (r === 'cancelled') return { kind: 'cancelled' };
     } catch (err) {
       c.close();
       if (gen !== generation) return { kind: 'cancelled' };
       if (isSignedOut(ticketError)) return { kind: 'terminal', status: 'failed', reason: SIGNED_OUT };
       if (kick !== null && !RETRYABLE_KICKS.has(kick)) return { kind: 'terminal', status: 'kicked', reason: kick };
       return { kind: 'retry', reason: kick ?? (err instanceof Error ? err.message : String(err)) };
+    } finally {
+      if (pending === mine) pending = null;
     }
     if (gen !== generation) {
       c.close();
@@ -168,12 +190,20 @@ export function createConnection(deps: ConnectionDeps) {
   async function open(role: Role): Promise<void> {
     const gen = ++generation;
     cancelRetry();
+    cancelPending();
     deps.stopSandbox();
     state.client?.close();
     set({ status: 'connecting', role, client: null, kickReason: null });
+    let unauthorized = 0;
     for (let retries = 0; ; retries++) {
       const r = await attempt(gen, role);
-      if (r.kind === 'online' || r.kind === 'cancelled') return;
+      if (gen !== generation || r.kind === 'online' || r.kind === 'cancelled') return;
+      if (r.kind === 'retry' && r.reason === 'unauthorized' && ++unauthorized >= MAX_UNAUTHORIZED_RETRIES) {
+        set({ status: 'failed', kickReason: REJECTED });
+        deps.log.push('error', `connect failed: ${REJECTED}`);
+        throw new Error(REJECTED);
+      }
+      if (r.kind === 'retry' && r.reason !== 'unauthorized') unauthorized = 0;
       if (r.kind === 'terminal') {
         set({ status: r.status, kickReason: r.reason });
         deps.log.push('error', `connect failed: ${r.reason}`);
@@ -189,6 +219,7 @@ export function createConnection(deps: ConnectionDeps) {
   function close(): void {
     generation++;
     cancelRetry();
+    cancelPending();
     deps.stopSandbox();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
@@ -216,6 +247,9 @@ const connection = createConnection({
   log: appLog,
   stopSandbox,
 });
+
+// the sandbox only starts a script on a live socket
+setConnectionProbe(() => connection.get().status === 'online');
 
 export const open = (role: Role): Promise<void> => connection.open(role);
 export const close = (): void => connection.close();
