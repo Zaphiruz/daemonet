@@ -84,7 +84,25 @@ describe.each(FAMILIES)('%s family', (type) => {
   });
 });
 
-describe('unsupported challenges', () => {
+describe('chained challenges', () => {
+  it('solving stage one unseals stage two', () => {
+    fc.assert(
+      fc.property(fc.constantFrom(...FAMILIES), fc.constantFrom(...FAMILIES), fc.integer(), (a, b, seed) => {
+        const challenge = generateChallenge([a, b], 24, 1, createRng(seed));
+        expect(challenge.kind).toBe('chain');
+        expect(challenge.families).toEqual([a, b]);
+        const answer = solve(publicChallenge(challenge));
+        expect(checkAnswer(challenge, answer)).toBe('correct');
+      }),
+      { numRuns: 48 },
+    );
+  });
+
+  it('never exposes the answer publicly', () => {
+    const challenge = generateChallenge(['packet', 'glitch'], 16, 0, createRng(2));
+    expect(publicChallenge(challenge)).not.toHaveProperty('answer');
+  });
+
   it('rejects unknown families and bad type counts', () => {
     expect(() => generateChallenge(['kernel'], 16, 0, createRng(3))).toThrow(RangeError);
     expect(() => generateChallenge([], 16, 0, createRng(3))).toThrow(RangeError);

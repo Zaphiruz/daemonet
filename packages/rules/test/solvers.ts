@@ -7,7 +7,7 @@ import type { CryptoParams, CryptoPayload } from '../src/capture/crypto.js';
 import type { GlitchPayload } from '../src/capture/glitch.js';
 import type { NullParams, NullPayload } from '../src/capture/null.js';
 import { packetCrc, type PacketParams, type PacketPayload } from '../src/capture/packet.js';
-import type { PublicChallenge } from '../src/capture/index.js';
+import type { ChainPayload, PublicChallenge } from '../src/capture/index.js';
 import type { TypeId } from '../src/types.js';
 
 export function solvePacket(params: PacketParams, payload: PacketPayload): { checksum: string } {
@@ -62,5 +62,12 @@ const SOLVERS: Partial<Record<TypeId, (params: never, payload: never) => unknown
 export function solve(challenge: PublicChallenge): unknown {
   const solveStage = (type: TypeId, params: unknown, payload: unknown) =>
     (SOLVERS[type] as (p: unknown, y: unknown) => unknown)(params, payload);
-  return solveStage(challenge.families[0]!, challenge.params, challenge.payload);
+  if (challenge.kind === 'single') return solveStage(challenge.families[0]!, challenge.params, challenge.payload);
+  const chain = challenge.payload as ChainPayload;
+  const firstAnswer = solveStage(challenge.families[0]!, chain.first.params, chain.first.payload);
+  const second = JSON.parse(fromUtf8(xorRepeating(fromHex(chain.sealed), utf8(JSON.stringify(firstAnswer))))) as {
+    params: unknown;
+    payload: unknown;
+  };
+  return solveStage(challenge.families[1]!, second.params, second.payload);
 }
