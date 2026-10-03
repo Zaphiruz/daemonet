@@ -24,6 +24,10 @@ export function randomHex(bytes: number): string {
   return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+function stateFields(d: OwnedDaemonRecord) {
+  return { level: d.level, xp: d.xp, hp: d.hp, energy: d.energy, moves: d.moves, crashed: d.crashed };
+}
+
 interface MemDaemon extends OwnedDaemonRecord {
   operatorId: string;
   location: 'RAM' | 'DISK';
@@ -104,8 +108,8 @@ export class MemoryStore implements Store {
         break;
       case 'store': {
         const d = this.daemons.get(intent.daemonId);
-        if (!d || d.operatorId !== op.id) return { ok: false, reason: 'daemon not found' };
-        Object.assign(d, ctx.storedDaemon ?? {}, { location: 'DISK', slot: intent.diskSlot });
+        if (!d || d.operatorId !== op.id || d.location !== 'RAM') return { ok: false, reason: 'daemon not found' };
+        Object.assign(d, ctx.storedDaemon ? stateFields(ctx.storedDaemon) : {}, { location: 'DISK', slot: intent.diskSlot });
         break;
       }
       case 'load': {
@@ -129,7 +133,7 @@ export class MemoryStore implements Store {
       Object.assign(op, { x: rec.x, y: rec.y, bits: rec.bits, inventory: { ...rec.inventory } });
       for (const d of rec.ram) {
         const row = this.daemons.get(d.id);
-        if (row && row.operatorId === op.id) Object.assign(row, { ...d, location: 'RAM' as const });
+        if (row && row.operatorId === op.id && row.location === 'RAM') Object.assign(row, stateFields(d));
       }
     }
   }

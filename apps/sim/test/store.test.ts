@@ -89,6 +89,23 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(after).toMatchObject({ x: 40.25, y: 12.5, bits: 64, inventory: { sniff: 3 } });
       expect(after.ram[0]).toMatchObject({ level: 7, hp: 3, crashed: true });
     });
+
+    it('does not let a stale RAM checkpoint clobber a daemon already stored to Disk', async () => {
+      const a = await store.loadOrCreateOperator('sub-f', 'lo', SPAWN);
+      const d = ownedRecord('hashling', 5, 0, 'abcd1234-d7');
+      await store.applyIntent(claim(a.id, 'finn', d), { seedId: 'abcd1234' });
+      const stale = await store.loadOrCreateOperator('sub-f', 'lo', SPAWN);
+      await store.applyIntent(
+        { id: 'i-store-f', kind: 'store', operatorId: a.id, reqId: 'r', daemonId: d.id, diskSlot: 1 },
+        { seedId: 'abcd1234', storedDaemon: { ...d, hp: 11 } },
+      );
+      await store.checkpoint([{ ...stale, ram: [{ ...stale.ram[0]!, hp: 2, level: 8 }] }]);
+      const after = await store.loadOrCreateOperator('sub-f', 'lo', SPAWN);
+      expect(after.ram).toEqual([]);
+      expect(after.diskSlots).toEqual([1]);
+      const back = await store.applyIntent({ id: 'i-load-f', kind: 'load', operatorId: a.id, reqId: 'r', daemonId: d.id, ramSlot: 0 }, { seedId: 'abcd1234' });
+      expect(back).toMatchObject({ ok: true, daemon: { id: d.id, hp: 11, level: 5 } });
+    });
   });
 }
 
@@ -105,4 +122,17 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
       await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "Operator", "SubnetSeed", "AppliedAction" CASCADE');
     },
   );
+
+  it('treats a concurrent duplicate of the same claim as applied, not as a name clash', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "Operator", "SubnetSeed", "AppliedAction" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-race', 'lo', SPAWN);
+    const d = ownedRecord('pingling', 5, 0, 'abcd1234-d8');
+    const results = await Promise.all([
+      store.applyIntent(claim(a.id, 'rae', d), { seedId: 'abcd1234' }),
+      store.applyIntent(claim(a.id, 'rae', d), { seedId: 'abcd1234' }),
+    ]);
+    expect(results).toEqual([{ ok: true }, { ok: true }]);
+    expect(await prisma!.daemon.count({ where: { operatorId: a.id } })).toBe(1);
+  });
 });

@@ -30,6 +30,16 @@ function isUniqueViolation(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'P2002';
 }
 
+/** Name of the violated unique constraint/index. Prisma 7 + pg adapter reports it under meta.driverAdapterError. */
+function violatedConstraint(err: unknown): string {
+  const meta = (err as { meta?: Record<string, unknown> }).meta ?? {};
+  const cause = (meta.driverAdapterError as { cause?: { constraint?: { index?: string }; originalMessage?: string } } | undefined)?.cause;
+  const target = meta.target ?? meta.constraint;
+  return [cause?.constraint?.index, cause?.originalMessage, Array.isArray(target) ? target.join(',') : target, (err as Error).message]
+    .filter((x): x is string => typeof x === 'string')
+    .join(' ');
+}
+
 /** Thrown inside a transaction to roll it back with a domain (non-retryable) reason. */
 class DomainFailure extends Error {}
 
@@ -75,12 +85,8 @@ export class PrismaStore implements Store {
   async applyIntent(intent: Intent, ctx: IntentContext): Promise<IntentResult> {
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const done = await tx.appliedAction.findUnique({ where: { key: intent.id } });
-        if (done) {
-          if (intent.kind !== 'load') return { ok: true } as const;
-          const row = await tx.daemon.findUniqueOrThrow({ where: { id: intent.daemonId } });
-          return { ok: true, daemon: toRecord(row) } as const;
-        }
+        const replay = await this.replayed(tx, intent);
+        if (replay) return replay;
         await tx.appliedAction.create({ data: { key: intent.id, kind: intent.kind } });
         const now = new Date();
         switch (intent.kind) {
@@ -143,9 +149,26 @@ export class PrismaStore implements Store {
       });
     } catch (err) {
       if (err instanceof DomainFailure) return { ok: false, reason: err.message };
-      if (intent.kind === 'claimStarter' && isUniqueViolation(err)) return { ok: false, reason: 'name taken' };
+      if (isUniqueViolation(err)) {
+        const violated = violatedConstraint(err);
+        // Same intent applied concurrently: the other transaction committed it, so answer from its marker.
+        if (violated.includes('AppliedAction')) {
+          const replay = await this.replayed(this.prisma, intent);
+          if (replay) return replay;
+        }
+        if (intent.kind === 'claimStarter' && violated.includes('Operator_name_key')) return { ok: false, reason: 'name taken' };
+      }
       throw err;
     }
+  }
+
+  /** The stored result when this intent was already applied, else null. */
+  private async replayed(db: Pick<PrismaClient, 'appliedAction' | 'daemon'>, intent: Intent): Promise<IntentResult | null> {
+    const done = await db.appliedAction.findUnique({ where: { key: intent.id } });
+    if (!done) return null;
+    if (intent.kind !== 'load') return { ok: true };
+    const row = await db.daemon.findUniqueOrThrow({ where: { id: intent.daemonId } });
+    return { ok: true, daemon: toRecord(row) };
   }
 
   async checkpoint(records: readonly OperatorRecord[]): Promise<void> {
@@ -158,7 +181,7 @@ export class PrismaStore implements Store {
           data: { x: rec.x, y: rec.y, bits: BigInt(rec.bits), inventory: rec.inventory, lastSeenAt: now },
         });
         for (const d of rec.ram) {
-          await tx.daemon.updateMany({ where: { id: d.id, operatorId: rec.id }, data: stateFields(d) });
+          await tx.daemon.updateMany({ where: { id: d.id, operatorId: rec.id, location: 'RAM' }, data: stateFields(d) });
         }
       }
     });
