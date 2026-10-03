@@ -11,3 +11,5 @@ packages/db/src/generated/
 vault-token
 apps/frontend/public/sandbox.html
 apps/frontend/public/sandbox/
+test-results/
+playwright-report/

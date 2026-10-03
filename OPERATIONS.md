@@ -244,6 +244,7 @@ If the Vault document does not yet have the api keys (Step 5 not re-run), the ap
 4. **Group gate:** remove a user from `daemonet-users`, restart their bot → `E_AUTH` (`authentication failed`; the real reason, `not in daemonet-users`, is in the sim log). Add them back.
 5. **Real client IPs and no PII:** `ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml logs --tail 50 sim | grep "operator connected"'` shows your public IP in `ip` and a `sub`, never a name or email. If `ip` is the LC2/Caddy/Docker address instead of your public IP, `TRUST_PROXY_HOPS` is wrong: fix it in Vault (`vault kv patch secret/daemonet TRUST_PROXY_HOPS=<n>`) and restart before going further, otherwise the per-IP connection cap applies to everyone together.
 6. **Web login (SP2):** open `https://daemonet.wispy-nook.casa/api/auth/login` in a browser → Authentik → you land back on the site with the `daemonet_sid` cookie set (read its value in the browser: devtools → Application → Cookies); `curl -b daemonet_sid=<value> https://daemonet.wispy-nook.casa/api/me` returns your operator. A user outside `daemonet-users` is normally blocked by the Authentik application binding before the callback; the api returns 403 only if such a user reaches it. Check the api log for client IPs (`docker compose -f docker-compose.prod.yml logs --tail 50 api`): the same `TRUST_PROXY_HOPS` rule as step 5 applies.
+   **Web client (SP2 plan 3):** open `https://daemonet.wispy-nook.casa/` → *Sign in with Authentik* → the world renders with your operator; claim a starter (or see your existing RAM); click the map to move; click a wild daemon, weaken it with move buttons and start a capture — the capture panel shows the challenge and accepts a typed JSON answer; in the Script tab insert the starter template, Run, and watch the Log tab show `online as …` and eventually `captured pingling`; *Spectate* while the headless bot drives shows its moves live. In the browser devtools (Network + Console) confirm: no CSP violation messages; `https://daemonet.wispy-nook.casa/sandbox.html` answers with a `Content-Security-Policy` header starting `default-src 'none'; script-src 'self' blob:` and `X-Frame-Options: SAMEORIGIN`, and loads without logging in (`curl -sI https://daemonet.wispy-nook.casa/sandbox.html`); `/sandbox/worker.js`, `/sandbox/bootstrap.js` and `/sandbox/sdk.js` return 200 (Cloudflare must not cache-rewrite them). A user outside `daemonet-users` gets 403 at login.
 7. **Existing apps unaffected:** open Plantry, Third Eye and Mealie; all load.
 8. **Load (staging sim with its own throwaway database; never production data):** the load test needs `AUTH_DEV_BYPASS`, which production refuses, so it runs a **separate staging container** that does not use Vault and is never pointed at the `daemonet` database. Rule: a sim with dev bypass on must only ever see a throwaway database.
 
@@ -268,6 +269,37 @@ If the Vault document does not yet have the api keys (Step 5 not re-run), the ap
 - [ ] **Step 10: Record it in the homelab doc**
 
 Add to `D:\docs\MikroTik\CLAUDE.md`: S1 now hosts Daemonet (compose at `/opt/daemonet`, port 3010 LAN-bound, runner `s1-daemonet`, Vault `secret/daemonet`, Authentik slug `daemonet-bot` public client + device flow, DB `daemonet`); shared PostgreSQL is published on `192.168.40.20:5432` restricted to S1 by `DOCKER-USER`; the nginx `websocket-upgrade.conf` map on LC2; the S2 port table gains `3010 Daemonet (on S1)`. The compose stack also runs the web api (`api` service, image `daemonet-api`, same Vault document `secret/daemonet`, web provider Authentik slug `daemonet` — confidential client with redirect `https://daemonet.wispy-nook.casa/api/auth/callback` — served under `/api/` by the same Caddy/nginx path as the sim, health `/api/ready`) and the `daemonet-users` / `daemonet-admins` groups gate it.
+
+## Local development
+
+Run the whole stack on the workstation with the auth dev bypass (never in production):
+
+```bash
+docker run -d --name daemonet-pg -e POSTGRES_USER=daemonet -e POSTGRES_PASSWORD=daemonet -e POSTGRES_DB=daemonet_dev -p 127.0.0.1:5432:5432 postgres:17-alpine
+export DATABASE_URL=postgresql://daemonet:daemonet@127.0.0.1:5432/daemonet_dev AUTH_DEV_BYPASS=true
+pnpm db:migrate && pnpm build
+PORT=3000 node apps/sim/dist/runtime/main.js &
+PORT=3001 SESSION_SECRET=dev-session-secret-dev-session-secret-dev SESSION_COOKIE_SECURE=false FRONTEND_ORIGIN=http://localhost:5173 node apps/api/dist/server.js &
+pnpm web        # Vite dev server on http://localhost:5173, proxying /api -> 3001 and /ws -> 3000
+```
+
+Open `http://localhost:5173`, use **dev login** with any name (it becomes sub `dev-<name>`, the same
+operator a `dev:<name>` headless bot gets). The sandbox page is built by `pnpm --filter @daemonet/frontend sdk`
+(run automatically by `build`; run it once before `pnpm web`).
+
+End-to-end smoke (headless Chromium, with the sim and api above running and `FRONTEND_ORIGIN=http://127.0.0.1:4173`):
+
+```bash
+pnpm --filter @daemonet/frontend build
+pnpm --filter @daemonet/frontend exec playwright install chromium    # once
+pnpm --filter @daemonet/frontend e2e                                 # starts `vite preview` on 127.0.0.1:4173
+```
+
+It logs in, claims a starter, runs a daemon, moves by clicking and runs the starter script inside the real
+sandbox iframe. Vite preview sends no CSP headers; to check the production headers, build the image
+(`docker build -f apps/frontend/Dockerfile -t daemonet-frontend:local .`), run it with host-gateway aliases for
+`sim`/`api` on port 4173 and rerun the e2e (it fails on any CSP violation). The embedded browser pane of the
+desktop app blocks the sandbox iframe; use Playwright for sandbox checks.
 
 ## C. Day-2 operations
 

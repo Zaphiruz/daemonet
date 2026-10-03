@@ -61,3 +61,21 @@ Before the first deploy that includes `apps/api` (OPERATIONS Steps 4 item 5, 5, 
       other's keys).
 - [ ] After the deploy: `curl https://daemonet.wispy-nook.casa/api/ready` returns `{"ok":true}` and the OPERATIONS
       Step 9 item 6 login check passes.
+
+## SP2 plan 3 (web client)
+
+The frontend image now serves the Vite build (the SP1 placeholder page is gone) plus the static player-script
+sandbox. Nothing new is needed in Vault or Authentik; the checks below happen after the first deploy that includes it.
+
+- [ ] Deploy as usual (push `main` with CI green; the CI `e2e` job runs the Playwright smoke first). The frontend image
+      build now compiles the libraries and the client, so the first build on S1 takes a few minutes.
+- [ ] OPERATIONS Step 9 item 6, "Web client (SP2 plan 3)": log in, claim/see RAM, move, capture panel, Script tab run
+      (`online as …` in the Log), spectate.
+- [ ] In the browser devtools confirm there are no Content-Security-Policy violations on `/` and that
+      `curl -sI https://daemonet.wispy-nook.casa/sandbox.html` shows the strict `default-src 'none'; script-src 'self' blob:`
+      policy and `X-Frame-Options: SAMEORIGIN`, reachable without logging in. If a Cloudflare rule or the nginx
+      server block on LC2 adds its own `Content-Security-Policy`, remove it for `/sandbox.html` (two policies would
+      both apply).
+- [ ] Optional hardening not done in this plan: the `frontend` service in `docker-compose.prod.yml` has no `cap_drop`,
+      `read_only` or resource limits like `sim`/`api` (Caddy needs `/data` and `/config` writable and `NET_BIND_SERVICE`);
+      add them after testing on S1.

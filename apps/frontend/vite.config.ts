@@ -13,7 +13,9 @@ export default defineConfig({
     },
   },
   preview: {
+    host: '127.0.0.1',
     port: 4173,
+    strictPort: true,
     proxy: {
       '/api': { target: 'http://127.0.0.1:3001' },
       '/ws': { target: 'ws://127.0.0.1:3000', ws: true },
