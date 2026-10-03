@@ -44,7 +44,7 @@ function violatedConstraint(err: unknown): string {
 class DomainFailure extends Error {}
 
 export class PrismaStore implements Store {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(readonly prisma: PrismaClient) {}
 
   static connect(databaseUrl: string): PrismaStore {
     return new PrismaStore(createPrisma(databaseUrl));

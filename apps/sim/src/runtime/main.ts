@@ -8,6 +8,7 @@ import { startLoop } from './loop.js';
 import { PrismaStore } from './prisma-store.js';
 import { startServer } from './server.js';
 import { gracefulShutdown } from './shutdown.js';
+import { createTicketVerifier } from './ticket.js';
 
 const config = loadConfig();
 const log = pino({ level: config.logLevel });
@@ -24,6 +25,7 @@ const verify = combineVerifiers(
     ? createOidcVerifier({ issuer: config.oidc.issuer, audiences: [config.oidc.clientId], requiredGroup: config.requiredGroup })
     : null,
   config.devBypass ? createDevVerifier(config.requiredGroup) : null,
+  createTicketVerifier(store.prisma, config.requiredGroup),
 );
 
 const game = new Game({ world, store, verify, seedId: seed.id, log });

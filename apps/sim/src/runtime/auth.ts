@@ -94,12 +94,16 @@ export function createDevVerifier(requiredGroup: string): TokenVerifier {
   };
 }
 
-/** Dev tokens go to `dev` (when enabled); everything else to `oidc`. */
-export function combineVerifiers(oidc: TokenVerifier | null, dev: TokenVerifier | null): TokenVerifier {
+/** `dev:` tokens go to `dev` (when enabled), `ticket:` tokens to `ticket` (browser sessions), everything else to `oidc`. */
+export function combineVerifiers(oidc: TokenVerifier | null, dev: TokenVerifier | null, ticket: TokenVerifier | null = null): TokenVerifier {
   return async (token) => {
     if (token.startsWith('dev:')) {
       if (!dev) throw new AuthError('dev tokens are disabled');
       return dev(token);
+    }
+    if (token.startsWith('ticket:')) {
+      if (!ticket) throw new AuthError('browser tickets are not configured');
+      return ticket(token);
     }
     if (!oidc) throw new AuthError('OIDC is not configured');
     return oidc(token);
