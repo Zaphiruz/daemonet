@@ -9,6 +9,7 @@ const Env = z.object({
   AUTH_REQUIRED_GROUP: z.string().min(1).default('daemonet-users'),
   AUTH_DEV_BYPASS: z.enum(['true', 'false']).default('false'),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
+  MAX_CONNECTIONS_PER_IP: z.coerce.number().int().positive().default(16),
   SUBNET: z.string().default('lo'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 });
@@ -21,6 +22,7 @@ export interface Config {
   requiredGroup: string;
   devBypass: boolean;
   trustProxyHops: number;
+  maxConnectionsPerIp: number;
   subnet: string;
   logLevel: string;
 }
@@ -39,6 +41,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     requiredGroup: e.AUTH_REQUIRED_GROUP,
     devBypass,
     trustProxyHops: e.TRUST_PROXY_HOPS,
+    maxConnectionsPerIp: e.MAX_CONNECTIONS_PER_IP,
     subnet: e.SUBNET,
     logLevel: e.LOG_LEVEL,
   };

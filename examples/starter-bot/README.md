@@ -27,3 +27,8 @@ DAEMONET_URL=ws://127.0.0.1:3000/ws DAEMONET_DEV_NAME=alice DAEMONET_NAME=alice 
 ## Load test
 
 `DAEMONET_URL=... DAEMONET_BOTS=64 pnpm --filter @daemonet/starter-bot load` connects N dev-token bots that wander and fight.
+
+The sim caps connections per IP (default 16). To load-test locally with more
+bots than that, start the sim with the cap raised, e.g.
+`MAX_CONNECTIONS_PER_IP=128`. Bots that are refused are logged and skipped, and
+the script exits non-zero only if no bot connected.

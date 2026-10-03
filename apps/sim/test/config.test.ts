@@ -6,7 +6,14 @@ const base = { DATABASE_URL: 'postgresql://x' };
 describe('loadConfig', () => {
   it('applies defaults with dev bypass', () => {
     const c = loadConfig({ ...base, AUTH_DEV_BYPASS: 'true' });
-    expect(c).toMatchObject({ port: 3000, devBypass: true, oidc: null, requiredGroup: 'daemonet-users', trustProxyHops: 0, subnet: 'lo' });
+    expect(c).toMatchObject({ port: 3000, devBypass: true, oidc: null, requiredGroup: 'daemonet-users', trustProxyHops: 0, subnet: 'lo', maxConnectionsPerIp: 16 });
+  });
+
+  it('reads and validates MAX_CONNECTIONS_PER_IP', () => {
+    expect(loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', MAX_CONNECTIONS_PER_IP: '128' }).maxConnectionsPerIp).toBe(128);
+    for (const bad of ['0', '-1', '1.5', 'abc']) {
+      expect(() => loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', MAX_CONNECTIONS_PER_IP: bad })).toThrow();
+    }
   });
 
   it('refuses the dev bypass in production', () => {

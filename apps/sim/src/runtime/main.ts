@@ -26,7 +26,7 @@ const verify = combineVerifiers(
 );
 
 const game = new Game({ world, store, verify, seedId: seed.id, log });
-const server = await startServer({ game, store, port: config.port, trustProxyHops: config.trustProxyHops, log });
+const server = await startServer({ game, store, port: config.port, trustProxyHops: config.trustProxyHops, maxConnectionsPerIp: config.maxConnectionsPerIp, log});
 const stopLoop = startLoop(() => game.tick());
 const statsTimer = setInterval(() => log.info({ tick: world.tick, ...game.stats() }, 'tick stats'), 64_000);
 
