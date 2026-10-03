@@ -1,0 +1,13 @@
+{
+  "name": "@daemonet/starter-bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.ts",
+    "load": "node src/load.ts"
+  },
+  "dependencies": {
+    "@daemonet/sdk": "workspace:*"
+  }
+}

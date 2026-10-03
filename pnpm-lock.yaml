@@ -58,6 +58,12 @@ importers:
         specifier: ^8.18.1
         version: 8.18.2
 
+  examples/starter-bot:
+    dependencies:
+      '@daemonet/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+
   packages/db:
     dependencies:
       '@prisma/adapter-pg':
