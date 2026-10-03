@@ -3,6 +3,11 @@ import type { WebSocketCtor, WebSocketLike } from './client.js';
 /** Wire messages the host bridge sends besides raw protocol strings. */
 export type PortControl = { type: 'close'; code?: number; reason?: string };
 
+/** A WebSocket close reason is at most 123 bytes; the port only promises characters. */
+const MAX_REASON = 123;
+/** The host's close frame is data: only an integer code a WebSocket could carry is used. */
+const closeCode = (code: unknown): number => (typeof code === 'number' && Number.isInteger(code) && code >= 1000 && code <= 4999 ? code : 1000);
+
 /** The subset of MessagePort used here; identical in browsers and Node (worker_threads). */
 export interface PortLike {
   postMessage(data: unknown): void;
@@ -32,7 +37,10 @@ export class PortSocket implements WebSocketLike {
     port.addEventListener('message', (ev) => {
       const d: unknown = ev.data;
       if (typeof d === 'string') this.onmessage?.({ data: d });
-      else if (d && typeof d === 'object' && (d as PortControl).type === 'close') this.finish((d as PortControl).code ?? 1000, (d as PortControl).reason ?? '');
+      else if (d && typeof d === 'object' && (d as { type?: unknown }).type === 'close') {
+        const { code, reason } = d as { code?: unknown; reason?: unknown };
+        this.finish(closeCode(code), typeof reason === 'string' ? reason.slice(0, MAX_REASON) : '');
+      }
     });
     port.start?.();
     queueMicrotask(() => {

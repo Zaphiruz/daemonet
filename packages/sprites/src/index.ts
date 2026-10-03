@@ -68,6 +68,10 @@ export function signatureColor(tier: number): Rgb {
  * the centre. Fill = the primary type's mid colour (rows 8+ use the secondary type when present),
  * body edges = dark, a few highlights = light. `clean` draws a 1-px white rim around the body;
  * `signature` >= 1 draws a glow ring one pixel further out in the tier's hue.
+ *
+ * Every call allocates and recomputes the whole sprite: callers memoise the result (e.g. per
+ * `speciesId|types|clean|signature`, or the canvas/ImageBitmap made from it) instead of calling
+ * this per frame.
  */
 export function spriteFor(speciesId: string, opts: SpriteOptions): Sprite {
   const size = SPRITE_SIZE;

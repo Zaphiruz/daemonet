@@ -68,6 +68,26 @@ describe('PortSocket', () => {
     b.close();
   });
 
+  it('close frames with ill-typed fields fall back to 1000 and an empty reason', async () => {
+    const cases: Array<[unknown, { code: number; reason: string }]> = [
+      [{ type: 'close', code: '4401', reason: 42 }, { code: 1000, reason: '' }],
+      [{ type: 'close', code: 4401.5, reason: ['x'] }, { code: 1000, reason: '' }],
+      [{ type: 'close', code: 99999, reason: 'r'.repeat(500) }, { code: 1000, reason: 'r'.repeat(123) }],
+      [{ type: 'close', code: Number.NaN, reason: null }, { code: 1000, reason: '' }],
+    ];
+    for (const [frame, expected] of cases) {
+      const { a, b } = pair();
+      const sock = new PortSocket(a);
+      await tick();
+      const closed = new Promise<{ code: number; reason: string }>((r) => (sock.onclose = r));
+      b.postMessage(frame);
+      const ev = await closed;
+      expect(ev).toEqual(expected);
+      expect(typeof ev.reason).toBe('string');
+      b.close();
+    }
+  });
+
   it('close frame without code defaults to 1000', async () => {
     const { a, b } = pair();
     const sock = new PortSocket(a);
