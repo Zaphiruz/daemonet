@@ -95,6 +95,8 @@ export class Game {
   private readonly conns = new Map<string, ConnState>();
   private readonly sessions = new Map<string, Session>();
   private readonly leaving = new Map<string, Promise<void>>();
+  /** Operator loads in flight per sub; a leave marks them stale so they reload after its checkpoint. */
+  private readonly loads = new Map<string, Set<{ stale: boolean }>>();
   private readonly inflight = new Set<Promise<void>>();
   private inputs: Input[] = [];
   /** The connection that sent each pending command, so replies are not delivered to a later controller. */
@@ -177,9 +179,7 @@ export class Game {
       return this.kick(st, 'unauthorized', CLOSE.auth);
     }
     try {
-      await this.leaving.get(claims.sub);
-      const subnet = this.world.subnet;
-      const rec = await this.store.loadOrCreateOperator(claims.sub, subnet.id, subnet.spawn);
+      const rec = await this.loadOperator(claims.sub);
       if (st.phase === 'closed') return;
       let session = this.sessions.get(rec.id);
       if (!session) {
@@ -220,6 +220,32 @@ export class Game {
       this.log.error({ err: (err as Error).message }, 'auth: store unavailable');
       this.error(st, 'E_STATE', 'service unavailable');
       this.kick(st, 'unavailable', CLOSE.unavailable);
+    }
+  }
+
+  /**
+   * Loads the operator's row from a read that began after the last leave checkpoint for `sub` committed: waits out a
+   * leave in progress, and reloads when a leave started while the load was in flight (its result may predate it).
+   */
+  private async loadOperator(sub: string) {
+    const subnet = this.world.subnet;
+    for (;;) {
+      const pending = this.leaving.get(sub);
+      if (pending) {
+        await pending;
+        continue;
+      }
+      const load = { stale: false };
+      let set = this.loads.get(sub);
+      if (!set) this.loads.set(sub, (set = new Set()));
+      set.add(load);
+      try {
+        const rec = await this.store.loadOrCreateOperator(sub, subnet.id, subnet.spawn);
+        if (!load.stale) return rec;
+      } finally {
+        set.delete(load);
+        if (set.size === 0 && this.loads.get(sub) === set) this.loads.delete(sub);
+      }
     }
   }
 
@@ -379,6 +405,7 @@ export class Game {
   }
 
   private leave(session: Session): void {
+    for (const load of this.loads.get(session.sub) ?? []) load.stale = true;
     const record = this.world.checkpoint(session.operatorId);
     this.world.removeOperator(session.operatorId);
     this.sessions.delete(session.operatorId);

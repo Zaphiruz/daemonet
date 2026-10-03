@@ -207,6 +207,62 @@ describe('spectators', () => {
   });
 });
 
+/** A MemoryStore whose next loadOrCreateOperator reads immediately but answers only when released. */
+class GatedLoadStore extends MemoryStore {
+  private gate: { started: () => void; release: Promise<void> } | null = null;
+
+  /** Arms the gate; returns a promise for "load started" and a function that lets the load answer. */
+  holdNextLoad() {
+    let release!: () => void;
+    let started!: () => void;
+    const loadStarted = new Promise<void>((r) => (started = r));
+    this.gate = { started, release: new Promise<void>((r) => (release = r)) };
+    return { loadStarted, release };
+  }
+
+  override async loadOrCreateOperator(...args: Parameters<MemoryStore['loadOrCreateOperator']>) {
+    const rec = await super.loadOrCreateOperator(...args);
+    const gate = this.gate;
+    this.gate = null;
+    if (gate) {
+      gate.started();
+      await gate.release;
+    }
+    return rec;
+  }
+}
+
+describe('leave vs connect', () => {
+  it('a connection whose load raced the leave checkpoint gets the post-leave state', async () => {
+    const store = new GatedLoadStore();
+    const { game, world } = setup(store);
+    const conn = await join(game, 'alice');
+    await game.message(conn, cmd({ cmd: 'moveTo', actor: 'self', args: { x: 9.5, y: 4.5 } }));
+    for (let i = 0; i < 40; i++) game.tick();
+    const id = conn.last('authOk')!.d.operatorId;
+    expect(world.operators.get(id)!.x).toBeCloseTo(9.5);
+    game.disconnect(conn);
+
+    // A new connection starts loading the (not yet checkpointed, spawn-position) row...
+    const { loadStarted, release } = store.holdNextLoad();
+    const back = new FakeConn();
+    game.connect(back);
+    const authed = game.message(back, JSON.stringify({ t: 'auth', seq: 1, d: { token: 'dev:alice' } }));
+    await loadStarted;
+    // ...while the grace period expires and the leave checkpoint commits the moved position.
+    for (let i = 0; i < 5; i++) game.tick();
+    await game.flush();
+    expect(world.operators.has(id)).toBe(false);
+    expect([...store.operators.values()][0]!.x).toBeCloseTo(9.5);
+
+    release();
+    await authed;
+    expect(back.last('authOk')).toBeDefined();
+    expect(world.operators.get(id)!.x).toBeCloseTo(9.5);
+    expect(back.last('snapshot')!.d.self).toMatchObject({ x: expect.closeTo(9.5) });
+  });
+});
+
 describe('restart', () => {
   it('a captured daemon survives a restart with the same store', async () => {
     const store = new MemoryStore();
