@@ -7,3 +7,5 @@ export * from './content/moves.js';
 export * from './content/traits.js';
 export * from './content/species.js';
 export * from './content/items.js';
+export * from './combat.js';
+export * from './xp.js';
