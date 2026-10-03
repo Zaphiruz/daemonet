@@ -170,6 +170,11 @@ export class World {
     return d;
   }
 
+  /** True when `op` already holds daemon `id` in RAM (e.g. reloaded from the DB after the intent committed). */
+  ownsDaemon(op: Operator, id: string): boolean {
+    return this.daemons.get(id)?.ownerId === op.id && op.ram.includes(id);
+  }
+
   toRecord(d: Daemon): OwnedDaemonRecord {
     return {
       id: d.id,
@@ -297,7 +302,7 @@ export class World {
         op.name = intent.name;
         op.starterClaimed = true;
         op.inventory = { ...intent.inventory };
-        this.addOwned(op, intent.daemon);
+        if (!this.ownsDaemon(op, intent.daemon.id)) this.addOwned(op, intent.daemon);
         return out.ok(intent, { daemonId: intent.daemon.id });
       }
       case 'capture':
@@ -316,7 +321,7 @@ export class World {
         op.reservedSlots.delete(intent.ramSlot);
         if (!result.ok || !result.daemon) return out.fail(intent, 'E_STATE', result.ok ? 'missing daemon' : result.reason);
         const rec = { ...result.daemon, slot: intent.ramSlot };
-        this.addOwned(op, rec);
+        if (!this.ownsDaemon(op, rec.id)) this.addOwned(op, rec);
         return out.ok(intent, { daemon: toRamDaemon(this, this.daemons.get(rec.id)!) });
       }
     }

@@ -34,6 +34,22 @@ describe('claimStarter', () => {
     expect(me.ram.map((d) => d.species)).toEqual(['pingling']);
   });
 
+  it('is idempotent when the operator reconnected after the DB committed the claim', () => {
+    const world = makeWorld();
+    world.addOperator(operatorRecord('alice', { starterClaimed: false, name: null, ram: [], inventory: {} }));
+    const r = step(world, input('alice', { cmd: 'claimStarter', actor: self, args: { species: 'pingling', operatorName: 'alice' } }));
+    const intent = r.intents[0]!;
+    if (intent.kind !== 'claimStarter') throw new Error('unreachable');
+    world.removeOperator('alice');
+    world.addOperator(operatorRecord('alice', { starterClaimed: true, ram: [intent.daemon], inventory: intent.inventory }));
+    world.completeIntent(intent.id, { ok: true });
+    const after = step(world);
+    expect(after.replies[0]).toMatchObject({ ok: true, result: { daemonId: intent.daemon.id } });
+    const op = world.operators.get('alice')!;
+    expect(op.ram).toEqual([intent.daemon.id]);
+    expect(new Set(op.ram).size).toBe(op.ram.length);
+  });
+
   it('reports a failed claim (e.g. name taken) and allows retrying', () => {
     const world = makeWorld();
     world.addOperator(operatorRecord('bob', { starterClaimed: false, name: null, ram: [] }));
@@ -144,6 +160,25 @@ describe('store and load', () => {
     const done = step(world);
     expect(done.replies[0]).toMatchObject({ ok: true });
     expect(world.daemons.get('disk-1')!.slot).toBe(2);
+  });
+
+  it('load is idempotent when the operator reconnected after the DB committed it', () => {
+    const world = makeWorld();
+    world.addOperator(operatorRecord('alice', { x: 4.5, y: 5.5, diskSlots: [0] }));
+    const r = step(world, input('alice', { cmd: 'load', actor: self, args: { daemonId: 'disk-1' } }));
+    const intent = r.intents[0]!;
+    const loaded = { ...world.checkpoint('alice').ram[0]!, id: 'disk-1', slot: 2 };
+    const before = world.checkpoint('alice');
+    world.removeOperator('alice');
+    world.addOperator({ ...before, ram: [...before.ram, loaded] });
+    world.completeIntent(intent.id, { ok: true, daemon: { ...loaded, slot: 99 } });
+    const done = step(world);
+    expect(done.replies[0]).toMatchObject({ ok: true });
+    const op = world.operators.get('alice')!;
+    expect(op.ram).toHaveLength(3);
+    expect(new Set(op.ram).size).toBe(3);
+    expect(world.daemons.get('disk-1')!.slot).toBe(2);
+    expect(op.reservedSlots.size).toBe(0);
   });
 
   it('both require being at the host', () => {

@@ -159,7 +159,7 @@ export function completeCaptureIntent(world: World, op: Operator, intent: Extrac
     return;
   }
   if (intent.location === 'RAM') {
-    const d = world.addOwned(op, intent.daemon);
+    const d = world.ownsDaemon(op, intent.daemon.id) ? world.daemons.get(intent.daemon.id)! : world.addOwned(op, intent.daemon);
     out.emit({ e: 'captureResult', captureId: intent.captureId, ok: true, daemon: toRamDaemon(world, d) }, { to: op.id });
   } else {
     out.emit({ e: 'captureResult', captureId: intent.captureId, ok: true }, { to: op.id });

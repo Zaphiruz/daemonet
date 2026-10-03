@@ -43,6 +43,23 @@ describe('capture', () => {
     expect(world.operators.get('alice')!.ram).toHaveLength(3);
   });
 
+  it('a late completion after a reconnect does not add the daemon twice', () => {
+    const { world, wildId } = setup();
+    const ev = start(world, wildId);
+    const r = submit(world, ev.captureId, solve(ev.challenge as PublicChallenge));
+    const intent = r.intents.find((i) => i.kind === 'capture')!;
+    if (intent.kind !== 'capture') throw new Error('unreachable');
+    const before = world.checkpoint('alice');
+    world.removeOperator('alice');
+    world.addOperator({ ...before, ram: [...before.ram, intent.daemon] });
+    world.completeIntent(intent.id, { ok: true });
+    const done = find([step(world)], 'captureResult')!;
+    expect(done).toMatchObject({ ok: true, daemon: { species: 'bitrot', slot: 2 } });
+    const op = world.operators.get('alice')!;
+    expect(op.ram).toHaveLength(3);
+    expect(new Set(op.ram).size).toBe(3);
+  });
+
   it('a wrong answer fails, hardens the target and doubles the next challenge size', () => {
     const { world, wildId } = setup();
     const ev = start(world, wildId);
