@@ -3,3 +3,7 @@ export * from './rng.js';
 export * from './types.js';
 export * from './natures.js';
 export * from './stats.js';
+export * from './content/moves.js';
+export * from './content/traits.js';
+export * from './content/species.js';
+export * from './content/items.js';
