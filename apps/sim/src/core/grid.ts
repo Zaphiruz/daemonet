@@ -93,7 +93,7 @@ export class Grid {
    * 8-directional A* without corner cutting. Returns waypoints (tile centres, the last one replaced by `to`),
    * excluding the start; [] when already at `to`; null when unreachable or longer than MAX_PATH_TILES.
    */
-  findPath(from: Point, to: Point): Point[] | null {
+  findPath(from: Point, to: Point, maxExpansions = MAX_EXPANSIONS): Point[] | null {
     if (!this.isWalkablePoint(to) || !this.isWalkablePoint(from)) return null;
     const w = this.width;
     const start = Math.floor(from.y) * w + Math.floor(from.x);
@@ -117,11 +117,15 @@ export class Grid {
     f[start] = h(start);
     open.push(start);
     let expansions = 0;
+    let found = false;
 
-    while (open.size > 0 && expansions < MAX_EXPANSIONS) {
+    while (open.size > 0 && expansions < maxExpansions) {
       const cur = open.pop();
       if (closed[cur]) continue;
-      if (cur === goal) break;
+      if (cur === goal) {
+        found = true;
+        break;
+      }
       closed[cur] = 1;
       expansions++;
       const cx = cur % w;
@@ -142,7 +146,7 @@ export class Grid {
         }
       }
     }
-    if (came[goal] === -1) return null;
+    if (!found) return null;
 
     const tiles: number[] = [];
     for (let n = goal; n !== start; n = came[n]!) tiles.push(n);

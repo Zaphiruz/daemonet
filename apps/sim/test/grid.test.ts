@@ -33,6 +33,14 @@ describe('Grid', () => {
     expect(grid.findPath({ x: 5.5, y: 5.5 }, { x: -3, y: 5.5 })).toBeNull();
   });
 
+  it('returns null when the expansion cap trips, even if the goal was already discovered', () => {
+    const from = { x: 5.5, y: 5.5 };
+    const to = { x: 6.5, y: 5.5 };
+    expect(grid.findPath(from, to, 1)).toBeNull();
+    expect(grid.findPath(from, to, 2)).not.toBeNull();
+    expect(grid.findPath({ x: 10.5, y: 10.5 }, { x: 22.25, y: 10.75 }, 5)).toBeNull();
+  });
+
   it('never cuts corners diagonally', () => {
     const path = grid.findPath({ x: 15.5, y: 21.5 }, { x: 17.5, y: 21.5 })!;
     for (let i = 1; i < path.length; i++) {
