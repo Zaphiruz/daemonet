@@ -20,11 +20,5 @@
   "dependencies": {
     "@daemonet/rules": "workspace:*",
     "@daemonet/shared": "workspace:*"
-  },
-  "scripts": {
-    "build:sandbox": "vite build --config vite.sandbox.config.ts"
-  },
-  "devDependencies": {
-    "vite": "^8.3.1"
   }
 }

@@ -134,10 +134,6 @@ importers:
       '@daemonet/shared':
         specifier: workspace:*
         version: link:../shared
-    devDependencies:
-      vite:
-        specifier: ^8.3.1
-        version: 8.3.2(@types/node@24.19.1)(jiti@2.7.0)
 
   packages/shared:
     dependencies:
