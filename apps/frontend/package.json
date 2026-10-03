@@ -1,0 +1,37 @@
+{
+  "name": "@daemonet/frontend",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sdk": "pnpm --filter @daemonet/sandbox build:static && node scripts/copy-sandbox.mjs",
+    "dev": "vite",
+    "build": "pnpm sdk && tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@daemonet/rules": "workspace:*",
+    "@daemonet/sandbox": "workspace:*",
+    "@daemonet/sdk": "workspace:*",
+    "@daemonet/shared": "workspace:*",
+    "@daemonet/sprites": "workspace:*",
+    "@monaco-editor/react": "^4.7.0",
+    "@reduxjs/toolkit": "^2.13.0",
+    "monaco-editor": "^0.57.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-redux": "^9.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/react": "^16.3.3",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^30.1.1",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.1"
+  }
+}

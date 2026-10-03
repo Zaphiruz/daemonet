@@ -117,3 +117,26 @@ describe('reconnect policy', () => {
     client.close();
   });
 });
+
+describe('host-page hooks', () => {
+  it('exposes role and subnet, emits raw frames and sends raw frames', async () => {
+    FakeWs.instances = [];
+    const p = connect({ url: 'ws://x', auth, WebSocket: Ws });
+    await tick();
+    snapshot(last());
+    const client = await p;
+    expect(client.role).toBe('controller');
+    expect(client.subnet).toBe('s1');
+
+    const frames: string[] = [];
+    client.on('frame', (f) => frames.push(f));
+    last().serverSend({ t: 'kick', seq: 9, d: { reason: 'takeover' } });
+    expect(frames.length).toBe(1);
+    expect(JSON.parse(frames[0]!).t).toBe('kick');
+
+    const raw = JSON.stringify({ t: 'cmd', seq: 1, d: { reqId: 'r1', kind: 'noop' } });
+    client.sendFrame(raw);
+    expect(last().sent.some((s) => JSON.parse(s).d?.reqId === 'r1')).toBe(true);
+    client.close();
+  });
+});

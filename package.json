@@ -9,12 +9,13 @@
   "scripts": {
     "generate": "pnpm --filter @daemonet/db generate",
     "build": "pnpm generate && tsc -b",
-    "typecheck": "pnpm generate && tsc -b && tsc -p tsconfig.tests.json && tsc -p examples/starter-bot/tsconfig.json",
+    "typecheck": "pnpm generate && tsc -b && tsc -p tsconfig.tests.json && tsc -p examples/starter-bot/tsconfig.json && tsc -p apps/frontend/tsconfig.json",
     "lint": "eslint .",
     "test": "pnpm generate && tsc -b && vitest run",
     "db:migrate": "pnpm --filter @daemonet/db migrate:deploy",
     "sim": "pnpm --filter @daemonet/sim start",
-    "api": "pnpm --filter @daemonet/api start"
+    "api": "pnpm --filter @daemonet/api start",
+    "web": "pnpm --filter @daemonet/frontend dev"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

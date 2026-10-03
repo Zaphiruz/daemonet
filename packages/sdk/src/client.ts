@@ -47,6 +47,8 @@ type ClientEvents = {
   disconnect: { code: number; reason: string };
   reconnect: void;
   scriptError: unknown;
+  /** Every raw frame received from the server (used by the sandbox bridge). */
+  frame: string;
 };
 
 export interface Target extends Positioned {
@@ -252,6 +254,8 @@ export class DaemonsApi {
 export class GameClient {
   tick = 0;
   operatorId = '';
+  role: 'controller' | 'spectator' = 'controller';
+  subnet = '';
   self!: OperatorSelf;
   readonly entities = new Map<string, Entity>();
   readonly world = new WorldView(this);
@@ -340,6 +344,11 @@ export class GameClient {
   /** Testing aid: drop the socket as if the network failed (the client reconnects and resumes). */
   dropConnection(): void {
     this.ws?.close(4000, 'dropped');
+  }
+
+  /** Sends a raw protocol frame (the sandbox bridge forwards already-validated `cmd` frames this way). */
+  sendFrame(raw: string): void {
+    this.sendRaw(JSON.parse(raw));
   }
 
   private emit<K extends keyof ClientEvents>(name: K, value: ClientEvents[K]): void {
@@ -432,15 +441,18 @@ export class GameClient {
     } catch {
       return;
     }
+    this.emit('frame', raw);
     switch (msg.t) {
       case 'authOk':
         this.operatorId = msg.d.operatorId;
+        this.role = msg.d.role;
         this.resumeToken = msg.d.resumeToken;
         if (this.attempts > 0) this.emit('reconnect', undefined);
         this.attempts = 0;
         return;
       case 'snapshot': {
         this.tick = msg.d.tick;
+        this.subnet = msg.d.subnet;
         this.self = msg.d.self;
         this.entities.clear();
         for (const e of msg.d.entities) this.entities.set(e.id, e);
