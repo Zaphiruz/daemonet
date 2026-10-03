@@ -45,3 +45,10 @@ Fixed before merge: store P2002 classification + RAM-only checkpoints; auth disc
 - T8: load.ts leaves a connection open when claimStarter fails; example packet solver throws on a missing fragment; per-IP default 16 lives in config and server; main.ts formatting
 Task F: minor (deferred): server never enforces token exp during a session (kick on exp without reauth — SP2); auth/reauth bound by the 4 KiB message limit (large Authentik tokens); /ws/ready uncached DB round-trip; TRUST_PROXY_HOPS must be set in plan 4 (3-proxy chain) or the per-IP cap locks everyone out
 Task F: minor (deferred): plan doc still shows maxConnectionsPerIp optional and close()-only server
+
+## 2026-09-29-daemonet-sp1-plan4-infra-deploy
+
+Fixed before merge: deploy gated to main via environment + DAEMONET_DEPLOY_ENABLED; Vault env allowlist; secrets off argv; Vault TLS without --cacert; runner ssh setup; safe staging; read-only migrations verified; ops hand-off in followups/ops-pending.md (Tasks 2-8 are the user's)
+
+- T1: Vault token still on curl argv in deploy.yml; staging Ctrl+C advice wrong without ssh -t; staging DB shares the prod role; read-only migration with pending changes unexercised; Caddy root with default caps
+Task F: minor (deferred): provision-secrets python3 may hit the Windows Store stub; $PY unquoted
