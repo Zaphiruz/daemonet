@@ -165,6 +165,23 @@ describe('deviceLogin', () => {
     expect(printed).toHaveLength(2);
   });
 
+  it('refreshes silently after an interactive login supplies a refresh token where there was none', async () => {
+    const { state, clock, printed, calls, login } = await setup();
+    state.device = () => [200, { access_token: 'access-1', expires_in: 300 }];
+    const source = await login();
+    expect(printed).toHaveLength(1);
+    // No refresh token: the next expiry must go interactive; this time the IdP issues a refresh token.
+    state.device = () => [200, { access_token: 'access-3', refresh_token: 'refresh-3', expires_in: 300 }];
+    clock.t += 290_000;
+    expect(await source.getToken()).toBe('access-3');
+    expect(printed).toHaveLength(2);
+    // At the next expiry the refresh token is used: one refresh request, no further device prompt.
+    clock.t += 290_000;
+    expect(await source.getToken()).toBe('access-2');
+    expect(calls.filter((c) => c === 'token:refresh_token')).toHaveLength(1);
+    expect(printed).toHaveLength(2);
+  });
+
   it('backs off on slow_down', async () => {
     const a = await setup();
     let n = 0;

@@ -186,18 +186,25 @@ export async function deviceLogin(opts: DeviceLoginOptions): Promise<TokenSource
   let signingIn: Promise<void> | null = null;
 
   /** Single-flight refresh with the current refresh token. false = nothing to refresh with / definitively rejected. */
-  const sharedRefresh = (): Promise<boolean> =>
-    (refreshing ??= (async () => {
-      try {
-        const rt = tokens?.refreshToken;
-        const next = rt ? await refresh(rt) : null;
-        if (!next) return false;
-        await adopt(next);
-        return true;
-      } finally {
-        refreshing = null;
-      }
-    })());
+  const sharedRefresh = (): Promise<boolean> => {
+    if (refreshing) return refreshing;
+    const rt = tokens?.refreshToken;
+    // Nothing to refresh with: answer without caching, so a later refresh token is used.
+    if (!rt) return Promise.resolve(false);
+    const p = (async () => {
+      const next = await refresh(rt);
+      if (!next) return false;
+      await adopt(next);
+      return true;
+    })();
+    refreshing = p;
+    void p
+      .finally(() => {
+        if (refreshing === p) refreshing = null;
+      })
+      .catch(() => {});
+    return p;
+  };
 
   const sharedInteractive = (): Promise<void> =>
     (signingIn ??= (async () => {
