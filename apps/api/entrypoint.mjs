@@ -33,8 +33,8 @@ delete childEnv.VAULT_ADDR;
 delete childEnv.VAULT_PATH;
 console.log('[entrypoint] Secrets loaded, starting api...');
 
-// SIGTERM/SIGINT are forwarded so the api runs its gracefulShutdown sequence (stop accepting, kick
-// clients, checkpoint, close). The container's stop_grace_period must outlast it.
+// SIGTERM/SIGINT are forwarded so the api shuts down cleanly: it closes its HTTP server (in-flight
+// requests finish) and disconnects Prisma. The container's stop_grace_period must outlast that.
 const child = spawn(process.execPath, ['apps/api/dist/server.js'], { stdio: 'inherit', env: childEnv });
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => child.kill(sig));
 child.on('exit', (code, signal) => {

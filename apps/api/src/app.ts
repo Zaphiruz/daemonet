@@ -46,8 +46,12 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
     if (err instanceof AppError) return reply.code(err.status).send({ error: err.code, message: err.message });
     const e = err as { statusCode?: number; message?: string };
     const status = e.statusCode ?? 500;
-    if (status >= 500) req.log.error({ err: e.message }, 'unhandled error');
-    return reply.code(status).send({ error: status === 429 ? 'rate_limited' : 'internal_error', message: status >= 500 ? 'internal error' : (e.message ?? 'error') });
+    if (status >= 500) {
+      req.log.error({ err }, 'unhandled error');
+      return reply.code(status).send({ error: 'internal_error', message: 'internal error' });
+    }
+    const code = status === 429 ? 'rate_limited' : status === 413 ? 'payload_too_large' : 'bad_request';
+    return reply.code(status).send({ error: code, message: e.message ?? 'error' });
   });
 
   registerAuthRoutes(app, { prisma: o.prisma, sessionStore, oidcClient: o.oidcClient, frontendOrigin: o.frontendOrigin, redirectUri: o.redirectUri ?? null, requiredGroup: o.requiredGroup, ...common });

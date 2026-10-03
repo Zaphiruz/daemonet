@@ -6,6 +6,7 @@ import type { OidcClient, OidcIdentity } from '../src/auth/oidc.js';
 import { CSRF_HEADER, CSRF_VALUE } from '../src/auth/middleware.js';
 import { hashToken } from '../src/auth/session.js';
 import { loadConfig } from '../src/config.js';
+import { ensureOperator } from '../src/auth/routes.js';
 import { loggerOptions } from '../src/log.js';
 import { KEPT_VERSIONS, MAX_SCRIPT_BYTES } from '../src/routes/scripts.js';
 
@@ -246,6 +247,52 @@ describe.skipIf(!url)('API session lifetime and admin rights', () => {
     expect((await app.inject({ method: 'GET', url: '/api/me', cookies: old })).statusCode).toBe(401);
     expect(await prisma!.session.count({ where: { operator: { sub: 'old' } } })).toBe(0);
     await app.close();
+  });
+});
+
+describe.skipIf(!url)('API error handling and operator creation', () => {
+  it('maps non-AppError client errors to bad_request/payload_too_large and logs the stack of real 500s', async () => {
+    const lines: string[] = [];
+    const app = await buildApp({
+      prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false, disableRateLimit: true,
+      logger: { ...loggerOptions('info'), stream: { write: (l: string) => void lines.push(l) } },
+    });
+    app.post('/api/test/echo', async (req) => req.body);
+    app.get('/api/test/boom', async () => {
+      throw new Error('kaboom');
+    });
+    await app.ready();
+    const bad = await app.inject({ method: 'POST', url: '/api/test/echo', headers: { 'content-type': 'application/json' }, payload: '{not json' });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error).toBe('bad_request');
+    const big = await app.inject({ method: 'POST', url: '/api/test/echo', headers: { 'content-type': 'application/json' }, payload: JSON.stringify({ a: 'x'.repeat(2 * 1024 * 1024) }) });
+    expect(big.statusCode).toBe(413);
+    expect(big.json().error).toBe('payload_too_large');
+    const boom = await app.inject({ method: 'GET', url: '/api/test/boom' });
+    expect(boom.statusCode).toBe(500);
+    expect(boom.json()).toEqual({ error: 'internal_error', message: 'internal error' });
+    await app.close();
+    const logged = lines.map((l) => JSON.parse(l) as { msg?: string; err?: { stack?: string } });
+    const entry = logged.find((l) => l.msg === 'unhandled error');
+    expect(entry?.err?.stack).toContain('kaboom');
+  });
+
+  it('ensureOperator retries once when a simultaneous first login hits the sub unique constraint', async () => {
+    let calls = 0;
+    const fake = {
+      operator: {
+        async upsert() {
+          calls++;
+          if (calls === 1) throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { target: ['sub'] } });
+          return { id: 'op-1' };
+        },
+      },
+    };
+    expect(await ensureOperator(fake as never, 'sub-x', false)).toEqual({ id: 'op-1' });
+    expect(calls).toBe(2);
+    const other = { operator: { upsert: async () => Promise.reject(Object.assign(new Error('x'), { code: 'P2002', meta: { target: ['name'] } })) } };
+    await expect(ensureOperator(other as never, 'sub-y', false)).rejects.toThrow();
   });
 });
 

@@ -39,12 +39,31 @@ function decode(v: string): Pkce | null {
 
 /** Same rule as the sim: an operator row is keyed by the OIDC sub and created on first sight. */
 export async function ensureOperator(prisma: PrismaClient, sub: string, isAdmin: boolean): Promise<{ id: string }> {
-  return prisma.operator.upsert({
-    where: { sub },
-    update: { isAdmin, lastSeenAt: new Date() },
-    create: { sub, subnet: LO.id, x: LO.spawn.x, y: LO.spawn.y, isAdmin },
-    select: { id: true },
-  });
+  const upsert = () =>
+    prisma.operator.upsert({
+      where: { sub },
+      update: { isAdmin, lastSeenAt: new Date() },
+      create: { sub, subnet: LO.id, x: LO.spawn.x, y: LO.spawn.y, isAdmin },
+      select: { id: true },
+    });
+  try {
+    return await upsert();
+  } catch (err) {
+    // Two simultaneous first logins can both miss the row; the loser retries once and updates the winner's row.
+    if (!isSubConflict(err)) throw err;
+    return upsert();
+  }
+}
+
+function isSubConflict(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || (err as { code?: unknown }).code !== 'P2002') return false;
+  const meta = (err as { meta?: Record<string, unknown> }).meta ?? {};
+  const cause = (meta.driverAdapterError as { cause?: { constraint?: { index?: string }; originalMessage?: string } } | undefined)?.cause;
+  const target = meta.target ?? meta.constraint;
+  const text = [cause?.constraint?.index, cause?.originalMessage, Array.isArray(target) ? target.join(',') : target, (err as Error).message]
+    .filter((x): x is string => typeof x === 'string')
+    .join(' ');
+  return /Operator_sub_key|\bsub\b/.test(text);
 }
 
 export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): void {
