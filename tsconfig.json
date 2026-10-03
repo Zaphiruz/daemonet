@@ -17,6 +17,9 @@
       "path": "packages/sandbox"
     },
     {
+      "path": "packages/sprites"
+    },
+    {
       "path": "apps/sim"
     },
     {

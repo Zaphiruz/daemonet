@@ -144,6 +144,12 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
 
+  packages/sprites:
+    dependencies:
+      '@daemonet/rules':
+        specifier: workspace:*
+        version: link:../rules
+
 packages:
 
   '@cacheable/memory@2.2.0':
