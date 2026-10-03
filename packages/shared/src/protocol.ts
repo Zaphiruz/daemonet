@@ -1,0 +1,233 @@
+import { TYPES } from '@daemonet/rules';
+import { z } from 'zod';
+
+/** Upstream limits (UTF-8 bytes). submitCapture gets the larger limit. */
+export const MAX_MESSAGE_BYTES = 4096;
+export const MAX_SUBMIT_BYTES = 16384;
+export const HEARTBEAT_MS = 16_000;
+export const RESUME_TICKS = 64;
+export const COMMANDS_PER_TICK = 8;
+
+export const ERROR_CODES = ['E_COOLDOWN', 'E_RANGE', 'E_ENERGY', 'E_RATE', 'E_STATE', 'E_AUTH', 'E_INVALID'] as const;
+export const ErrorCode = z.enum(ERROR_CODES);
+export type ErrorCode = z.infer<typeof ErrorCode>;
+
+const Id = z.string().min(1).max(64);
+const Coord = z.number().finite();
+const TypeIdSchema = z.enum(TYPES);
+const Self = z.literal('self');
+const OperatorName = z.string().regex(/^[a-z0-9_-]{3,16}$/);
+
+// ---- Commands (client -> server, inside a `cmd` message) ----
+
+export const Command = z.discriminatedUnion('cmd', [
+  z.object({ cmd: z.literal('moveTo'), actor: Id, args: z.object({ x: Coord, y: Coord }) }),
+  z.object({ cmd: z.literal('stop'), actor: Id, args: z.object({}) }),
+  z.object({ cmd: z.literal('run'), actor: Self, args: z.object({ daemonId: Id }) }),
+  z.object({ cmd: z.literal('recall'), actor: Self, args: z.object({ daemonId: Id }) }),
+  z.object({ cmd: z.literal('swap'), actor: Self, args: z.object({ outId: Id, inId: Id }) }),
+  z.object({ cmd: z.literal('capture'), actor: Self, args: z.object({ targetId: Id, tool: z.enum(['sniff', 'tap', 'mirror', 'dump']) }) }),
+  z.object({ cmd: z.literal('submitCapture'), actor: Self, args: z.object({ captureId: Id, answer: z.unknown() }) }),
+  z.object({ cmd: z.literal('useItem'), actor: Self, args: z.object({ item: z.literal('restore'), daemonId: Id }) }),
+  z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
+  z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
+  z.object({ cmd: z.literal('store'), actor: Self, args: z.object({ daemonId: Id }) }),
+  z.object({ cmd: z.literal('load'), actor: Self, args: z.object({ daemonId: Id }) }),
+  z.object({
+    cmd: z.literal('use'),
+    actor: Id,
+    args: z.object({ move: Id, targetId: Id.optional(), x: Coord.optional(), y: Coord.optional() }),
+  }),
+]);
+export type Command = z.infer<typeof Command>;
+export type CommandName = Command['cmd'];
+
+// ---- Client messages ----
+
+const Seq = z.number().int().nonnegative();
+
+export const ClientMessage = z.discriminatedUnion('t', [
+  z.object({
+    t: z.literal('auth'),
+    seq: Seq,
+    d: z.object({
+      token: z.string().min(1).max(8192),
+      role: z.enum(['controller', 'spectator']).default('controller'),
+      resumeToken: z.string().max(128).optional(),
+      lastTick: z.number().int().nonnegative().optional(),
+    }),
+  }),
+  z.object({ t: z.literal('reauth'), seq: Seq, d: z.object({ token: z.string().min(1).max(8192) }) }),
+  z.object({ t: z.literal('cmd'), seq: Seq, d: z.intersection(z.object({ reqId: Id }), Command) }),
+  z.object({ t: z.literal('ping'), seq: Seq, d: z.object({}) }),
+]);
+export type ClientMessage = z.infer<typeof ClientMessage>;
+
+// ---- Entities (public, within interest radius) ----
+
+export const StatusSchema = z.enum(['throttled', 'stalled']);
+
+export const OperatorEntity = z.object({
+  kind: z.literal('operator'),
+  id: Id,
+  name: z.string().nullable(),
+  x: Coord,
+  y: Coord,
+});
+
+export const DaemonEntity = z.object({
+  kind: z.literal('daemon'),
+  id: Id,
+  species: Id,
+  types: z.array(TypeIdSchema).min(1).max(2),
+  level: z.number().int(),
+  x: Coord,
+  y: Coord,
+  hp: z.number(),
+  maxHp: z.number(),
+  /** Operator id for running daemons, null for wild ones. */
+  owner: Id.nullable(),
+  /** Operator (or cluster) currently holding the tag on a wild daemon. */
+  taggedBy: Id.nullable(),
+  clean: z.boolean(),
+  signature: z.number().int().min(0).max(15),
+  statuses: z.array(StatusSchema),
+  hardened: z.boolean(),
+});
+
+export const Entity = z.discriminatedUnion('kind', [OperatorEntity, DaemonEntity]);
+export type Entity = z.infer<typeof Entity>;
+
+/** Changed fields only; `kind` and `id` are always present. */
+export const EntityPatch = z.discriminatedUnion('kind', [
+  OperatorEntity.partial().extend({ kind: z.literal('operator'), id: Id }),
+  DaemonEntity.partial().extend({ kind: z.literal('daemon'), id: Id }),
+]);
+export type EntityPatch = z.infer<typeof EntityPatch>;
+
+// ---- Private operator state ----
+
+export const RamDaemon = z.object({
+  id: Id,
+  species: Id,
+  level: z.number().int(),
+  xp: z.number().int(),
+  nature: z.number().int().min(0).max(15),
+  traitSlot: z.union([z.literal(0), z.literal(1)]),
+  ivs: z.array(z.number().int()).length(8),
+  bonus: z.array(z.number().int()).length(8),
+  clean: z.boolean(),
+  signature: z.number().int().min(0).max(15),
+  hp: z.number(),
+  maxHp: z.number(),
+  energy: z.number(),
+  moves: z.array(Id).max(4),
+  crashed: z.boolean(),
+  slot: z.number().int(),
+  /** move id -> tick at which it is ready again. */
+  cooldowns: z.record(z.string(), z.number().int()),
+});
+export type RamDaemon = z.infer<typeof RamDaemon>;
+
+export const OperatorSelf = z.object({
+  id: Id,
+  name: z.string().nullable(),
+  starterClaimed: z.boolean(),
+  x: Coord,
+  y: Coord,
+  bits: z.number().int(),
+  ram: z.array(RamDaemon).max(8),
+  running: z.array(Id).max(2),
+  inventory: z.record(z.string(), z.number().int().nonnegative()),
+  swapReadyTick: z.number().int(),
+  capture: z.object({ captureId: Id, targetId: Id, deadlineTick: z.number().int() }).nullable(),
+});
+export type OperatorSelf = z.infer<typeof OperatorSelf>;
+
+// ---- Events ----
+
+export const PublicChallengeSchema = z.object({
+  kind: z.enum(['single', 'chain']),
+  families: z.array(TypeIdSchema).min(1).max(2),
+  params: z.unknown(),
+  payload: z.unknown(),
+});
+
+export const GameEvent = z.discriminatedUnion('e', [
+  z.object({ e: z.literal('hit'), source: Id, target: Id, move: Id, amount: z.number().int(), multiplier: z.number() }),
+  z.object({ e: z.literal('crash'), daemon: Id }),
+  z.object({ e: z.literal('battleStart'), wild: Id, operator: Id }),
+  z.object({ e: z.literal('status'), target: Id, status: StatusSchema, untilTick: z.number().int() }),
+  z.object({
+    e: z.literal('captureStart'),
+    captureId: Id,
+    targetId: Id,
+    challenge: PublicChallengeSchema,
+    deadlineTick: z.number().int(),
+  }),
+  z.object({
+    e: z.literal('captureResult'),
+    captureId: Id,
+    ok: z.boolean(),
+    reason: z.enum(['wrong_answer', 'timeout', 'packet_loss', 'persist_failed']).optional(),
+    daemon: RamDaemon.optional(),
+  }),
+  z.object({ e: z.literal('signatureSpawn'), daemon: Id, species: Id, signature: z.number().int(), clean: z.boolean() }),
+  z.object({ e: z.literal('levelUp'), daemon: Id, level: z.number().int() }),
+  z.object({ e: z.literal('restored'), daemons: z.array(Id) }),
+  z.object({ e: z.literal('swap'), out: Id, in: Id }),
+]);
+export type GameEvent = z.infer<typeof GameEvent>;
+
+// ---- Server messages ----
+
+export const ServerMessage = z.discriminatedUnion('t', [
+  z.object({
+    t: z.literal('authOk'),
+    seq: Seq,
+    d: z.object({ operatorId: Id, role: z.enum(['controller', 'spectator']), resumeToken: z.string(), tick: z.number().int() }),
+  }),
+  z.object({
+    t: z.literal('snapshot'),
+    seq: Seq,
+    d: z.object({ tick: z.number().int(), subnet: Id, self: OperatorSelf, entities: z.array(Entity) }),
+  }),
+  z.object({
+    t: z.literal('delta'),
+    seq: Seq,
+    d: z.object({
+      tick: z.number().int(),
+      upserts: z.array(EntityPatch),
+      removes: z.array(Id),
+      events: z.array(GameEvent),
+      self: OperatorSelf.optional(),
+    }),
+  }),
+  z.object({ t: z.literal('ack'), seq: Seq, d: z.object({ reqId: Id, result: z.unknown().optional() }) }),
+  z.object({ t: z.literal('err'), seq: Seq, d: z.object({ reqId: Id.optional(), code: ErrorCode, message: z.string() }) }),
+  z.object({ t: z.literal('pong'), seq: Seq, d: z.object({}) }),
+  z.object({ t: z.literal('kick'), seq: Seq, d: z.object({ reason: z.string() }) }),
+]);
+export type ServerMessage = z.infer<typeof ServerMessage>;
+
+// ---- Parsing with size limits ----
+
+export type ParseResult = { ok: true; message: ClientMessage } | { ok: false; code: 'E_INVALID'; message: string };
+
+const encoder = new TextEncoder();
+
+export function parseClientMessage(raw: string): ParseResult {
+  const bytes = encoder.encode(raw).length;
+  if (bytes > MAX_SUBMIT_BYTES) return { ok: false, code: 'E_INVALID', message: 'message too large' };
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false, code: 'E_INVALID', message: 'malformed JSON' };
+  }
+  const parsed = ClientMessage.safeParse(json);
+  if (!parsed.success) return { ok: false, code: 'E_INVALID', message: parsed.error.issues[0]?.message ?? 'invalid message' };
+  const isSubmit = parsed.data.t === 'cmd' && parsed.data.d.cmd === 'submitCapture';
+  if (!isSubmit && bytes > MAX_MESSAGE_BYTES) return { ok: false, code: 'E_INVALID', message: 'message too large' };
+  return { ok: true, message: parsed.data };
+}
