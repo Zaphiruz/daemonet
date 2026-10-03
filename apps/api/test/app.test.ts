@@ -172,6 +172,20 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(failed.body).not.toContain('secret idp detail');
   });
 
+  it('mints single-use websocket tickets and lists Disk daemons and the codex', async () => {
+    const { cookie } = await login();
+    const cookies = { [COOKIE_NAME]: cookie! };
+    const t = await app.inject({ method: 'POST', url: '/api/ws/ticket', cookies, headers: csrf });
+    expect(t.json().ticket).toMatch(/^ticket:[A-Za-z0-9_-]{40,}$/);
+    expect(await prisma!.wsTicket.count()).toBe(1);
+    expect((await app.inject({ method: 'GET', url: '/api/disk', cookies })).json()).toEqual([]);
+    const codex = (await app.inject({ method: 'GET', url: '/api/codex', cookies })).json();
+    expect(codex.types).toHaveLength(16);
+    expect(codex.species).toHaveLength(8);
+    expect(codex.chart.glitch.null).toBe(0);
+    expect((await app.inject({ method: 'GET', url: '/api/ready' })).json()).toEqual({ ok: true });
+  });
+
   it('expires sessions server-side', async () => {
     const { cookie } = await login();
     await prisma!.session.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
