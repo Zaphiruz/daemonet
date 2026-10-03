@@ -13,7 +13,8 @@
   },
   "include": [
     "packages/*/test/**/*.ts",
-    "apps/*/test/**/*.ts"
+    "apps/*/test/**/*.ts",
+    "packages/sandbox/verify/**/*.ts"
   ],
   "exclude": [
     "apps/frontend/**"
