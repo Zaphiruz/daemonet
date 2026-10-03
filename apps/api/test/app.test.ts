@@ -44,9 +44,15 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
 
   beforeAll(async () => {
     oidc = fakeOidc();
+    // Delegates to the current `oidc`, which beforeEach replaces so a test's overrides never leak.
+    const delegate: OidcClient = {
+      start: () => oidc.start(),
+      finish: (u, e) => oidc.finish(u, e),
+      endSessionUrl: (t, r) => oidc.endSessionUrl(t, r),
+    };
     app = await buildApp({
       prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
-      oidcClient: oidc, requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: true, disableRateLimit: true,
+      oidcClient: delegate, requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: true, disableRateLimit: true,
     });
     await app.ready();
   });
@@ -55,17 +61,23 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     await prisma!.$disconnect();
   });
   beforeEach(async () => {
+    oidc = fakeOidc();
     await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction" CASCADE');
   });
 
   /** Runs the full login: /login sets the PKCE cookie, /callback exchanges and sets the session cookie. */
-  async function login(identity?: Partial<OidcIdentity>) {
+  async function login(identity?: Partial<OidcIdentity>, expectSuccess = true) {
     oidc.identity = { sub: 'user-1', groups: ['daemonet-users'], ...identity };
     const start = await app.inject({ method: 'GET', url: '/api/auth/login' });
     expect(start.statusCode).toBe(302);
     const pkce = start.cookies.find((c) => c.name === 'daemonet_oidc')!;
     const cb = await app.inject({ method: 'GET', url: '/api/auth/callback?code=abc&state=st1', cookies: { daemonet_oidc: pkce.value } });
-    return { response: cb, cookie: cb.cookies.find((c) => c.name === COOKIE_NAME)?.value };
+    const cookie = cb.cookies.find((c) => c.name === COOKIE_NAME)?.value;
+    if (expectSuccess) {
+      expect(cb.statusCode, cb.body).toBe(302);
+      expect(cookie).toBeTruthy();
+    }
+    return { response: cb, cookie };
   }
 
   it('logs in through OIDC, creates the operator and serves /api/me', async () => {
@@ -79,7 +91,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   });
 
   it('rejects users outside daemonet-users and flags admins', async () => {
-    expect((await login({ groups: ['other'] })).response.statusCode).toBe(403);
+    expect((await login({ groups: ['other'] }, false)).response.statusCode).toBe(403);
     const { cookie } = await login({ sub: 'admin-1', groups: ['daemonet-users', 'daemonet-admins'] });
     expect((await app.inject({ method: 'GET', url: '/api/me', cookies: { [COOKIE_NAME]: cookie! } })).json().isAdmin).toBe(true);
   });

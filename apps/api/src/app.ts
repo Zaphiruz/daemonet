@@ -17,6 +17,8 @@ export interface BuildAppOptions {
   sessionSecret: string;
   cookieSecure: boolean;
   frontendOrigin: string;
+  /** OIDC redirect URI (defaults to `<frontendOrigin>/api/auth/callback`). */
+  redirectUri?: string;
   oidcClient: OidcClient | null;
   requiredGroup: string;
   adminGroup: string;
@@ -46,7 +48,7 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
     return reply.code(status).send({ error: status === 429 ? 'rate_limited' : 'internal_error', message: status >= 500 ? 'internal error' : (e.message ?? 'error') });
   });
 
-  registerAuthRoutes(app, { prisma: o.prisma, sessionStore, oidcClient: o.oidcClient, frontendOrigin: o.frontendOrigin, requiredGroup: o.requiredGroup, ...common });
+  registerAuthRoutes(app, { prisma: o.prisma, sessionStore, oidcClient: o.oidcClient, frontendOrigin: o.frontendOrigin, redirectUri: o.redirectUri ?? null, requiredGroup: o.requiredGroup, ...common });
   if (o.devBypass) registerDevBypass(app, { prisma: o.prisma, sessionStore, frontendOrigin: o.frontendOrigin, requiredGroup: o.requiredGroup, ...common });
   return app;
 }

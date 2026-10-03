@@ -48,7 +48,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databaseUrl: e.DATABASE_URL,
     sessionSecret: e.SESSION_SECRET,
     cookieSecure: e.SESSION_COOKIE_SECURE === 'true',
-    frontendOrigin: e.FRONTEND_ORIGIN,
+    frontendOrigin: new URL(e.FRONTEND_ORIGIN).origin,
     oidc,
     requiredGroup: e.AUTH_REQUIRED_GROUP,
     adminGroup: e.AUTH_ADMIN_GROUP,

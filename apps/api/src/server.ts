@@ -3,6 +3,13 @@ import { buildApp } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { loadConfig } from './config.js';
 
+for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
+  process.on(event, (err) => {
+    console.error(`[api] ${event}:`, err instanceof Error ? (err.stack ?? err.message) : err);
+    process.exit(1);
+  });
+}
+
 const config = loadConfig();
 const prisma = createPrisma(config.databaseUrl);
 await prisma.$queryRaw`SELECT 1`;
@@ -12,6 +19,7 @@ const app = await buildApp({
   sessionSecret: config.sessionSecret,
   cookieSecure: config.cookieSecure,
   frontendOrigin: config.frontendOrigin,
+  ...(config.oidc ? { redirectUri: config.oidc.redirectUri } : {}),
   oidcClient: config.oidc ? createOidcClient(config.oidc) : null,
   requiredGroup: config.requiredGroup,
   adminGroup: config.adminGroup,

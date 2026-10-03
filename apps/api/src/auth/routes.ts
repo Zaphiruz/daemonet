@@ -14,6 +14,8 @@ export interface AuthRouteDeps {
   cookieSecure: boolean;
   ttlSeconds: number;
   frontendOrigin: string;
+  /** The configured OIDC redirect URI; the callback URL handed to the provider library is built from it. */
+  redirectUri: string | null;
   requiredGroup: string;
   adminGroup: string;
 }
@@ -61,6 +63,8 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
   app.get<{ Querystring: { code?: string; state?: string; error?: string } }>('/api/auth/callback', limit, async (req, reply) => {
     if (!deps.oidcClient) throw badRequest('OIDC is not configured');
     const { code, state, error } = req.query;
+    // Whatever happens next, the one-time PKCE cookie is spent.
+    reply.clearCookie(PKCE_COOKIE, { path: '/api/auth' });
     if (error) {
       // Never reflect provider-supplied text back to the client; the log gets a bounded copy.
       req.log.warn({ providerError: String(error).slice(0, 100) }, 'oidc provider returned an error');
@@ -72,7 +76,8 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
     const pkce = unsigned?.valid && unsigned.value ? decode(unsigned.value) : null;
     if (!pkce || pkce.state !== state) throw badRequest('state mismatch');
 
-    const callbackUrl = new URL(req.url, deps.frontendOrigin);
+    const callbackUrl = new URL(deps.redirectUri ?? `${deps.frontendOrigin}/api/auth/callback`);
+    callbackUrl.search = new URL(req.url, 'http://localhost').search;
     let identity;
     try {
       identity = await deps.oidcClient.finish(callbackUrl, pkce);
@@ -80,7 +85,6 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
       req.log.error({ err: (err as Error).message }, 'oidc exchange failed');
       throw badRequest('token exchange failed');
     }
-    reply.clearCookie(PKCE_COOKIE, { path: '/api/auth' });
     if (!identity.groups.includes(deps.requiredGroup)) {
       req.log.warn({ sub: identity.sub }, 'login refused: missing required group');
       throw forbidden('not authorized');
