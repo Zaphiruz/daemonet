@@ -64,3 +64,12 @@ Fixed before merge: api Vault allowlist + hardened entrypoint; honest session te
 - T5: ticket verifier slices the prefix without checking it; concurrency test doesn't assert winner claims
 - T6: OPERATIONS step 10 homelab text omits the web provider / api
 Task F: minor (deferred): non-AppError 403/415 map to bad_request; Session.groups now unused; sha256 helper duplicated in api and sim (no shared test that an api-minted ticket passes the sim verifier); logout without id_token_hint may not return to the site
+
+## 2026-09-30-daemonet-sp2-plan2-sandbox-sprites
+
+Fixed before merge: real script escaping/robust init/allowlisted relay; then redesign: static /sandbox.html with its own CSP, player scripts in a Worker with stop + heartbeat watchdog, bridge reqId namespacing, flood budget + onViolation, configurable command share, reconnect contract; verify page under a production host CSP (headless Chrome + Firefox 12/12)
+
+- T1: PortSocket trusts close-frame field types; no readyState guard on late messages; no-reconnect test is time-based
+- T2: escapeForScript 'js' mode doesn't handle the <!-- <script double-escape state (doc it); init-listener test is string-matching only; self-navigation / WebRTC exfil of game state (host frame-src)
+- T3: seam-column smoothing counts only the horizontal mirror neighbour; signature not validated (16 wraps to tier 0)
+Task F: minor (deferred): worker script-src 'self' admits same-origin script loads (never serve user content as JS on the frontend origin); init after stop leaks the port; watchdog timers throttled in hidden frames / slow first load may report unresponsive; main() throwing posts error without finished; verify "cookie blocked" line tautological; Safari and real Caddy unverified
