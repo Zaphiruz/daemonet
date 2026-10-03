@@ -52,3 +52,15 @@ Fixed before merge: deploy gated to main via environment + DAEMONET_DEPLOY_ENABL
 
 - T1: Vault token still on curl argv in deploy.yml; staging Ctrl+C advice wrong without ssh -t; staging DB shares the prod role; read-only migration with pending changes unexercised; Caddy root with default caps
 Task F: minor (deferred): provision-secrets python3 may hit the Windows Store stub; $PY unquoted
+
+## 2026-09-30-daemonet-sp2-plan1-api
+
+Fixed before merge: api Vault allowlist + hardened entrypoint; honest session tests; redirect URI from config; separate AUTHENTIK_WEB_ISSUER_URL; no-store on /api; OIDC code kept out of logs; 30-day absolute sessions + admin from Operator.isAdmin; atomic script versions; error codes
+
+- T2: sliding sessions keep isAdmin/groups snapshotted at login (no absolute cap / re-check); touch/requireAdmin untested; PKCE-clear-on-error untested
+- T3: concurrent PUTs compute the same version → 500 (use version increment in upsert or map P2002 → 409); version param accepts 0x10/1e0 and > int32 → 500 (validate /^\d{1,9}$/)
+- T3: versions list loads full sources to compute bytes; missing tests (non-string source, cross-operator isolation, byte-vs-char limit)
+- T4: ticket/disk/ready tests cover only happy paths (no 401/403, hash-only, sweep, ownership, 503 branch); per-IP ticket rate limit shared behind NAT
+- T5: ticket verifier slices the prefix without checking it; concurrency test doesn't assert winner claims
+- T6: OPERATIONS step 10 homelab text omits the web provider / api
+Task F: minor (deferred): non-AppError 403/415 map to bad_request; Session.groups now unused; sha256 helper duplicated in api and sim (no shared test that an api-minted ticket passes the sim verifier); logout without id_token_hint may not return to the site
