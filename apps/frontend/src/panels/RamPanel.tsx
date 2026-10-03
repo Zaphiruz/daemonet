@@ -1,4 +1,4 @@
-import { STAT_KEYS, getSpecies } from '@daemonet/rules';
+import { RAM_SLOTS, RUNNING_MAX, STAT_KEYS, getSpecies, getSubnet } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useDiskQuery } from '../api.ts';
 import { run } from '../components/WorldCanvas.tsx';
@@ -23,12 +23,13 @@ export function SpriteImg({ species, types, clean, signature, size = 32 }: { spe
 export function RamPanel({ client }: { client: GameClient }) {
   const me = client.self;
   const manual = client.role === 'controller';
-  const atHost = Math.hypot(me.x - 16.5, me.y - 16.5) <= 2;
+  const host = getSubnet(client.subnet).host;
+  const atHost = Math.hypot(me.x - host.x, me.y - host.y) <= 2;
   const disk = useDiskQuery();
   return (
     <div className="space-y-2 p-3 text-sm">
       <p className="text-xs text-neutral-500">
-        RAM {me.ram.length}/8 · running {me.running.length}/2 · {atHost ? 'at the host: store/load enabled' : 'store/load only at the host'}
+        RAM {me.ram.length}/{RAM_SLOTS} · running {me.running.length}/{RUNNING_MAX} · {atHost ? 'at the host: store/load enabled' : 'store/load only at the host'}
       </p>
       {me.ram
         .slice()

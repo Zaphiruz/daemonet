@@ -38,7 +38,7 @@ declare module '@daemonet/sdk' {
   export class DaemonsApi { get(id: string): DaemonHandle; script(fn: (ctx: DaemonScriptContext) => void): () => void }
   export interface CaptureStartEvent { captureId: string; targetId: string; challenge: { kind: 'single' | 'chain'; families: string[]; params: unknown; payload: unknown }; deadlineTick: number }
   export class GameClient {
-    tick: number; operatorId: string; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi;
+    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, DaemonView | OperatorEntity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi;
     on(name: 'captureStart', handler: (ev: CaptureStartEvent) => void): () => void;
     on(name: 'captureResult', handler: (ev: { captureId: string; ok: boolean; reason?: string }) => void): () => void;
     on(name: 'tick', handler: (tick: number) => void): () => void;

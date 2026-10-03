@@ -5,6 +5,7 @@ import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import TsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
 import { useEffect, useRef, useState } from 'react';
 import { useLazyVersionQuery, useSaveScriptMutation, useScriptQuery, useVersionsQuery } from '../api.ts';
+import { log } from '../game/log.ts';
 import { useConnection } from '../game/connection.ts';
 import { start, stop, useSandboxStatus } from '../game/sandbox.ts';
 import { SDK_TYPES, STARTER_TEMPLATE } from '../sdk-types.ts';
@@ -30,8 +31,15 @@ export function ScriptPanel({ client }: { client: GameClient | null }) {
   const dirty = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const seenVersion = useRef<number | null>(null);
+  // adopt fresh server data (first load, or a newer version) unless the editor holds unsaved edits
   useEffect(() => {
-    if (source === null && script.data) setSource(script.data.source);
+    const d = script.data;
+    if (!d || d.version === seenVersion.current) return;
+    if (source === null || !dirty.current) {
+      seenVersion.current = d.version;
+      setSource(d.source);
+    }
   }, [script.data, source]);
 
   const onChange = (value: string | undefined) => {
@@ -54,7 +62,7 @@ export function ScriptPanel({ client }: { client: GameClient | null }) {
         <button
           className="rounded bg-emerald-700 px-2 py-0.5 hover:bg-emerald-600 disabled:opacity-40"
           disabled={!client || !manual || !online || status === 'starting' || status === 'running'}
-          onClick={() => client && void start(client, source)}
+          onClick={() => client && start(client, source).catch((err: Error) => log.push('error', `script not started: ${err.message}`))}
           data-testid="run-script"
         >
           run
@@ -74,8 +82,12 @@ export function ScriptPanel({ client }: { client: GameClient | null }) {
           onChange={async (e) => {
             const v = Number(e.target.value);
             if (!v) return;
-            const r = await loadVersion(v).unwrap();
-            onChange(r.source);
+            try {
+              const r = await loadVersion(v).unwrap();
+              onChange(r.source);
+            } catch (err) {
+              log.push('error', `could not load version ${v}: ${err instanceof Error ? err.message : 'request failed'}`);
+            }
           }}
         >
           <option value="">restore version…</option>

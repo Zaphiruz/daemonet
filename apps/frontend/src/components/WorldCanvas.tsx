@@ -22,7 +22,20 @@ export function WorldCanvas() {
     if (!canvas || !client) return;
     const ctx = canvas.getContext('2d')!;
     let frame = 0;
+    let reported = false;
     const loop = () => {
+      // schedule first: a draw error must not stop the canvas
+      frame = requestAnimationFrame(loop);
+      try {
+        paint();
+      } catch (err) {
+        if (!reported) {
+          reported = true;
+          log.push('error', `render error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    };
+    const paint = () => {
       const rect = canvas.getBoundingClientRect();
       const dpr = window.devicePixelRatio || 1;
       if (canvas.width !== Math.floor(rect.width * dpr) || canvas.height !== Math.floor(rect.height * dpr)) {
@@ -36,7 +49,6 @@ export function WorldCanvas() {
         const cam: Camera = { cx: client.self.x, cy: client.self.y, zoom: c.zoom, width: rect.width, height: rect.height };
         drawWorld({ ctx, cam, client, controls: c, hover: hover.current });
       }
-      frame = requestAnimationFrame(loop);
     };
     frame = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(frame);
@@ -73,27 +85,28 @@ export function WorldCanvas() {
   };
 
   const onKey = (ev: React.KeyboardEvent<HTMLCanvasElement>) => {
-    if (client.role !== 'controller') return;
+    if (client.role !== 'controller' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const key = ev.key.toLowerCase();
     const c = getControls();
     const running = client.self.running;
-    if (ev.key === 'Tab') {
+    if (key === 'tab') {
       ev.preventDefault();
       const order = ['self', ...running];
       const i = order.indexOf(c.actor);
       setControls({ actor: order[(i + 1) % order.length] ?? 'self' });
       return;
     }
-    if (ev.key === 'Escape') return setControls({ targetId: null, actor: 'self' });
-    if (ev.key === 'c' && c.targetId) return run(client.operator.capture(c.targetId, c.tool), 'capture');
-    if (ev.key === 'r') {
+    if (key === 'escape') return setControls({ targetId: null, actor: 'self' });
+    if (key === 'c' && c.targetId) return run(client.operator.capture(c.targetId, c.tool), 'capture');
+    if (key === 'r') {
       const first = client.self.ram.find((d) => !d.crashed && !running.includes(d.id));
       if (c.actor !== 'self') return run(client.operator.recall(c.actor), 'recall');
       if (first) return run(client.operator.run(first.id), 'run');
       return;
     }
-    if (/^[1-4]$/.test(ev.key) && c.actor !== 'self') {
+    if (/^[1-4]$/.test(key) && c.actor !== 'self') {
       const d = client.daemons.get(c.actor);
-      const move = d.ram?.moves[Number(ev.key) - 1];
+      const move = d.ram?.moves[Number(key) - 1];
       if (!move) return;
       const target = c.targetId ? client.entities.get(c.targetId) : undefined;
       const shape = getMove(move).shape.kind;

@@ -1,6 +1,7 @@
 import { useLogoutMutation, type Me } from '../api.ts';
-import { close, open, useConnection, type Role } from '../game/connection.ts';
+import { open, useConnection, type Role } from '../game/connection.ts';
 import { setControls, useControls } from '../game/controls.ts';
+import { log } from '../game/log.ts';
 
 const reconnect = (role: Role) => void open(role).catch(() => {});
 
@@ -42,9 +43,13 @@ export function TopBar({ me }: { me: Me }) {
         <button
           className="rounded bg-neutral-800 px-2 py-0.5 hover:bg-neutral-700"
           onClick={async () => {
-            close();
-            const r = await logout().unwrap();
-            location.href = r.endSessionUrl ?? '/';
+            // the connection stays as it is: closing it here would let the app reopen it before the redirect
+            try {
+              const r = await logout().unwrap();
+              location.href = r.endSessionUrl ?? '/';
+            } catch (err) {
+              log.push('error', `logout failed: ${err instanceof Error ? err.message : 'try again'}`);
+            }
           }}
         >
           logout

@@ -1,6 +1,7 @@
 import { GameClient, type ConnectOptions, type TokenSource } from '@daemonet/sdk';
 import { useSyncExternalStore } from 'react';
 import { fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
+import { capture as appCapture, type CaptureStore } from './capture.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
 
@@ -28,6 +29,8 @@ export interface ConnectionDeps {
   createClient(opts: ConnectOptions): GameClient;
   url(): string;
   log: Log;
+  /** Holds the current capture challenge (it arrives before any panel mounts). */
+  capture: CaptureStore;
   /** Ends the sandboxed script (its bridge is tied to the client being replaced or lost). */
   stopSandbox(): void;
 }
@@ -104,6 +107,7 @@ export function createConnection(deps: ConnectionDeps) {
   const fail = (gen: number, client: GameClient, status: 'kicked' | 'failed', reason: string) => {
     if (!current(gen, client)) return;
     deps.stopSandbox();
+    deps.capture.clear();
     client.close();
     set({ status, kickReason: reason, client: null });
   };
@@ -142,7 +146,10 @@ export function createConnection(deps: ConnectionDeps) {
       fail(gen, c, 'kicked', reason);
     });
     on('tick', () => set({ version: state.version + 1 }));
+    on('captureStart', (e) => deps.capture.start(e));
+    on('captureResult', (e) => deps.capture.result(e));
     on('disconnect', () => {
+      deps.capture.clear();
       if (state.status === 'online') set({ status: 'reconnecting' });
     });
     on('reconnect', () => {
@@ -192,6 +199,7 @@ export function createConnection(deps: ConnectionDeps) {
     cancelRetry();
     cancelPending();
     deps.stopSandbox();
+    deps.capture.clear();
     state.client?.close();
     set({ status: 'connecting', role, client: null, kickReason: null });
     let unauthorized = 0;
@@ -221,6 +229,7 @@ export function createConnection(deps: ConnectionDeps) {
     cancelRetry();
     cancelPending();
     deps.stopSandbox();
+    deps.capture.clear();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
   }
@@ -245,6 +254,7 @@ const connection = createConnection({
   createClient: (opts) => new GameClient(opts),
   url: wsUrl,
   log: appLog,
+  capture: appCapture,
   stopSandbox,
 });
 

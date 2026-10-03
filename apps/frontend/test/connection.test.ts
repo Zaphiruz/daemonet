@@ -2,6 +2,7 @@ import type { ConnectOptions, GameClient } from '@daemonet/sdk';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchTicket, TicketError } from '../src/api.ts';
 import { createConnection, MAX_UNAUTHORIZED_RETRIES, RETRY_MAX_MS, RETRY_MIN_MS, type ConnectionDeps } from '../src/game/connection.ts';
+import { createCaptureStore } from '../src/game/capture.ts';
 import { createLog } from '../src/game/log.ts';
 
 type Handler = (v: unknown) => void;
@@ -44,6 +45,7 @@ function setup(outcomes: Outcome[], ticket: () => Promise<string> = (() => {
 })()) {
   const clients: FakeClient[] = [];
   const log = createLog(1000);
+  const capture = createCaptureStore();
   const stopSandbox = vi.fn();
   const fetchTicketMock = vi.fn(ticket);
   const deps: ConnectionDeps = {
@@ -55,10 +57,11 @@ function setup(outcomes: Outcome[], ticket: () => Promise<string> = (() => {
     },
     url: () => 'ws://test/ws',
     log,
+    capture,
     stopSandbox,
   };
   const conn = createConnection(deps);
-  return { conn, clients, log, stopSandbox, fetchTicket: fetchTicketMock, texts: () => log.get().map((e) => `${e.kind}:${e.text}`) };
+  return { conn, clients, log, capture, stopSandbox, fetchTicket: fetchTicketMock, texts: () => log.get().map((e) => `${e.kind}:${e.text}`) };
 }
 
 beforeEach(() => {
@@ -265,5 +268,18 @@ describe('fetchTicket', () => {
     const err = await fetchTicket().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(TicketError);
     expect((err as TicketError).status).toBe(401);
+  });
+
+  it('keeps a capture challenge from the event stream until its result or a disconnect', async () => {
+    const t = setup([{ kind: 'ready' }]);
+    await t.conn.open('controller');
+    const c = t.clients[0]!;
+    c.emit('captureStart', { captureId: 'c1', targetId: 'w1', challenge: { kind: 'single', families: ['packet'], params: {}, payload: {} }, deadlineTick: 9 });
+    expect(t.capture.get()?.captureId).toBe('c1');
+    c.emit('captureResult', { captureId: 'c1', ok: false, reason: 'wrong_answer' });
+    expect(t.capture.get()).toBeNull();
+    c.emit('captureStart', { captureId: 'c2', targetId: 'w1', challenge: { kind: 'single', families: ['packet'], params: {}, payload: {} }, deadlineTick: 9 });
+    c.emit('disconnect', {});
+    expect(t.capture.get()).toBeNull();
   });
 });

@@ -1,7 +1,8 @@
 import { getMove, getSpecies, type ToolId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { run } from '../components/WorldCanvas.tsx';
+import { useCaptureChallenge } from '../game/capture.ts';
 import { parseAnswer, setControls, useControls } from '../game/controls.ts';
 
 const TOOLS: ToolId[] = ['sniff', 'tap', 'mirror', 'dump'];
@@ -60,7 +61,7 @@ export function PlayPanel({ client }: { client: GameClient }) {
                     <button
                       key={m}
                       className="rounded bg-neutral-800 px-2 py-0.5 text-left hover:bg-neutral-700 disabled:opacity-40"
-                      disabled={!manual || !ready || (!target && def.shape.kind === 'single')}
+                      disabled={!manual || !ready || !target}
                       title={`${def.type} ${def.category} · power ${def.power} · ${def.energyCost} energy · ${def.cooldownMs} ms · range ${def.range}`}
                       onClick={() => target && run(handle.use(m, def.shape.kind === 'single' ? { id: target.id, x: target.x, y: target.y } : { x: target.x, y: target.y }), m)}
                     >
@@ -127,10 +128,10 @@ export function PlayPanel({ client }: { client: GameClient }) {
 }
 
 export function CapturePanel({ client }: { client: GameClient }) {
-  const [challenge, setChallenge] = useState<{ captureId: string; kind: string; families: string[]; params: unknown; payload: unknown } | null>(null);
+  const challenge = useCaptureChallenge();
+  const manual = client.role === 'controller';
   const [answer, setAnswer] = useState('');
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => client.on('captureStart', (ev) => setChallenge({ captureId: ev.captureId, ...ev.challenge })), [client]);
   const cap = client.self.capture;
   if (!cap) return null;
   const left = Math.max(0, cap.deadlineTick - client.tick) / 16;
@@ -168,7 +169,7 @@ export function CapturePanel({ client }: { client: GameClient }) {
       )}
       <textarea className="mono mt-2 h-20 w-full rounded bg-neutral-900 p-1 text-xs" placeholder='{"checksum":"…"}' value={answer} onChange={(e) => setAnswer(e.target.value)} data-testid="answer" />
       {error && <p className="text-xs text-red-400">{error}</p>}
-      <button className="mt-1 rounded bg-violet-700 px-2 py-0.5 hover:bg-violet-600" onClick={submit} data-testid="submit-answer">
+      <button className="mt-1 rounded bg-violet-700 px-2 py-0.5 hover:bg-violet-600 disabled:opacity-40" disabled={!manual} onClick={submit} data-testid="submit-answer">
         submit answer
       </button>
     </section>
