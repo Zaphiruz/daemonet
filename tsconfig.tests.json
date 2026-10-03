@@ -1,5 +1,18 @@
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "composite": false, "noEmit": true, "types": ["node"] },
-  "include": ["packages/*/test/**/*.ts", "apps/*/test/**/*.ts"]
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ]
+  },
+  "include": [
+    "packages/*/test/**/*.ts",
+    "apps/*/test/**/*.ts"
+  ]
 }

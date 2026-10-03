@@ -13,7 +13,7 @@ import type { TokenSource } from './auth.js';
 import { DaemonetError } from './errors.js';
 import { Query, distance, viewOf, type DaemonEntity, type DaemonView, type OperatorEntity, type Positioned } from './views.js';
 
-type WebSocketLike = {
+export type WebSocketLike = {
   readyState: number;
   send(data: string): void;
   close(code?: number, reason?: string): void;
@@ -22,7 +22,7 @@ type WebSocketLike = {
   onclose: ((ev: { code: number; reason: string }) => void) | null;
   onerror: ((ev: unknown) => void) | null;
 };
-type WebSocketCtor = new (url: string) => WebSocketLike;
+export type WebSocketCtor = new (url: string) => WebSocketLike;
 
 export interface ConnectOptions {
   /** e.g. wss://daemonet.wispy-nook.casa/ws */
