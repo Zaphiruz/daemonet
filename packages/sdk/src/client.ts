@@ -74,6 +74,8 @@ export interface DaemonScriptContext {
 const BACKOFF_MIN_MS = 256;
 const BACKOFF_MAX_MS = 8192;
 const ENEMY_RADIUS = 16;
+/** Kick reasons after which reconnecting can succeed; every other kick is terminal. */
+const TRANSIENT_KICKS = new Set(['idle', 'auth timeout', 'server shutting down']);
 
 export class WorldView {
   constructor(private readonly client: GameClient) {}
@@ -268,6 +270,8 @@ export class GameClient {
   private hasState = false;
   private closedByUser = false;
   private noReconnect = false;
+  /** The most specific reason the connection attempt failed, used when settling `ready`. */
+  private failure: DaemonetError | null = null;
   private attempts = 0;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private ready!: { resolve: () => void; reject: (e: Error) => void };
@@ -357,9 +361,18 @@ export class GameClient {
     try {
       token = await this.opts.auth.getToken();
     } catch (err) {
-      this.ready.reject(err as Error);
+      if (this.closedByUser) return;
+      const error = err instanceof DaemonetError ? err : new DaemonetError('E_AUTH', err instanceof Error ? err.message : 'token unavailable');
+      if (!this.hasState) {
+        this.noReconnect = true;
+        this.ready.reject(error);
+        return;
+      }
+      this.emit('error', error);
+      this.scheduleReconnect();
       return;
     }
+    if (this.closedByUser) return;
     const ws = new this.Ws(this.opts.url);
     this.ws = ws;
     ws.onopen = () => {
@@ -395,10 +408,17 @@ export class GameClient {
       this.pending.delete(id);
     }
     this.emit('disconnect', { code, reason });
-    if (this.closedByUser || this.noReconnect || this.opts.reconnect === false) {
-      if (!this.hasState) this.ready.reject(new Error(`connection closed: ${code} ${reason}`));
+    if (!this.hasState) {
+      // The first connection never produced a snapshot: settle connect() instead of retrying forever.
+      this.noReconnect = true;
+      this.ready.reject(this.failure ?? new DaemonetError('E_STATE', `connection closed: ${code} ${reason}`));
       return;
     }
+    if (this.closedByUser || this.noReconnect || this.opts.reconnect === false) return;
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
     const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** this.attempts++);
     setTimeout(() => {
       if (!this.closedByUser) void this.open();
@@ -465,12 +485,16 @@ export class GameClient {
           this.pending.delete(msg.d.reqId);
           p.reject(error);
         } else {
+          if (!this.hasState) this.failure = error;
           this.emit('error', error);
         }
         return;
       }
       case 'kick':
-        if (['takeover', 'unauthorized', 'rate limit'].includes(msg.d.reason)) this.noReconnect = true;
+        if (!this.hasState) {
+          this.failure = new DaemonetError(msg.d.reason === 'unauthorized' || msg.d.reason === 'auth required' ? 'E_AUTH' : 'E_STATE', msg.d.reason);
+          this.noReconnect = true;
+        } else if (!TRANSIENT_KICKS.has(msg.d.reason)) this.noReconnect = true;
         this.emit('kick', msg.d.reason);
         return;
       case 'pong':
