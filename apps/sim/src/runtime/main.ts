@@ -39,10 +39,21 @@ async function shutdown(signal: string) {
   log.info({ signal }, 'shutting down');
   stopLoop();
   clearInterval(statsTimer);
-  await game.shutdown();
-  await server.close();
-  await store.close();
+  try {
+    await server.close();
+    await game.shutdown();
+  } finally {
+    await store.close();
+  }
   process.exit(0);
 }
+process.on('uncaughtException', (err) => {
+  log.fatal({ err: err.message }, 'uncaught exception');
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  log.fatal({ err: String(reason) }, 'unhandled rejection');
+  process.exit(1);
+});
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));

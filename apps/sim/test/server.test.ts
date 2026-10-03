@@ -1,4 +1,5 @@
-import type { ServerMessage } from '@daemonet/shared';
+import { createConnection } from 'node:net';
+import { MAX_SUBMIT_BYTES, type ServerMessage } from '@daemonet/shared';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { World } from '../src/core/index.js';
@@ -79,6 +80,37 @@ describe('startServer', () => {
     const err = await new Promise<Error>((r) => second.once('error', r));
     expect(err.message).toContain('429');
     first.close();
+  });
+});
+
+const UPGRADE_BAD_TARGET = ['GET //[ HTTP/1.1', 'Host: x', 'Upgrade: websocket', 'Connection: Upgrade', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version: 13', '', ''].join(String.fromCharCode(13, 10));
+
+describe('hardening', () => {
+  it('survives an unparseable upgrade target', async () => {
+    const s = await boot();
+    const sock = createConnection(s.port, '127.0.0.1');
+    await new Promise((r) => sock.once('connect', r));
+    sock.on('error', () => {});
+    sock.write(UPGRADE_BAD_TARGET);
+    await new Promise((r) => sock.once('close', r));
+    expect((await fetch(`http://127.0.0.1:${s.port}/ws/ready`)).status).toBe(200);
+  });
+
+  it('closes an oversize frame without crashing', async () => {
+    const s = await boot();
+    const ws = new WebSocket(`ws://127.0.0.1:${s.port}/ws`);
+    ws.on('error', () => {});
+    await new Promise((r) => ws.once('open', r));
+    ws.send('x'.repeat(MAX_SUBMIT_BYTES + 4096));
+    await new Promise((r) => ws.once('close', r));
+    expect((await fetch(`http://127.0.0.1:${s.port}/ws/ready`)).status).toBe(200);
+  });
+
+  it('returns 503 when the store ping hangs', async () => {
+    const store = new MemoryStore();
+    store.ping = () => new Promise(() => {});
+    const s = await boot(store);
+    expect((await fetch(`http://127.0.0.1:${s.port}/ws/ready`)).status).toBe(503);
   });
 });
 

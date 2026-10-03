@@ -5,6 +5,9 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { Conn, Game, Logger } from './game.js';
 import type { Store } from './store.js';
 
+const READY_TIMEOUT_MS = 2000;
+const MAX_BUFFERED_BYTES = 1024 * 1024;
+
 export interface ServerOptions {
   game: Game;
   store: Store;
@@ -39,7 +42,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   const http = createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/ws/ready') {
-      opts.store.ping().then(
+      const timeout = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('ping timeout')), READY_TIMEOUT_MS).unref();
+      });
+      Promise.race([opts.store.ping(), timeout]).then(
         () => res.writeHead(200, { 'content-type': 'text/plain' }).end('ok'),
         () => res.writeHead(503, { 'content-type': 'text/plain' }).end('db unavailable'),
       );
@@ -51,7 +57,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_SUBMIT_BYTES + 1024 });
 
   http.on('upgrade', (req, socket, head) => {
-    const path = new URL(req.url ?? '/', 'http://localhost').pathname;
+    socket.on('error', () => socket.destroy());
+    let path: string;
+    try {
+      path = new URL(req.url ?? '/', 'http://localhost').pathname;
+    } catch {
+      socket.destroy();
+      return;
+    }
     if (path !== '/ws') {
       socket.destroy();
       return;
@@ -69,10 +82,16 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         id: crypto.randomUUID(),
         ip,
         send: (msg) => {
-          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+          if (ws.readyState !== ws.OPEN) return;
+          if (ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+            ws.close(1008, 'slow consumer');
+            return;
+          }
+          ws.send(JSON.stringify(msg));
         },
         close: (code, reason) => ws.close(code, reason),
       };
+      ws.on('error', (err) => opts.log.warn({ err: err.message }, 'ws error'));
       opts.game.connect(conn);
       ws.on('message', (data, isBinary) => {
         if (isBinary) return ws.close(1003, 'text frames only');
