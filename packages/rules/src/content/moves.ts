@@ -1,3 +1,4 @@
+import { deepFreeze } from '../freeze.js';
 import type { TypeId } from '../types.js';
 
 export type Shape =
@@ -23,7 +24,7 @@ export interface MoveDef {
 
 const single = { kind: 'single' } as const;
 
-export const MOVES: readonly MoveDef[] = [
+export const MOVES: readonly MoveDef[] = deepFreeze([
   // Packet
   { id: 'ping', name: 'Ping', type: 'packet', category: 'physical', power: 20, energyCost: 4, cooldownMs: 256, range: 2, shape: single },
   { id: 'traceroute', name: 'Traceroute', type: 'packet', category: 'special', power: 40, energyCost: 12, cooldownMs: 1024, range: 8, shape: single },
@@ -44,7 +45,7 @@ export const MOVES: readonly MoveDef[] = [
   { id: 'voidbolt', name: 'Void Bolt', type: 'null', category: 'special', power: 40, energyCost: 12, cooldownMs: 1024, range: 8, shape: single },
   { id: 'blackhole', name: 'Black Hole', type: 'null', category: 'special', power: 35, energyCost: 24, cooldownMs: 2048, range: 6, shape: { kind: 'circle', radius: 2 } },
   { id: 'dereference', name: 'Dereference', type: 'null', category: 'physical', power: 100, energyCost: 56, cooldownMs: 8192, range: 2, shape: single },
-];
+]);
 
 const BY_ID = new Map(MOVES.map((m) => [m.id, m]));
 

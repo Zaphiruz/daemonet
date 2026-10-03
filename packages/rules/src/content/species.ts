@@ -1,4 +1,5 @@
 import { MAX_MOVES, type StatBlock } from '../constants.js';
+import { deepFreeze } from '../freeze.js';
 import type { TypeId } from '../types.js';
 
 export type Behaviour = 'timid' | 'territorial' | 'wanderer';
@@ -41,7 +42,7 @@ const GLITCH = learn('bitflip', 'corrupt', 'static', 'cosmicray');
 const NULL = learn('nullref', 'voidbolt', 'blackhole', 'dereference');
 
 /** SP1 content: the eight base forms of bestiary lines 05, 06, 08, 09, 32, 33, 36, 37. */
-export const SPECIES: readonly SpeciesDef[] = [
+export const SPECIES: readonly SpeciesDef[] = deepFreeze([
   { id: 'pingling', name: 'Pingling', line: 5, stage: 0, types: ['packet'], base: s(34, 36, 28, 34, 28, 50, 42, 33), traits: ['echo', 'lowlatency'], behaviour: 'timid', baseYield: 32, learnset: PACKET, starter: true },
   { id: 'floodhound', name: 'Floodhound', line: 6, stage: 0, types: ['packet'], base: s(36, 48, 30, 30, 28, 42, 50, 36), traits: ['synburst', 'retransmit'], behaviour: 'territorial', baseYield: 36, learnset: PACKET, starter: false },
   { id: 'hashling', name: 'Hashling', line: 8, stage: 0, types: ['crypto'], base: s(36, 34, 36, 38, 38, 34, 34, 35), traits: ['salted', 'onewayfn'], behaviour: 'wanderer', baseYield: 32, learnset: CRYPTO, starter: true },
@@ -50,7 +51,7 @@ export const SPECIES: readonly SpeciesDef[] = [
   { id: 'bitrot', name: 'Bitrot', line: 37, stage: 0, types: ['glitch'], base: s(40, 30, 36, 38, 40, 30, 40, 46), traits: ['entropy', 'decay'], behaviour: 'wanderer', baseYield: 36, learnset: GLITCH, starter: false },
   { id: 'nullpup', name: 'Nullpup', line: 32, stage: 0, types: ['null'], base: s(40, 36, 36, 32, 36, 34, 34, 37), traits: ['nullsafe', 'lazyeval'], behaviour: 'wanderer', baseYield: 32, learnset: NULL, starter: true },
   { id: 'voidlet', name: 'Voidlet', line: 33, stage: 0, types: ['null'], base: s(42, 26, 44, 30, 54, 28, 32, 44), traits: ['voidstep', 'absorb'], behaviour: 'territorial', baseYield: 36, learnset: NULL, starter: false },
-];
+]);
 
 const BY_ID = new Map(SPECIES.map((sp) => [sp.id, sp]));
 

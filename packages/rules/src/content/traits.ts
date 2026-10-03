@@ -1,3 +1,5 @@
+import { deepFreeze } from '../freeze.js';
+
 /** Traits are rolled and stored in SP1; their effects arrive in SP3. */
 export interface TraitDef {
   id: string;
@@ -5,7 +7,7 @@ export interface TraitDef {
   description: string;
 }
 
-export const TRAITS: readonly TraitDef[] = [
+export const TRAITS: readonly TraitDef[] = deepFreeze([
   { id: 'echo', name: 'Echo', description: 'Repeats its last move at half power.' },
   { id: 'lowlatency', name: 'Low Latency', description: 'First move in a battle has no cooldown.' },
   { id: 'synburst', name: 'SYN Burst', description: 'Filler moves cost no energy below 25% HP.' },
@@ -22,7 +24,7 @@ export const TRAITS: readonly TraitDef[] = [
   { id: 'lazyeval', name: 'Lazy Eval', description: 'Heavy moves cost less energy.' },
   { id: 'voidstep', name: 'Void Step', description: 'Moves faster out of combat.' },
   { id: 'absorb', name: 'Absorb', description: 'Regains energy when hit.' },
-];
+]);
 
 const BY_ID = new Map(TRAITS.map((t) => [t.id, t]));
 

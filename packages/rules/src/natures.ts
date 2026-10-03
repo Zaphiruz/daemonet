@@ -1,4 +1,5 @@
 import type { StatKey } from './constants.js';
+import { deepFreeze } from './freeze.js';
 
 export interface Nature {
   id: string;
@@ -7,7 +8,7 @@ export interface Nature {
 }
 
 /** 16 natures (a 4-bit value). Index = the stored nature number. HP is never affected. */
-export const NATURES: readonly Nature[] = [
+export const NATURES: readonly Nature[] = deepFreeze([
   { id: 'steady', up: null, down: null },
   { id: 'idle', up: null, down: null },
   { id: 'nominal', up: null, down: null },
@@ -24,7 +25,7 @@ export const NATURES: readonly Nature[] = [
   { id: 'hasty', up: 'haste', down: 'resolve' },
   { id: 'frugal', up: 'energy', down: 'haste' },
   { id: 'bursty', up: 'haste', down: 'energy' },
-];
+]);
 
 export function getNature(index: number): Nature {
   const n = NATURES[index];

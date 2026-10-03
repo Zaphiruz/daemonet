@@ -1,4 +1,6 @@
-export const TYPES = [
+import { deepFreeze } from './freeze.js';
+
+export const TYPES = deepFreeze([
   'kernel',
   'packet',
   'crypto',
@@ -15,15 +17,15 @@ export const TYPES = [
   'cloud',
   'stack',
   'heap',
-] as const;
+] as const);
 export type TypeId = (typeof TYPES)[number];
 
 /** Attacker -> defender multipliers. Unlisted pairs are x1 (SP3 fills the full chart). */
-const CHART: Partial<Record<TypeId, Partial<Record<TypeId, number>>>> = {
+const CHART: Partial<Record<TypeId, Partial<Record<TypeId, number>>>> = deepFreeze({
   packet: { packet: 0.5, crypto: 0.5, glitch: 2 },
   crypto: { packet: 2, crypto: 0.5, glitch: 0.5 },
   glitch: { packet: 0.5, crypto: 2, glitch: 0.5, null: 0 },
-};
+});
 
 export function isTypeId(value: string): value is TypeId {
   return (TYPES as readonly string[]).includes(value);

@@ -1,3 +1,5 @@
+import { deepFreeze } from '../freeze.js';
+
 export type ToolId = 'sniff' | 'tap' | 'mirror' | 'dump';
 export type Noise = 0 | 1 | 2;
 
@@ -22,15 +24,15 @@ export interface RestoreDef {
 export type ItemDef = ToolDef | RestoreDef;
 export type ItemId = ItemDef['id'];
 
-export const ITEMS: readonly ItemDef[] = [
+export const ITEMS: readonly ItemDef[] = deepFreeze([
   { id: 'sniff', kind: 'tool', name: 'sniff', range: 4, deadlineMs: 2048, noise: 2, sizeMultiplier: 1 },
   { id: 'tap', kind: 'tool', name: 'tap', range: 6, deadlineMs: 4096, noise: 1, sizeMultiplier: 1 },
   { id: 'mirror', kind: 'tool', name: 'mirror', range: 8, deadlineMs: 4096, noise: 0, sizeMultiplier: 1 },
   { id: 'dump', kind: 'tool', name: 'dump', range: 8, deadlineMs: 8192, noise: 0, sizeMultiplier: 0.5 },
   { id: 'restore', kind: 'restore', name: 'restore' },
-];
+]);
 
-export const STARTING_INVENTORY: Readonly<Partial<Record<ItemId, number>>> = { sniff: 8, restore: 2 };
+export const STARTING_INVENTORY: Readonly<Partial<Record<ItemId, number>>> = deepFreeze({ sniff: 8, restore: 2 });
 
 const BY_ID = new Map(ITEMS.map((i) => [i.id, i]));
 

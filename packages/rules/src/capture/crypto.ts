@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { deepFreeze } from '../freeze.js';
 import { randomBytes, toHex, utf8, xorRepeating, type ChallengeFamily } from './common.js';
 
 /**
@@ -21,7 +22,7 @@ export interface CryptoAnswer {
   plaintext: string;
 }
 
-export const WORDS = [
+export const WORDS = deepFreeze([
   'packet', 'daemon', 'kernel', 'socket', 'buffer', 'signal', 'thread', 'cache',
   'proxy', 'cloud', 'stack', 'heap', 'root', 'shell', 'null', 'glitch',
   'route', 'frame', 'queue', 'mutex', 'fork', 'exec', 'pipe', 'port',
@@ -30,7 +31,7 @@ export const WORDS = [
   'mask', 'tunnel', 'relay', 'hop', 'ping', 'echo', 'trace', 'flood',
   'sniff', 'tap', 'mirror', 'dump', 'image', 'clean', 'patch', 'bit',
   'flip', 'parity', 'check', 'sum', 'loop', 'node', 'link', 'wire',
-] as const;
+] as const);
 
 export const cryptoFamily: ChallengeFamily<CryptoParams, CryptoPayload, CryptoAnswer> = {
   type: 'crypto',
