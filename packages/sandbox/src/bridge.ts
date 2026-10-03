@@ -28,6 +28,9 @@ export interface Bridge {
 
 type Envelope = { t?: unknown };
 
+/** Server frame types relayed to the sandbox. */
+const RELAYED: ReadonlySet<string> = new Set(['delta', 'ack', 'err', 'kick']);
+
 /** Error replies per tick; beyond this a flooding script gets silence rather than more work for the host. */
 const MAX_ERRORS_PER_TICK = 8;
 
@@ -108,8 +111,9 @@ export function createBridge(opts: BridgeOptions): Bridge {
         commandsThisTick = 0;
         errorsThisTick = 0;
       }
-      // The sandbox has its own snapshot from `auth`; server-side auth/snapshot frames belong to the host.
-      if (msg.t === 'authOk' || msg.t === 'snapshot' || msg.t === 'pong') return;
+      // Allowlist: only frames the in-sandbox client needs and that carry no credential. authOk, snapshot
+      // and pong belong to the host (the sandbox got its own from `auth`/`ping`).
+      if (typeof msg.t !== 'string' || !RELAYED.has(msg.t)) return;
       if (!authed) return;
       opts.port.postMessage(JSON.stringify({ ...msg, seq: ++seq }));
     },

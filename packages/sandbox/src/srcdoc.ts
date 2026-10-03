@@ -1,3 +1,16 @@
+/*
+ * Host contract (the page that embeds the iframe):
+ * - iframe: `sandbox="allow-scripts"` only (SANDBOX_ATTRIBUTES), `srcdoc` from buildSandboxHtml; the
+ *   host page's own CSP must allow the inline and `data:` scripts this document carries (they live in
+ *   the iframe, but a restrictive parent `frame-src`/CSP must permit a srcdoc frame).
+ * - post `{ type: 'init' }` with the MessagePort transferred only after the iframe's `load` event.
+ * - accept messages only when `event.source === iframe.contentWindow`, run them through
+ *   `validateSandboxMessage`, rate-limit them, and render log/error text as text (never as HTML).
+ * - run a watchdog: a script in an endless loop blocks the iframe, so the host must be able to
+ *   remove the iframe (and close the bridge) on timeout or user request.
+ * - reconnection is the host's: rebuild the port, bridge, iframe client with a fresh single-use ticket.
+ */
+
 /** Messages the sandbox posts to its parent (validate `event.source === iframe.contentWindow`, then `validateSandboxMessage`). */
 export type SandboxMessage =
   | { type: 'log'; level: 'log' | 'info' | 'warn' | 'error' | 'debug'; args: unknown[] }
@@ -72,14 +85,16 @@ const dataModule = (source: string): string => `data:text/javascript;base64,${to
 const BOOTSTRAP = `
 const post = (m) => parent.postMessage(m, '*');
 const safe = (v) => { try { return JSON.parse(JSON.stringify(v)); } catch { return String(v); } };
-let logBudget = 500;
+let budget = 500;
+const postBudgeted = (m) => { if (budget-- > 0) post(m); };
 for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
-  console[level] = (...args) => { if (logBudget-- > 0) post({ type: 'log', level, args: args.slice(0, 10).map(safe) }); };
+  console[level] = (...args) => postBudgeted({ type: 'log', level, args: args.slice(0, 10).map(safe) });
 }
-addEventListener('unhandledrejection', (e) => post({ type: 'error', message: String(e.reason?.message ?? e.reason), stack: e.reason?.stack }));
-addEventListener('error', (e) => post({ type: 'error', message: String(e.message), stack: e.error?.stack }));
-addEventListener('message', async (ev) => {
+addEventListener('unhandledrejection', (e) => postBudgeted({ type: 'error', message: String(e.reason?.message ?? e.reason), stack: e.reason?.stack }));
+addEventListener('error', (e) => postBudgeted({ type: 'error', message: String(e.message), stack: e.error?.stack }));
+const onInit = async (ev) => {
   if (ev.source !== parent || ev.data?.type !== 'init' || !ev.ports[0]) return;
+  removeEventListener('message', onInit);
   const port = ev.ports[0];
   try {
     const sdk = await import('@daemonet/sdk');
@@ -92,8 +107,18 @@ addEventListener('message', async (ev) => {
   } catch (err) {
     post({ type: 'error', message: String(err?.message ?? err), stack: err?.stack });
   }
-}, { once: true });
+};
+addEventListener('message', onInit);
 `;
+
+/**
+ * Makes text safe inside an inline `<script>`: in JSON every `<` becomes the escape `\u003c`; in
+ * JavaScript source a `</script` (any case) is broken up as `<\/script`, which is the same string
+ * at runtime but does not end the element.
+ */
+export function escapeForScript(text: string, kind: 'json' | 'js'): string {
+  return kind === 'json' ? text.replace(/</g, '\\u003c') : text.replace(/<\/script/gi, (m) => `<\\${m.slice(1)}`);
+}
 
 /**
  * The HTML for a `sandbox="allow-scripts"` iframe (opaque origin): a CSP that allows only inline
@@ -108,9 +133,9 @@ export function buildSandboxHtml(opts: { sdkBundle: string; source: string }): s
   return [
     '<!doctype html>',
     '<meta charset="utf-8">',
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">`,
-    `<script type="importmap">${importMap.replace(/</g, '\u003c')}</script>`,
-    `<script type="module">${bootstrap.replace(/<\/script/gi, '<\/script')}</script>`,
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' data:; connect-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">`,
+    `<script type="importmap">${escapeForScript(importMap, 'json')}</script>`,
+    `<script type="module">${escapeForScript(bootstrap, 'js')}</script>`,
   ].join('\n');
 }
 

@@ -2,7 +2,7 @@ import { GameClient, PortSocket, staticToken } from '@daemonet/sdk';
 import type { OperatorSelf } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
 import { createBridge } from '../src/bridge.js';
-import { buildSandboxHtml, validateSandboxMessage } from '../src/srcdoc.js';
+import { buildSandboxHtml, escapeForScript, validateSandboxMessage } from '../src/srcdoc.js';
 
 const self: OperatorSelf = {
   id: 'op1', name: 'alice', starterClaimed: true, x: 5, y: 5, bits: 0, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
@@ -12,6 +12,7 @@ const state = () => ({ operatorId: 'op1', role: 'controller' as const, tick: 40,
 async function until(pred: () => boolean): Promise<void> {
   for (let i = 0; i < 50 && !pred(); i++) await new Promise((r) => setTimeout(r, 2));
 }
+const BS = String.fromCharCode(92);
 const settle = () => new Promise((r) => setTimeout(r, 30));
 const cmd = (seq: number, reqId: string) => JSON.stringify({ t: 'cmd', seq, d: { reqId, cmd: 'stop', actor: 'self', args: {} } });
 const auth = JSON.stringify({ t: 'auth', seq: 1, d: { token: 'sandbox' } });
@@ -170,6 +171,42 @@ describe('buildSandboxHtml', () => {
     const html = buildSandboxHtml({ sdkBundle: '', source: 'export default () => {}' });
     expect(html).toContain('reconnect: false');
     expect(html).toContain("staticToken('sandbox')");
+  });
+});
+
+describe('escapeForScript', () => {
+  it('turns < into a JSON unicode escape', () => {
+    expect(escapeForScript('{"a":"<b></script>"}', 'json')).toBe('{"a":"' + BS + 'u003cb>' + BS + 'u003c/script>"}');
+    expect(escapeForScript('{"a":"<b>"}', 'json')).not.toContain('<');
+  });
+
+  it('breaks </script in any case inside JavaScript source, leaving the rest alone', () => {
+    const out = escapeForScript('a</script>b</ScRiPt >c<div>', 'js');
+    expect(out).toBe('a<' + BS + '/script>b<' + BS + '/ScRiPt >c<div>');
+    expect(out.toLowerCase()).not.toContain('</script');
+  });
+});
+
+describe('buildSandboxHtml bootstrap', () => {
+  it('removes the init listener only after a valid init, and shares one budget across logs and errors', () => {
+    const html = buildSandboxHtml({ sdkBundle: '', source: 'export default () => {}' });
+    expect(html).not.toContain('once: true');
+    expect(html).toContain("removeEventListener('message', onInit)");
+    expect(html).toContain('postBudgeted');
+    expect(html).toContain("worker-src 'none'");
+  });
+});
+
+describe('createBridge relay allowlist', () => {
+  it('relays only delta/ack/err/kick to the sandbox', async () => {
+    const { port2, got, bridge, done } = setup();
+    port2.postMessage(auth);
+    await until(() => got.length >= 2);
+    for (const t of ['authOk', 'snapshot', 'pong', 'resumeToken', 'mystery']) bridge.deliver(JSON.stringify({ t, seq: 1, d: {} }));
+    for (const t of ['delta', 'ack', 'err', 'kick']) bridge.deliver(JSON.stringify({ t, seq: 1, d: {} }));
+    await settle();
+    expect(got.slice(2).map((g) => JSON.parse(g).t)).toEqual(['delta', 'ack', 'err', 'kick']);
+    done();
   });
 });
 
