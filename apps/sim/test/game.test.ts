@@ -174,6 +174,39 @@ describe('Game connections', () => {
   });
 });
 
+describe('spectators', () => {
+  it('a spectator alone does not keep an operator in the world', async () => {
+    const { game, world } = setup();
+    const watcher = await join(game, 'alice', { role: 'spectator' });
+    expect(world.operators.size).toBe(1);
+    game.disconnect(watcher);
+    for (let i = 0; i < 6; i++) game.tick();
+    await game.flush();
+    expect(world.operators.size).toBe(0);
+  });
+
+  it('a spectator joining during the grace period does not extend it', async () => {
+    const { game, world } = setup();
+    const conn = await join(game, 'alice');
+    game.disconnect(conn);
+    game.tick();
+    const watcher = await join(game, 'alice', { role: 'spectator' });
+    for (let i = 0; i < 6; i++) game.tick();
+    await game.flush();
+    expect(world.operators.size).toBe(0);
+    expect(watcher.closed?.reason).toBe('operator left');
+  });
+
+  it('drops a command reply when the sending connection was replaced', async () => {
+    const { game } = setup();
+    const first = await join(game, 'alice');
+    await game.message(first, cmd({ cmd: 'stop', actor: 'self', args: {} }));
+    const second = await join(game, 'alice');
+    game.tick();
+    expect(second.of('ack')).toHaveLength(0);
+  });
+});
+
 describe('restart', () => {
   it('a captured daemon survives a restart with the same store', async () => {
     const store = new MemoryStore();

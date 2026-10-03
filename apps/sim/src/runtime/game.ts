@@ -97,6 +97,8 @@ export class Game {
   private readonly leaving = new Map<string, Promise<void>>();
   private readonly inflight = new Set<Promise<void>>();
   private inputs: Input[] = [];
+  /** The connection that sent each pending command, so replies are not delivered to a later controller. */
+  private readonly replyTo = new Map<string, ConnState>();
   private radius = INTEREST_RADIUS;
   private readonly tickMs: number[] = [];
 
@@ -197,6 +199,7 @@ export class Game {
         }
         st.role = 'spectator';
         session.spectators.add(st);
+        if (!session.controller && session.leaveAtTick === null) session.leaveAtTick = this.world.tick + this.leaveAfter;
       } else {
         const old = session.controller;
         if (old) {
@@ -207,8 +210,8 @@ export class Game {
         }
         st.role = 'controller';
         session.controller = st;
+        session.leaveAtTick = null;
       }
-      session.leaveAtTick = null;
       st.phase = 'ready';
       this.send(st, { t: 'authOk', seq: 0, d: { operatorId: rec.id, role: st.role, resumeToken: session.resumeToken, tick: this.world.tick } });
       if (!(st.role === 'controller' && this.tryResume(st, session, d.resumeToken, d.lastTick))) this.snapshot(st);
@@ -263,6 +266,7 @@ export class Game {
       return this.violation(st);
     }
     session.commandsThisTick++;
+    this.replyTo.set(`${session.operatorId}:${reqId}`, st);
     this.inputs.push({ operatorId: session.operatorId, reqId, command });
   }
 
@@ -322,8 +326,10 @@ export class Game {
     for (const s of this.sessions.values()) s.commandsThisTick = 0;
 
     for (const r of result.replies) {
-      const st = this.sessions.get(r.operatorId)?.controller;
-      if (!st) continue;
+      const key = `${r.operatorId}:${r.reqId}`;
+      const st = this.replyTo.get(key);
+      this.replyTo.delete(key);
+      if (!st || st.phase === 'closed') continue;
       if (r.ok) this.send(st, { t: 'ack', seq: 0, d: r.result === undefined ? { reqId: r.reqId } : { reqId: r.reqId, result: r.result } });
       else this.error(st, r.code, r.message, r.reqId);
     }
