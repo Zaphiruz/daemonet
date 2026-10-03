@@ -7,6 +7,7 @@ import { Game } from './game.js';
 import { startLoop } from './loop.js';
 import { PrismaStore } from './prisma-store.js';
 import { startServer } from './server.js';
+import { gracefulShutdown } from './shutdown.js';
 
 const config = loadConfig();
 const log = pino({ level: config.logLevel });
@@ -39,12 +40,7 @@ async function shutdown(signal: string) {
   log.info({ signal }, 'shutting down');
   stopLoop();
   clearInterval(statsTimer);
-  try {
-    await server.close();
-    await game.shutdown();
-  } finally {
-    await store.close();
-  }
+  await gracefulShutdown({ server, game, store });
   process.exit(0);
 }
 process.on('uncaughtException', (err) => {

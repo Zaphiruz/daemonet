@@ -7,6 +7,8 @@ import type { Store } from './store.js';
 
 const READY_TIMEOUT_MS = 2000;
 const MAX_BUFFERED_BYTES = 1024 * 1024;
+/** How long `close()` waits for sockets already closing (kicked) to finish their close handshake. */
+const CLOSE_GRACE_MS = 1000;
 
 export interface ServerOptions {
   game: Game;
@@ -32,6 +34,9 @@ export function clientIp(req: Pick<IncomingMessage, 'headers' | 'socket'>, hops:
 
 export interface RunningServer {
   port: number;
+  /** Stops listening and refuses new WebSocket upgrades; open sockets stay up (so they can still be kicked). */
+  stopAccepting(): void;
+  /** Stops accepting (if not yet), then ends the remaining sockets and waits for the listener to close. */
   close(): Promise<void>;
 }
 
@@ -56,8 +61,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_SUBMIT_BYTES + 1024 });
 
+  let accepting = true;
+
   http.on('upgrade', (req, socket, head) => {
     socket.on('error', () => socket.destroy());
+    if (!accepting) {
+      socket.destroy();
+      return;
+    }
     let path: string;
     try {
       path = new URL(req.url ?? '/', 'http://localhost').pathname;
@@ -108,12 +119,34 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   });
 
   await new Promise<void>((resolve) => http.listen(opts.port, opts.host ?? '0.0.0.0', resolve));
+
+  let listenerClosed: Promise<void> | null = null;
+  const stopAccepting = () => {
+    if (listenerClosed) return;
+    accepting = false;
+    wss.close();
+    // Resolves once every connection (including upgraded sockets) has ended.
+    listenerClosed = new Promise<void>((resolve) => http.close(() => resolve()));
+  };
+
   return {
     port: (http.address() as AddressInfo).port,
+    stopAccepting,
     close: async () => {
+      stopAccepting();
+      // Sockets already in a close handshake (e.g. kicked) get a short grace to deliver it; the rest are terminated.
+      const closing: Promise<void>[] = [];
+      for (const ws of sockets) {
+        if (ws.readyState === ws.CLOSING) closing.push(new Promise<void>((resolve) => ws.once('close', () => resolve())));
+        else ws.terminate();
+      }
+      if (closing.length > 0) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([Promise.all(closing), new Promise<void>((resolve) => (timer = setTimeout(resolve, CLOSE_GRACE_MS)))]);
+        clearTimeout(timer);
+      }
       for (const ws of sockets) ws.terminate();
-      wss.close();
-      await new Promise<void>((resolve) => http.close(() => resolve()));
+      await listenerClosed;
     },
   };
 }

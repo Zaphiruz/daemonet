@@ -5,6 +5,7 @@ import { createDevVerifier } from '../src/runtime/auth.js';
 import { Game } from '../src/runtime/game.js';
 import { startLoop } from '../src/runtime/loop.js';
 import { startServer, type RunningServer } from '../src/runtime/server.js';
+import { gracefulShutdown } from '../src/runtime/shutdown.js';
 import { MemoryStore } from '../src/runtime/store.js';
 import { solve } from '../../../packages/rules/test/solvers.js';
 import { TEST_SUBNET, placeWild } from './helpers.js';
@@ -32,8 +33,7 @@ async function boot(store: MemoryStore, seedId: string): Promise<Harness> {
     world, game, server, url: `ws://127.0.0.1:${server.port}/ws`,
     stop: async () => {
       stopLoop();
-      await game.shutdown();
-      await server.close();
+      await gracefulShutdown({ server, game, store });
     },
   };
   running.push(h);
@@ -151,5 +151,18 @@ describe('SDK against a live sim', () => {
     const before = alice.tick;
     await until(alice, () => alice.tick > before + 3);
     expect(snapshots).toBe(0);
+  });
+
+  it('a graceful shutdown kicks connected clients with "server shutting down", and they try to reconnect', async () => {
+    const h = await boot(new MemoryStore(), 'aaaa0007');
+    let tokenCalls = 0;
+    const alice = await connect({ url: h.url, auth: { getToken: async () => (tokenCalls++, 'dev:alice') } });
+    clients.push(alice);
+    const kicks: string[] = [];
+    alice.on('kick', (reason) => kicks.push(reason));
+    await h.stop();
+    running.splice(running.indexOf(h), 1);
+    expect(kicks).toEqual(['server shutting down']);
+    await expect.poll(() => tokenCalls, { timeout: 3000 }).toBeGreaterThan(1);
   });
 });

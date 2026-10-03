@@ -81,6 +81,19 @@ describe('startServer', () => {
     expect(err.message).toContain('429');
     first.close();
   });
+
+  it('stopAccepting refuses new sockets but keeps open ones; close ends them', async () => {
+    const s = await boot();
+    const open = new WebSocket(`ws://127.0.0.1:${s.port}/ws`);
+    await new Promise((r) => open.once('open', r));
+    s.stopAccepting();
+    const late = new WebSocket(`ws://127.0.0.1:${s.port}/ws`);
+    await new Promise<void>((resolve) => late.once('error', () => resolve()));
+    expect(open.readyState).toBe(WebSocket.OPEN);
+    const closed = new Promise((r) => open.once('close', r));
+    await s.close();
+    await closed;
+  });
 });
 
 const UPGRADE_BAD_TARGET = ['GET //[ HTTP/1.1', 'Host: x', 'Upgrade: websocket', 'Connection: Upgrade', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version: 13', '', ''].join(String.fromCharCode(13, 10));
