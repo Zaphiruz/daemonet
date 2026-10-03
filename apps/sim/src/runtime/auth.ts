@@ -27,11 +27,25 @@ interface Discovery {
   userinfo_endpoint: string;
 }
 
+const UNAVAILABLE = 'identity provider unavailable';
+const FETCH_TIMEOUT_MS = 5000;
+
+/** Fetches JSON from the identity provider; every failure mode becomes an AuthError. */
+async function fetchJson(fetchImpl: typeof fetch, input: string | URL, init: RequestInit = {}): Promise<unknown> {
+  try {
+    const res = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    throw new AuthError(`${UNAVAILABLE}: ${(err as Error).message}`);
+  }
+}
+
 async function discover(issuer: string, fetchImpl: typeof fetch): Promise<Discovery> {
   const base = issuer.endsWith('/') ? issuer : `${issuer}/`;
-  const res = await fetchImpl(new URL('.well-known/openid-configuration', base));
-  if (!res.ok) throw new Error(`OIDC discovery failed: ${res.status}`);
-  return (await res.json()) as Discovery;
+  const doc = (await fetchJson(fetchImpl, new URL('.well-known/openid-configuration', base))) as Partial<Discovery> | null;
+  if (typeof doc?.jwks_uri !== 'string' || typeof doc.userinfo_endpoint !== 'string') throw new AuthError(`${UNAVAILABLE}: bad discovery document`);
+  return { jwks_uri: doc.jwks_uri, userinfo_endpoint: doc.userinfo_endpoint };
 }
 
 const asGroups = (value: unknown): string[] | null => (Array.isArray(value) && value.every((g) => typeof g === 'string') ? value : null);
@@ -43,14 +57,18 @@ const asGroups = (value: unknown): string[] | null => (Array.isArray(value) && v
 export function createOidcVerifier(opts: OidcOptions): TokenVerifier {
   const fetchImpl = opts.fetch ?? fetch;
   let discovery: Promise<Discovery> | null = null;
-  const getDiscovery = () => (discovery ??= discover(opts.issuer, fetchImpl));
+  const getDiscovery = () =>
+    (discovery ??= discover(opts.issuer, fetchImpl).catch((err: unknown) => {
+      discovery = null; // do not cache failures: the next login retries
+      throw err;
+    }));
   let jwks: JWTVerifyGetKey | null = opts.jwks ?? null;
 
   return async (token) => {
     if (!jwks) jwks = createRemoteJWKSet(new URL((await getDiscovery()).jwks_uri));
     let payload;
     try {
-      ({ payload } = await jwtVerify(token, jwks, { issuer: opts.issuer, audience: opts.audiences }));
+      ({ payload } = await jwtVerify(token, jwks, { issuer: opts.issuer, audience: opts.audiences, algorithms: ['RS256'] }));
     } catch (err) {
       throw new AuthError(`invalid token: ${(err as Error).message}`);
     }
@@ -59,7 +77,7 @@ export function createOidcVerifier(opts: OidcOptions): TokenVerifier {
     if (!groups) {
       const info = opts.userinfo
         ? await opts.userinfo(token)
-        : ((await (await fetchImpl((await getDiscovery()).userinfo_endpoint, { headers: { authorization: `Bearer ${token}` } })).json()) as { groups?: unknown });
+        : (((await fetchJson(fetchImpl, (await getDiscovery()).userinfo_endpoint, { headers: { authorization: `Bearer ${token}` } })) ?? {}) as { groups?: unknown });
       groups = asGroups(info.groups) ?? [];
     }
     if (!groups.includes(opts.requiredGroup)) throw new AuthError(`not in ${opts.requiredGroup}`);

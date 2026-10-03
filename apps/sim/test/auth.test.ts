@@ -9,6 +9,7 @@ const GROUP = 'daemonet-users';
 let privateKey: Awaited<ReturnType<typeof generateKeyPair>>['privateKey'];
 let verifier: TokenVerifier;
 let userinfoGroups: string[] = [];
+let jwks: ReturnType<typeof createLocalJWKSet>;
 
 async function token(claims: Record<string, unknown>, opts: { issuer?: string; audience?: string; exp?: string } = {}) {
   return new SignJWT(claims)
@@ -24,11 +25,12 @@ beforeAll(async () => {
   const pair = await generateKeyPair('RS256');
   privateKey = pair.privateKey;
   const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'k1', alg: 'RS256' };
+  jwks = createLocalJWKSet({ keys: [jwk] });
   verifier = createOidcVerifier({
     issuer: ISSUER,
     audiences: [CLIENT],
     requiredGroup: GROUP,
-    jwks: createLocalJWKSet({ keys: [jwk] }),
+    jwks,
     userinfo: async () => ({ groups: userinfoGroups }),
   });
 });
@@ -42,7 +44,7 @@ describe('createOidcVerifier', () => {
   it('rejects the wrong issuer, audience, expired tokens and missing groups', async () => {
     await expect(verifier(await token({ sub: 'u1', groups: [GROUP] }, { issuer: 'https://evil/' }))).rejects.toBeInstanceOf(AuthError);
     await expect(verifier(await token({ sub: 'u1', groups: [GROUP] }, { audience: 'other' }))).rejects.toBeInstanceOf(AuthError);
-    await expect(verifier(await token({ sub: 'u1', groups: [GROUP] }, { exp: '-1m' }))).rejects.toBeInstanceOf(AuthError);
+    await expect(verifier(await token({ sub: 'u1', groups: [GROUP] }, { exp: '-1m' }))).rejects.toThrow(/exp/);
     await expect(verifier(await token({ sub: 'u1', groups: ['someone-else'] }))).rejects.toThrow(/daemonet-users/);
     await expect(verifier('not-a-jwt')).rejects.toBeInstanceOf(AuthError);
   });
@@ -52,6 +54,38 @@ describe('createOidcVerifier', () => {
     expect((await verifier(await token({ sub: 'u2' }))).sub).toBe('u2');
     userinfoGroups = [];
     await expect(verifier(await token({ sub: 'u2' }))).rejects.toBeInstanceOf(AuthError);
+  });
+});
+
+describe('createOidcVerifier resilience', () => {
+  const discoveryDoc = () => Response.json({ jwks_uri: 'http://127.0.0.1:1/jwks', userinfo_endpoint: 'https://authentik.test/userinfo' });
+  const make = (fetchImpl: typeof fetch) =>
+    createOidcVerifier({ issuer: ISSUER, audiences: [CLIENT], requiredGroup: GROUP, jwks, fetch: fetchImpl });
+
+  it('retries discovery after a failure instead of caching it', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError('network down');
+      return discoveryDoc();
+    }) as typeof fetch;
+    // No injected jwks here, so the first call needs discovery.
+    const v = createOidcVerifier({ issuer: ISSUER, audiences: [CLIENT], requiredGroup: GROUP, fetch: fetchImpl });
+    await expect(v(await token({ sub: 'u1', groups: [GROUP] }))).rejects.toThrow(/identity provider unavailable/);
+    // Second call re-runs discovery (it succeeds; the unreachable JWKS then fails verification, still an AuthError).
+    await expect(v(await token({ sub: 'u1', groups: [GROUP] }))).rejects.toBeInstanceOf(AuthError);
+    expect(calls).toBe(2);
+  });
+
+  it('maps a userinfo 500 and a non-JSON userinfo body to AuthError', async () => {
+    const v500 = make((async (url: string | URL) => (String(url).includes('openid-configuration') ? discoveryDoc() : new Response('boom', { status: 500 }))) as typeof fetch);
+    await expect(v500(await token({ sub: 'u2' }))).rejects.toThrow(/identity provider unavailable/);
+    const vText = make((async (url: string | URL) => (String(url).includes('openid-configuration') ? discoveryDoc() : new Response('<html>', { status: 200 }))) as typeof fetch);
+    await expect(vText(await token({ sub: 'u2' }))).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it('rejects a token with no sub', async () => {
+    await expect(verifier(await token({ groups: [GROUP] }))).rejects.toThrow(/no sub/);
   });
 });
 
