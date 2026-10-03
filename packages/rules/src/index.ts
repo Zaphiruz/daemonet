@@ -13,3 +13,6 @@ export * from './spawn.js';
 export * from './capture/size.js';
 export * from './capture/index.js';
 export type { PacketParams, PacketPayload, PacketAnswer, PacketFragment } from './capture/packet.js';
+export type { CryptoParams, CryptoPayload, CryptoAnswer } from './capture/crypto.js';
+export type { GlitchParams, GlitchPayload, GlitchAnswer } from './capture/glitch.js';
+export type { NullParams, NullPayload, NullAnswer } from './capture/null.js';

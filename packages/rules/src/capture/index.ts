@@ -2,10 +2,16 @@ import type { Noise } from '../content/items.js';
 import type { Rng } from '../rng.js';
 import type { TypeId } from '../types.js';
 import type { ChallengeFamily } from './common.js';
+import { cryptoFamily } from './crypto.js';
+import { glitchFamily } from './glitch.js';
+import { nullFamily } from './null.js';
 import { packetFamily } from './packet.js';
 
 const FAMILIES: Partial<Record<TypeId, ChallengeFamily>> = {
   packet: packetFamily as ChallengeFamily,
+  crypto: cryptoFamily as ChallengeFamily,
+  glitch: glitchFamily as ChallengeFamily,
+  null: nullFamily as ChallengeFamily,
 };
 
 export function getFamily(type: TypeId): ChallengeFamily {

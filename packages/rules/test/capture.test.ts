@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { hammingEncode } from '../src/capture/glitch.js';
 import { checkAnswer, generateChallenge, hasFamily, publicChallenge } from '../src/capture/index.js';
 import { challengeSize, type ChallengeTarget } from '../src/capture/size.js';
 import { getTool, type Noise } from '../src/content/items.js';
@@ -7,7 +8,7 @@ import { createRng } from '../src/rng.js';
 import type { TypeId } from '../src/types.js';
 import { solve } from './solvers.js';
 
-const FAMILIES: TypeId[] = ['packet'];
+const FAMILIES: TypeId[] = ['packet', 'crypto', 'glitch', 'null'];
 
 /** Change the answer so it is still schema-valid but wrong. */
 function mutate(answer: Record<string, unknown>): Record<string, unknown> {
@@ -38,6 +39,14 @@ describe('challengeSize', () => {
   it('never goes below 8 and clamps hp', () => {
     expect(challengeSize({ ...base, hpFraction: 0, statused: true }, getTool('dump'))).toBe(8);
     expect(challengeSize({ ...base, hpFraction: 5 }, sniff)).toBe(32);
+  });
+});
+
+describe('hammingEncode', () => {
+  it('encodes known nibbles', () => {
+    expect(hammingEncode(0b0000)).toBe(0);
+    // d1..d4 = 1011 -> p1=0, p2=1, p3=0 -> bits p1 p2 d1 p3 d2 d3 d4 = 0 1 1 0 0 1 1
+    expect(hammingEncode(0b1011)).toBe(0b1100110);
   });
 });
 
