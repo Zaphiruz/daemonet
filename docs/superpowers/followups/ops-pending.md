@@ -18,6 +18,9 @@ Before registering the runner (OPERATIONS Step 2, "Before registering the runner
 
 - [ ] `gh run list --workflow deploy.yml --repo Zaphiruz/daemonet` and cancel every queued or waiting run with
       `gh run cancel <id> --repo Zaphiruz/daemonet`.
+- [ ] After the runner is registered and the `production` environment is configured, set the repository variable
+      `DAEMONET_DEPLOY_ENABLED` to `true` (GitHub → Settings → Secrets and variables → Actions → Variables, or
+      `gh variable set DAEMONET_DEPLOY_ENABLED --body true --repo Zaphiruz/daemonet`); until then deploys are skipped.
 
 Then, in order:
 

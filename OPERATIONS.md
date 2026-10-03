@@ -80,6 +80,7 @@ Add the printed public key as a **read-only deploy key** on `Zaphiruz/daemonet` 
 1. Configure the GitHub `production` environment now (Step 2b; it may already exist, auto-created by that queued run) with **deployment branches = `main`**.
 2. List and cancel any queued or waiting Deploy run: `gh run list --workflow deploy.yml --repo Zaphiruz/daemonet`, then `gh run cancel <id> --repo Zaphiruz/daemonet` for each.
 3. Only then run `./config.sh` below. The first deploy is started deliberately at Step 8.
+4. After the runner is registered and the `production` environment is configured, set the repository variable `DAEMONET_DEPLOY_ENABLED` to `true` (GitHub → Settings → Secrets and variables → Actions → Variables, or `gh variable set DAEMONET_DEPLOY_ENABLED --body true --repo Zaphiruz/daemonet`); until then deploys are skipped.
 
 Clone and register the runner (GitHub: Settings → Actions → Runners → New self-hosted runner → Linux x64 gives a fresh token):
 
