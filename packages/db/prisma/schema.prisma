@@ -26,9 +26,60 @@ model Operator {
   y              Float
   /// item id -> count
   inventory      Json     @default("{}")
+  isAdmin        Boolean  @default(false)
   createdAt      DateTime @default(now())
   lastSeenAt     DateTime @default(now())
   daemons        Daemon[]
+  sessions       Session[]
+  tickets        WsTicket[]
+  script         Script?
+  scriptVersions ScriptVersion[]
+}
+
+/// Browser sessions (cookie daemonet_sid). The cookie value is never stored, only its SHA-256.
+model Session {
+  id         String   @id @default(uuid())
+  tokenHash  String   @unique
+  operatorId String
+  operator   Operator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+  groups     String[]
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  @@index([operatorId])
+  @@index([expiresAt])
+}
+
+/// Single-use, 60-second tickets that let a browser authenticate its WebSocket without a cookie.
+model WsTicket {
+  tokenHash  String   @id
+  operatorId String
+  operator   Operator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+/// The operator's current main script.
+model Script {
+  operatorId String   @id
+  operator   Operator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+  source     String
+  version    Int
+  updatedAt  DateTime @updatedAt
+}
+
+/// The last 16 saved versions of the main script.
+model ScriptVersion {
+  operatorId String
+  operator   Operator @relation(fields: [operatorId], references: [id], onDelete: Cascade)
+  version    Int
+  source     String
+  createdAt  DateTime @default(now())
+
+  @@id([operatorId, version])
 }
 
 model Daemon {
