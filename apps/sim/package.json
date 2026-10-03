@@ -1,0 +1,11 @@
+{
+  "name": "@daemonet/sim",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { "./core": { "types": "./dist/core/index.d.ts", "default": "./dist/core/index.js" } },
+  "dependencies": {
+    "@daemonet/rules": "workspace:*",
+    "@daemonet/shared": "workspace:*"
+  }
+}
