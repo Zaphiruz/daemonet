@@ -2,30 +2,43 @@ x-logging: &default-logging
   driver: json-file
   options: { max-size: "10m", max-file: "3" }
 
+# Shared by sim and api: Vault credentials from .env (VAULT_ADDR + VAULT_TOKEN only, everything
+# else comes from Vault at start through each app's entrypoint allowlist) and the production hardening.
+x-app-service: &app-service
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    TZ: UTC
+    NODE_EXTRA_CA_CERTS: /etc/ssl/extra/cloudflare-ca.crt
+  volumes:
+    - /usr/local/share/ca-certificates/cloudflare-origin-ca.crt:/etc/ssl/extra/cloudflare-ca.crt:ro
+  # SIGTERM runs each app's graceful shutdown (the sim kicks clients, checkpoints and closes).
+  # Keep the grace period at 10 s or more; Docker's own default is exactly 10 s, so this leaves headroom.
+  stop_signal: SIGTERM
+  stop_grace_period: 30s
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: ["/tmp"]
+  logging: *default-logging
+
 services:
   sim:
+    <<: *app-service
     build: { context: ., dockerfile: apps/sim/Dockerfile }
     image: daemonet-sim:latest
-    restart: unless-stopped
-    env_file: .env            # VAULT_ADDR + VAULT_TOKEN only; everything else comes from Vault at start
-    environment:
-      TZ: UTC
-      NODE_EXTRA_CA_CERTS: /etc/ssl/extra/cloudflare-ca.crt
-    volumes:
-      - /usr/local/share/ca-certificates/cloudflare-origin-ca.crt:/etc/ssl/extra/cloudflare-ca.crt:ro
-    # SIGTERM runs the sim's gracefulShutdown (kick clients, checkpoint, close). Keep the grace
-    # period at 10 s or more; Docker's own default is exactly 10 s, so this leaves headroom.
-    stop_signal: SIGTERM
-    stop_grace_period: 30s
     # S1 is otherwise idle, but keep the 16 Hz loop from starving the box during builds.
     cpus: 1.5
     mem_limit: 1g
     pids_limit: 256
-    security_opt: ["no-new-privileges:true"]
-    cap_drop: [ALL]
-    read_only: true
-    tmpfs: ["/tmp"]
-    logging: *default-logging
+
+  api:
+    <<: *app-service
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    image: daemonet-api:latest
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 256
 
   frontend:
     build: { context: ., dockerfile: apps/frontend/Dockerfile }
@@ -33,6 +46,8 @@ services:
     restart: unless-stopped
     depends_on:
       sim:
+        condition: service_healthy
+      api:
         condition: service_healthy
     security_opt: ["no-new-privileges:true"]
     ports: ["192.168.40.21:3010:80"]   # LAN address only; nginx on LC2 is the only intended client

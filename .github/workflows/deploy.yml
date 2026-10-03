@@ -38,7 +38,7 @@ jobs:
         run: |
           set -e
           for i in 1 2 3; do
-            if docker compose -f docker-compose.prod.yml build sim frontend; then exit 0; fi
+            if docker compose -f docker-compose.prod.yml build sim api frontend; then exit 0; fi
             echo "Attempt $i failed, retrying..."; sleep 10
           done
           echo "Build failed after 3 attempts."; exit 1
@@ -62,10 +62,10 @@ jobs:
       - name: Health check
         run: |
           for i in $(seq 1 20); do
-            if curl -sf http://192.168.40.21:3010/ws/ready; then echo healthy; exit 0; fi
+            if curl -sf http://192.168.40.21:3010/ws/ready && curl -sf http://192.168.40.21:3010/api/ready; then echo healthy; exit 0; fi
             sleep 3
           done
-          docker compose -f docker-compose.prod.yml logs --tail 80 sim; exit 1
+          docker compose -f docker-compose.prod.yml logs --tail 80 sim api; exit 1
 
       - name: Prune dangling images (S1 has a 64 GB disk)
         run: docker image prune -f

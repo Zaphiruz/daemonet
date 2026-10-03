@@ -9,6 +9,7 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/sdk/package.json packages/sdk/
 COPY apps/sim/package.json apps/sim/
+COPY apps/api/package.json apps/api/
 COPY examples/starter-bot/package.json examples/starter-bot/
 RUN pnpm install --frozen-lockfile
 
@@ -18,7 +19,7 @@ COPY packages/shared packages/shared
 COPY packages/db packages/db
 COPY packages/sdk packages/sdk
 COPY apps/sim apps/sim
-RUN pnpm --filter @daemonet/db generate && pnpm exec tsc -b
+RUN pnpm --filter @daemonet/db generate && pnpm exec tsc -b apps/sim
 
 FROM node:24-alpine AS runtime
 RUN apk add --no-cache openssl tzdata

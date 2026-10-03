@@ -1,12 +1,18 @@
 # Caddy drops an incoming X-Forwarded-For unless the peer is a trusted proxy. Trust ONLY LC2
 # (static 192.168.40.11): any other host on the VLAN that reaches this port directly has its
 # X-Forwarded-For discarded, so client IPs cannot be spoofed.
-# Chain: Cloudflare edge -> cloudflared (LC2, 127.0.0.1) -> nginx (LC2) -> Caddy -> sim,
-# which is why the sim runs with TRUST_PROXY_HOPS=3.
+# Chain: Cloudflare edge -> cloudflared (LC2, 127.0.0.1) -> nginx (LC2) -> Caddy -> sim/api,
+# which is why both run with TRUST_PROXY_HOPS=3.
 {
   servers {
     trusted_proxies static 192.168.40.11/32
   }
+}
+
+(security_headers) {
+  X-Content-Type-Options "nosniff"
+  Referrer-Policy "strict-origin-when-cross-origin"
+  X-Frame-Options "DENY"
 }
 
 :80 {
@@ -17,14 +23,31 @@
     reverse_proxy sim:3000
   }
 
+  # The web API (login, session, tickets). No caching headers are added here.
+  handle /api/* {
+    header {
+      import security_headers
+    }
+    reverse_proxy api:3000
+  }
+
+  # Hashed build output is immutable (SP2 client); everything else must revalidate.
+  handle /assets/* {
+    root * /srv
+    header {
+      import security_headers
+      Cache-Control "public, max-age=31536000, immutable"
+    }
+    file_server
+  }
+
   handle {
     root * /srv
     header {
-      X-Content-Type-Options "nosniff"
-      Referrer-Policy "strict-origin-when-cross-origin"
-      X-Frame-Options "DENY"
+      import security_headers
       Cache-Control "no-cache"
     }
+    try_files {path} /index.html
     file_server
   }
 }

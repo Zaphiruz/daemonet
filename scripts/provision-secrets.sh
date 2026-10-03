@@ -21,17 +21,21 @@ ask() { local v; read -r -p "$1: " v; printf '%s' "$v"; }
 say "== Things only you have (input is hidden) =="
 VAULT_ROOT_TOKEN=$(ask_secret "Vault root token (1Password)")
 BOT_CLIENT_ID=$(ask "Authentik client ID of the public provider 'daemonet-bot'")
-[ -n "$VAULT_ROOT_TOKEN" ] && [ -n "$BOT_CLIENT_ID" ] || { say "Vault token and client ID are required."; exit 1; }
+WEB_CLIENT_ID=$(ask "Authentik client ID of the confidential provider 'daemonet' (web login)")
+WEB_CLIENT_SECRET=$(ask_secret "Authentik client secret of 'daemonet'")
+[ -n "$VAULT_ROOT_TOKEN" ] && [ -n "$BOT_CLIENT_ID" ] && [ -n "$WEB_CLIENT_ID" ] && [ -n "$WEB_CLIENT_SECRET" ]   || { say "Vault token, both client IDs and the web client secret are required."; exit 1; }
 
 say "== Reading the DB password from S2 =="
 DB_PW=$(ssh -o BatchMode=yes S2 'cat /root/.daemonet-db-pw')
 [ -n "$DB_PW" ] || { say "Missing /root/.daemonet-db-pw on S2 (OPERATIONS step 3)."; exit 1; }
 
 say "== Building the secret document =="
-export DB_PW BOT_CLIENT_ID
 PY=$(command -v python3 || command -v py || command -v python || true)
 [ -n "$PY" ] || { say "Python is required (python3, py or python)."; exit 1; }
 [ "$(basename "$PY" .exe)" = py ] && PY="$PY -3"
+# Generated in memory, never printed. A re-run replaces it, which signs every web session out.
+SESSION_SECRET=$($PY -c 'import secrets; print(secrets.token_hex(32))')
+export DB_PW BOT_CLIENT_ID WEB_CLIENT_ID WEB_CLIENT_SECRET SESSION_SECRET
 KV_JSON=$($PY - <<'PY'
 import json, os
 d = {
@@ -50,6 +54,15 @@ d = {
   "SUBNET": "lo",
   "LOG_LEVEL": "info",
   "PORT": "3000",
+  # apps/api (web login). The sim's entrypoint drops these (and the api drops the bot/sim-only keys);
+  # each app's allowlist logs only the NAMES it ignored.
+  "SESSION_SECRET": os.environ["SESSION_SECRET"],
+  "SESSION_COOKIE_SECURE": "true",
+  "FRONTEND_ORIGIN": "https://daemonet.wispy-nook.casa",
+  "AUTHENTIK_CLIENT_ID": os.environ["WEB_CLIENT_ID"],
+  "AUTHENTIK_CLIENT_SECRET": os.environ["WEB_CLIENT_SECRET"],
+  "AUTHENTIK_REDIRECT_URI": "https://daemonet.wispy-nook.casa/api/auth/callback",
+  "AUTH_ADMIN_GROUP": "daemonet-admins",
 }
 print(json.dumps(d))
 PY
@@ -86,5 +99,5 @@ ssh -o BatchMode=yes S1 '
     | curl -s -o /dev/null -w "%{http_code}" -H @- https://vault.wispy-nook.casa/v1/secret/data/daemonet)
   echo "GET secret/data/daemonet with the app token -> HTTP $code (want 200)" >&2'
 
-unset VAULT_ROOT_TOKEN DB_PW KV_JSON APP_TOKEN
+unset VAULT_ROOT_TOKEN DB_PW KV_JSON APP_TOKEN WEB_CLIENT_SECRET SESSION_SECRET
 say "Done. Next: OPERATIONS step 6 (move the token into /opt/daemonet, write .env)."
