@@ -9,7 +9,7 @@
 #     LC3 -> here (in a variable) -> S1:/root/.daemonet-vault-token (mode 600)
 #
 # Prerequisites: `ssh S2`, `ssh S1` and `ssh LC3` work; Vault is unsealed; OPERATIONS steps 3 and 4 are done.
-# Safe to re-run: the KV write is a full replace; an existing app token is reused, not duplicated.
+# Safe to re-run, but the KV write is a full replace (any later `vault kv patch` changes are lost; re-apply them); an existing app token is reused, not duplicated.
 set -euo pipefail
 
 say() { printf '%s\n' "$*" >&2; }
@@ -29,7 +29,10 @@ DB_PW=$(ssh -o BatchMode=yes S2 'cat /root/.daemonet-db-pw')
 
 say "== Building the secret document =="
 export DB_PW BOT_CLIENT_ID
-KV_JSON=$(python - <<'PY'
+PY=$(command -v python3 || command -v py || command -v python || true)
+[ -n "$PY" ] || { say "Python is required (python3, py or python)."; exit 1; }
+[ "$(basename "$PY" .exe)" = py ] && PY="$PY -3"
+KV_JSON=$($PY - <<'PY'
 import json, os
 d = {
   # The sim runs on S1 and reaches the shared PostgreSQL on S2 over the VLAN 40 LAN (OPERATIONS step 3).
@@ -76,9 +79,11 @@ say "== Delivering the app token to S1:/root/.daemonet-vault-token (mode 600) ==
 printf '%s' "$APP_TOKEN" | ssh -o BatchMode=yes S1 'umask 077; cat > /root/.daemonet-vault-token; echo "written: $(stat -c "%a %U %s bytes" /root/.daemonet-vault-token)" >&2'
 
 say "== Verifying the app token can read the secret (from S1, through the same URL the container uses) =="
+# The token is piped to curl on stdin (-H @-), never put on a command line. No custom CA: vault.wispy-nook.casa
+# resolves via Cloudflare, whose public edge certificate chains to the system trust store.
 ssh -o BatchMode=yes S1 '
-  code=$(curl -s -o /dev/null -w "%{http_code}" --cacert /usr/local/share/ca-certificates/cloudflare-origin-ca.crt \
-    -H "X-Vault-Token: $(cat /root/.daemonet-vault-token)" https://vault.wispy-nook.casa/v1/secret/data/daemonet)
+  code=$(printf "X-Vault-Token: %s\n" "$(cat /root/.daemonet-vault-token)" \
+    | curl -s -o /dev/null -w "%{http_code}" -H @- https://vault.wispy-nook.casa/v1/secret/data/daemonet)
   echo "GET secret/data/daemonet with the app token -> HTTP $code (want 200)" >&2'
 
 unset VAULT_ROOT_TOKEN DB_PW KV_JSON APP_TOKEN

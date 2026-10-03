@@ -54,17 +54,32 @@ ssh S1 'hostname; ip -4 addr show enp4s0 | grep inet; docker version --format "{
   id runner; ls -l /usr/local/share/ca-certificates/cloudflare-origin-ca.crt; df -h / | tail -1'
 ```
 
-Expect `192.168.40.21`, a Docker version, the `runner` user (in the `docker` group), the CA cert and free disk. If anything is missing, S1 was provisioned like S2 on 2026-04-20 (`D:\docs\MikroTik\CLAUDE.md`, "S1"); redo the missing piece the same way.
+Expect `192.168.40.21`, a Docker version, the `runner` user (in the `docker` group), the CA cert and free disk. Then check S1 can reach Vault. Since 2026-04-20 `vault.wispy-nook.casa` resolves through Cloudflare's public DNS and tunnel, so S1 sees Cloudflare's edge certificate, which its system CA bundle already trusts (do not pass `--cacert`; it would replace the trust store and fail):
+
+```bash
+ssh S1 'getent hosts vault.wispy-nook.casa; curl -s -o /dev/null -w "%{http_code}\n" https://vault.wispy-nook.casa/v1/sys/health'
+```
+
+Expect an IP and an HTTP status (200, 429 or 473 for a healthy Vault), not a curl error. If anything is missing, S1 was provisioned like S2 on 2026-04-20 (`D:\docs\MikroTik\CLAUDE.md`, "S1"); redo the missing piece the same way.
 
 - [ ] **Step 2: GitHub deploy key and self-hosted runner (S1)**
 
 ```bash
-ssh S1 'sudo -u runner ssh-keygen -t ed25519 -N "" -f /home/runner/.ssh/daemonet-deploy -C daemonet-deploy && \
-  printf "Host github.com-daemonet\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/daemonet-deploy\n  IdentitiesOnly yes\n" | sudo -u runner tee -a /home/runner/.ssh/config >/dev/null && \
+ssh S1 'sudo install -d -m 700 -o runner -g runner /home/runner/.ssh && \
+  sudo -u runner ssh-keygen -t ed25519 -N "" -f /home/runner/.ssh/daemonet-deploy -C daemonet-deploy && \
+  printf "Host github.com-daemonet\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/daemonet-deploy\n  IdentitiesOnly yes\n  StrictHostKeyChecking accept-new\n" | sudo -u runner tee -a /home/runner/.ssh/config >/dev/null && \
+  sudo -u runner chmod 600 /home/runner/.ssh/config && \
+  sudo -u runner sh -c "ssh-keyscan github.com >> /home/runner/.ssh/known_hosts" && \
   cat /home/runner/.ssh/daemonet-deploy.pub'
 ```
 
 Add the printed public key as a **read-only deploy key** on `Zaphiruz/daemonet` (Settings → Deploy keys). Store the private key in Vault too (LC3): `ssh S1 'sudo cat /home/runner/.ssh/daemonet-deploy' | ssh LC3 'export VAULT_ADDR=http://127.0.0.1:8200; read -r VAULT_TOKEN ...'` — use the "piping a secret from one host into Vault" recipe in the homelab doc, path `deploy-keys/daemonet`, field `private_key`.
+
+**Before registering the runner (do this first).** Merging this work to `main` automatically queues a Deploy run (CI succeeds, then `deploy.yml` fires), and a queued run starts the moment a runner labelled `daemonet` comes online, before Vault, the database and `.env` exist. So:
+
+1. Configure the GitHub `production` environment now (Step 2b; it may already exist, auto-created by that queued run) with **deployment branches = `main`**.
+2. List and cancel any queued or waiting Deploy run: `gh run list --workflow deploy.yml --repo Zaphiruz/daemonet`, then `gh run cancel <id> --repo Zaphiruz/daemonet` for each.
+3. Only then run `./config.sh` below. The first deploy is started deliberately at Step 8.
 
 Clone and register the runner (GitHub: Settings → Actions → Runners → New self-hosted runner → Linux x64 gives a fresh token):
 
@@ -106,6 +121,8 @@ EOF
   sudo iptables -I DOCKER-USER -i end0 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL ! -s 192.168.40.21 -j DROP && \
   (dpkg -s iptables-persistent >/dev/null 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent) && sudo netfilter-persistent save'
 ```
+
+Note: `docker compose up -d postgresql` recreates the shared PostgreSQL container, so every app that uses it (Plantry, Third Eye, Mealie, ...) loses its database connection for a few seconds. Do it at a quiet time.
 
 Verify (all three lines must hold):
 
@@ -201,7 +218,7 @@ ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml ps'
 
 1. **Device-flow bot from the PC captures a daemon:**
    `DAEMONET_URL=wss://daemonet.wispy-nook.casa/ws DAEMONET_ISSUER=https://authentik.wispy-nook.casa/application/o/daemonet-bot/ DAEMONET_CLIENT_ID=<CLIENT_ID> DAEMONET_NAME=<you> pnpm --filter @daemonet/starter-bot start` → approve the printed code in the browser → `claimed pingling` → within a few minutes `captured pingling!`.
-2. **Persistence across a restart:** `ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml restart sim'`; rerun the bot; the log line `connected as …` is followed by no `claimed` line (starter already claimed) and the captured daemon is in RAM (`game.self.ram` — the bot prints `captured` only for new ones; check with `psql`: `ssh S2 'docker exec shared-infra-postgresql-1 psql -U daemonet -d daemonet -c "select species, location, slot from \"Daemon\""'`). Also confirm the restart was graceful: the sim log shows the shutdown sequence finishing and the container exit code is 0 (`docker compose -f docker-compose.prod.yml ps -a`).
+2. **Persistence across a restart:** `ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml restart -t 30 sim'`; rerun the bot; the log line `connected as …` is followed by no `claimed` line (starter already claimed) and the captured daemon is in RAM (`game.self.ram` — the bot prints `captured` only for new ones; check with `psql`: `ssh S2 'docker exec shared-infra-postgresql-1 psql -U daemonet -d daemonet -c "select species, location, slot from \"Daemon\""'`). Also confirm the restart was graceful: check it from the log, not from exit codes: `docker compose -f docker-compose.prod.yml logs --tail 100 sim` shows `shutting down`, then the shutdown lines, then `daemonet sim started` for the new process.
 3. **Tag protection with a second operator:** a second Authentik user in `daemonet-users` runs the bot at the same time; its log shows `capture failed`/no capture of the first bot's tagged target, and no `E_STATE` other than tag conflicts.
 4. **Group gate:** remove a user from `daemonet-users`, restart their bot → `E_AUTH` (`authentication failed`; the real reason, `not in daemonet-users`, is in the sim log). Add them back.
 5. **Real client IPs and no PII:** `ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml logs --tail 50 sim | grep "operator connected"'` shows your public IP in `ip` and a `sub`, never a name or email. If `ip` is the LC2/Caddy/Docker address instead of your public IP, `TRUST_PROXY_HOPS` is wrong: fix it in Vault (`vault kv patch secret/daemonet TRUST_PROXY_HOPS=<n>`) and restart before going further, otherwise the per-IP connection cap applies to everyone together.
@@ -215,12 +232,13 @@ ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml ps'
    # 2. Migrate it and start the staging sim, bound to S1 loopback only (reach it through an SSH tunnel).
    H="--rm --env-file /dev/shm/daemonet-staging.env --entrypoint '' --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true"
    ssh S1 "docker run $H daemonet-sim:latest sh -c 'cd packages/db && node_modules/.bin/prisma migrate deploy' && \
-     docker run $H -p 127.0.0.1:3011:3000 --name daemonet-staging daemonet-sim:latest node apps/sim/dist/runtime/main.js"
+     docker run -d $H -p 127.0.0.1:3011:3000 --name daemonet-staging daemonet-sim:latest node apps/sim/dist/runtime/main.js"
    ```
 
-   (Plain `docker run` on the image built by the last deploy, not `compose run`: the compose service would also inject the Vault `.env`. `--entrypoint ''` skips the Vault entrypoint on purpose; the sim gets only the staging env file. `MAX_CONNECTIONS_PER_IP=128` is set for this container only: all 64 bots share your tunnel's one IP. Production's cap is untouched.) From the workstation: `ssh -L 3011:127.0.0.1:3011 S1`, then `DAEMONET_URL=ws://127.0.0.1:3011/ws DAEMONET_BOTS=64 pnpm --filter @daemonet/starter-bot load` for 5 minutes. The `tick stats` log lines must show `p99` under 32 ms. Never publish port 3011 on the LAN address. Clean up afterwards (stop the sim with Ctrl+C or `docker stop daemonet-staging`):
+   (Plain `docker run` on the image built by the last deploy, not `compose run`: the compose service would also inject the Vault `.env`. `--entrypoint ''` skips the Vault entrypoint on purpose; the sim gets only the staging env file. `MAX_CONNECTIONS_PER_IP=128` is set for this container only: all 64 bots share your tunnel's one IP. Production's cap is untouched.) From the workstation: `ssh -L 3011:127.0.0.1:3011 S1`, then `DAEMONET_URL=ws://127.0.0.1:3011/ws DAEMONET_BOTS=64 pnpm --filter @daemonet/starter-bot load` for 5 minutes. The `tick stats` log lines must show `p99` under 32 ms. Never publish port 3011 on the LAN address. Clean up afterwards (the staging sim runs detached; `docker stop daemonet-staging` stops it and, because of `--rm`, removes it):
 
    ```bash
+   ssh S1 'docker stop daemonet-staging'
    ssh S2 'docker exec shared-infra-postgresql-1 psql -U postgres -c "DROP DATABASE daemonet_staging;"'
    ssh S1 'rm -f /dev/shm/daemonet-staging.env'
    ```
@@ -234,8 +252,14 @@ Add to `D:\docs\MikroTik\CLAUDE.md`: S1 now hosts Daemonet (compose at `/opt/dae
 - **Logs:** `ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml logs -f sim'` (pino JSON; `tick stats` every 64 s).
 - **Restart:** `… restart sim` — Compose sends SIGTERM and waits up to `stop_grace_period` (30 s) for the graceful shutdown to checkpoint the world. Connected bots are kicked with `server shutting down`, reconnect and resume on their own; the world reloads from the last checkpoint (≤ 32 s of movement lost, never a daemon).
 - **Change a secret:** `vault kv patch secret/daemonet KEY=value` on LC3, then `… restart sim`. This includes `TRUST_PROXY_HOPS` and `MAX_CONNECTIONS_PER_IP`.
-- **Rotate the Vault token:** it is periodic (30 d, renewed weekly by LC3's timer); to replace it, rerun `scripts/provision-secrets.sh` (reuses the existing token unless removed from `/opt/vault/app-tokens`), then `fetch-secrets.sh` and restart.
-- **Migrations:** run by `deploy.yml` before `up -d`; manual: the "Run migrations" step's command in `.github/workflows/deploy.yml`.
+- **Rotate the Vault token:** it is periodic (30 d, renewed weekly by LC3's timer); to replace it, rerun `scripts/provision-secrets.sh` (reuses the existing token unless removed from `/opt/vault/app-tokens`), then `fetch-secrets.sh` and restart. Rerunning the script **rewrites the whole Vault document** (`kv put`), so re-apply any later `vault kv patch` changes (for example a tuned `TRUST_PROXY_HOPS`) afterwards.
+- **Migrations:** run by `deploy.yml` before `up -d`; manual: the "Run migrations" step's command in `.github/workflows/deploy.yml`. The migrate container runs under the production hardening (`read_only`, tmpfs `/tmp`, all capabilities dropped, `no-new-privileges`); `prisma migrate deploy` was verified to apply pending migrations under exactly those flags against a throwaway database. Fallback if a future Prisma upgrade needs a writable path (first try a tmpfs for it, set through an environment variable): run the migration once by hand without `--read-only`, with `DATABASE_URL` exported from Vault as in the workflow step: `docker run --rm -e DATABASE_URL --entrypoint "" daemonet-sim:latest sh -c 'cd packages/db && node_modules/.bin/prisma migrate deploy'`; then deploy.
 - **Backups:** the `daemonet` database is included in S2's nightly `pg_dumpall` automatically.
 - **Disk:** `docker image prune -f` runs after each deploy; check `df -h /` on S1 occasionally.
 - **Wipe the world (dev only):** stop the sim, `psql -U daemonet -d daemonet -c 'TRUNCATE "Daemon","Operator","SubnetSeed","AppliedAction" CASCADE'`, start the sim. Operators re-claim starters.
+
+### Troubleshooting
+
+- **`Vault responded 503` in the sim log at start:** Vault is sealed (LC3 rebooted). Unseal it, then `restart sim`.
+- **`/ws/ready` returns 503 (and the deploy health check fails):** the database is unreachable. Check that S2's PostgreSQL is up and that the `DOCKER-USER` rule on S2 still allows S1 (`ssh S2 'sudo iptables -S DOCKER-USER'`, and the Step 3 verification lines).
+- **Clients get HTTP 429 on connect:** the per-IP connection cap. Either one client really opened more than `MAX_CONNECTIONS_PER_IP` connections, or `TRUST_PROXY_HOPS` is wrong and everyone shares the proxy's IP (see the warning in the configuration reference and acceptance step 5).

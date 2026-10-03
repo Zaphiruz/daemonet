@@ -4,7 +4,17 @@ import { ALLOWED_VAULT_KEYS, filterSecrets } from '../env-filter.mjs';
 describe('filterSecrets', () => {
   it('passes exactly the 9 documented keys', () => {
     const doc = Object.fromEntries(ALLOWED_VAULT_KEYS.map((k) => [k, 'v']));
-    expect(ALLOWED_VAULT_KEYS).toHaveLength(9);
+    expect([...ALLOWED_VAULT_KEYS]).toEqual([
+      'DATABASE_URL',
+      'AUTHENTIK_ISSUER_URL',
+      'AUTHENTIK_BOT_CLIENT_ID',
+      'AUTH_REQUIRED_GROUP',
+      'TRUST_PROXY_HOPS',
+      'MAX_CONNECTIONS_PER_IP',
+      'SUBNET',
+      'LOG_LEVEL',
+      'PORT',
+    ]);
     expect(ALLOWED_VAULT_KEYS).toContain('MAX_CONNECTIONS_PER_IP');
     expect(filterSecrets(doc)).toEqual({ applied: doc, ignored: [] });
   });

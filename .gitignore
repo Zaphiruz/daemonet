@@ -8,3 +8,4 @@ coverage/
 *.log
 *.pid
 packages/db/src/generated/
+vault-token

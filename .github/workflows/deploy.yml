@@ -47,8 +47,9 @@ jobs:
           set -euo pipefail
           source .env
           # DATABASE_URL travels by environment only (never argv, which other users can read in ps).
-          DATABASE_URL=$(curl -sf --cacert /usr/local/share/ca-certificates/cloudflare-origin-ca.crt \
-            -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/daemonet" \
+          # The Vault token goes to curl on stdin (-H @-), never on its command line.
+          DATABASE_URL=$(printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN" \
+            | curl -sf -H @- "$VAULT_ADDR/v1/secret/data/daemonet" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['data']['DATABASE_URL'])")
           export DATABASE_URL
           docker compose -f docker-compose.prod.yml run --rm --no-deps -e DATABASE_URL --entrypoint "" sim \
