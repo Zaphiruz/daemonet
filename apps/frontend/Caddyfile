@@ -23,10 +23,11 @@
     reverse_proxy sim:3000
   }
 
-  # The web API (login, session, tickets). No caching headers are added here.
+  # The web API (login, session, tickets): never cached by browsers or intermediaries.
   handle /api/* {
     header {
       import security_headers
+      Cache-Control "no-store"
     }
     reverse_proxy api:3000
   }

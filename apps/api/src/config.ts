@@ -7,7 +7,7 @@ const Env = z.object({
   SESSION_SECRET: z.string().min(32),
   SESSION_COOKIE_SECURE: z.enum(['true', 'false']).default('true'),
   FRONTEND_ORIGIN: z.url(),
-  AUTHENTIK_ISSUER_URL: z.url().optional(),
+  AUTHENTIK_WEB_ISSUER_URL: z.url().optional(),
   AUTHENTIK_CLIENT_ID: z.string().min(1).optional(),
   AUTHENTIK_CLIENT_SECRET: z.string().min(1).optional(),
   AUTHENTIK_REDIRECT_URI: z.url().optional(),
@@ -38,8 +38,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const devBypass = e.AUTH_DEV_BYPASS === 'true';
   if (devBypass && e.NODE_ENV === 'production') throw new Error('AUTH_DEV_BYPASS must not be enabled in production');
   const oidc =
-    e.AUTHENTIK_ISSUER_URL && e.AUTHENTIK_CLIENT_ID && e.AUTHENTIK_CLIENT_SECRET && e.AUTHENTIK_REDIRECT_URI
-      ? { issuer: e.AUTHENTIK_ISSUER_URL, clientId: e.AUTHENTIK_CLIENT_ID, clientSecret: e.AUTHENTIK_CLIENT_SECRET, redirectUri: e.AUTHENTIK_REDIRECT_URI }
+    e.AUTHENTIK_WEB_ISSUER_URL && e.AUTHENTIK_CLIENT_ID && e.AUTHENTIK_CLIENT_SECRET && e.AUTHENTIK_REDIRECT_URI
+      ? { issuer: e.AUTHENTIK_WEB_ISSUER_URL, clientId: e.AUTHENTIK_CLIENT_ID, clientSecret: e.AUTHENTIK_CLIENT_SECRET, redirectUri: e.AUTHENTIK_REDIRECT_URI }
       : null;
   if (!oidc && !devBypass) throw new Error('set the AUTHENTIK_* variables (or AUTH_DEV_BYPASS=true outside production)');
   return {

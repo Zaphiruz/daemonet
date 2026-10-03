@@ -59,6 +59,8 @@ d = {
   "SESSION_SECRET": os.environ["SESSION_SECRET"],
   "SESSION_COOKIE_SECURE": "true",
   "FRONTEND_ORIGIN": "https://daemonet.wispy-nook.casa",
+  # Issuer of the web provider (slug daemonet); the api no longer reads AUTHENTIK_ISSUER_URL (that is the bot issuer, used by the sim).
+  "AUTHENTIK_WEB_ISSUER_URL": "https://authentik.wispy-nook.casa/application/o/daemonet/",
   "AUTHENTIK_CLIENT_ID": os.environ["WEB_CLIENT_ID"],
   "AUTHENTIK_CLIENT_SECRET": os.environ["WEB_CLIENT_SECRET"],
   "AUTHENTIK_REDIRECT_URI": "https://daemonet.wispy-nook.casa/api/auth/callback",

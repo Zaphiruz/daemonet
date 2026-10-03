@@ -52,15 +52,12 @@ Before the first deploy that includes `apps/api` (OPERATIONS Steps 4 item 5, 5, 
       `daemonet`), bound to `daemonet-users`; redirect URI = `FRONTEND_ORIGIN` + `/api/auth/callback`, i.e.
       `https://daemonet.wispy-nook.casa/api/auth/callback`; same scopes incl. `groups`. Note Client ID and Secret.
 - [ ] Vault: re-run `bash scripts/provision-secrets.sh` (it now also asks for the web client ID and secret and adds
-      `SESSION_SECRET`, `SESSION_COOKIE_SECURE`, `FRONTEND_ORIGIN`, `AUTHENTIK_CLIENT_ID`, `AUTHENTIK_CLIENT_SECRET`,
-      `AUTHENTIK_REDIRECT_URI`, `AUTH_ADMIN_GROUP`): expect `kv written: 16 keys`. It is a full replace, so re-apply any
+      `SESSION_SECRET`, `SESSION_COOKIE_SECURE`, `FRONTEND_ORIGIN`, `AUTHENTIK_WEB_ISSUER_URL`, `AUTHENTIK_CLIENT_ID`, `AUTHENTIK_CLIENT_SECRET`,
+      `AUTHENTIK_REDIRECT_URI`, `AUTH_ADMIN_GROUP`): expect `kv written: 17 keys`. It is a full replace, so re-apply any
       `vault kv patch` changes afterwards.
 - [ ] `TRUST_PROXY_HOPS` is one key shared by the sim and the api (value `3`); confirm it still matches the chain
       (acceptance 5 and 6).
 - [ ] The first deploy log shows `Ignored non-allowlisted key(s)` for both services: expected (each app drops the
       other's keys).
-- [ ] Settle the issuer question before relying on web login: the sim and the api share `AUTHENTIK_ISSUER_URL` (set to
-      the `daemonet-bot` issuer) while Authentik ID tokens carry a per-provider issuer. Acceptance 6 tests it; see the
-      issuer note under OPERATIONS Step 4.
 - [ ] After the deploy: `curl https://daemonet.wispy-nook.casa/api/ready` returns `{"ok":true}` and the OPERATIONS
       Step 9 item 6 login check passes.

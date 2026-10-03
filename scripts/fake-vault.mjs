@@ -10,7 +10,7 @@ const secrets = {
   TRUST_PROXY_HOPS: '3', MAX_CONNECTIONS_PER_IP: '16', SUBNET: 'lo', LOG_LEVEL: 'info', PORT: '3000',
   // apps/api (web login); each app's allowlist drops the other's keys.
   SESSION_SECRET: 'local-session-secret-local-session-secret', SESSION_COOKIE_SECURE: 'false', FRONTEND_ORIGIN: 'http://127.0.0.1:3010',
-  AUTHENTIK_CLIENT_ID: 'daemonet', AUTHENTIK_CLIENT_SECRET: 'not-a-real-secret', AUTHENTIK_REDIRECT_URI: 'http://127.0.0.1:3010/api/auth/callback', AUTH_ADMIN_GROUP: 'daemonet-admins',
+  AUTHENTIK_WEB_ISSUER_URL: 'https://authentik.wispy-nook.casa/application/o/daemonet/', AUTHENTIK_CLIENT_ID: 'daemonet', AUTHENTIK_CLIENT_SECRET: 'not-a-real-secret', AUTHENTIK_REDIRECT_URI: 'http://127.0.0.1:3010/api/auth/callback', AUTH_ADMIN_GROUP: 'daemonet-admins',
 };
 createServer((req, res) => {
   if (req.url === '/v1/secret/data/daemonet' && req.headers['x-vault-token'] === 'tok') {
