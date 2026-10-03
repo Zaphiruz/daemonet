@@ -9,3 +9,4 @@ export * from './content/species.js';
 export * from './content/items.js';
 export * from './combat.js';
 export * from './xp.js';
+export * from './spawn.js';
