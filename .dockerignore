@@ -3,7 +3,14 @@ node_modules
 **/dist
 **/*.tsbuildinfo
 .git
+.github
+.superpowers
 docs
 .env
+**/.env*
 **/.daemonet-token.json
+vault-token
+**/vault-token
+*.log
+*.pid
 packages/db/src/generated

@@ -44,7 +44,7 @@ COPY --from=build --chown=node:node /repo/apps/sim/node_modules apps/sim/node_mo
 COPY --chown=node:node apps/sim/entrypoint.mjs apps/sim/env-filter.mjs apps/sim/
 USER node
 EXPOSE 3000
-# Liveness only: /ws/ready probes PostgreSQL and is what the deploy workflow checks.
+# Readiness: /ws/ready also probes PostgreSQL, and is what the deploy workflow checks.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:3000/ws/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "apps/sim/entrypoint.mjs"]

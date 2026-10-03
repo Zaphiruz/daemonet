@@ -29,9 +29,12 @@ Set too high and clients can spoof their IP through `X-Forwarded-For`. Re-check 
 added or removed (for example a new load balancer), then `restart sim`. Acceptance step 5 verifies
 it from the logs.
 
-The entrypoint refuses to let Vault set `NODE_ENV`, `AUTH_DEV_BYPASS`, `NODE_OPTIONS`,
-`NODE_EXTRA_CA_CERTS`, `TZ` or `PATH` (it logs the key names it ignored). Only `VAULT_ADDR`,
-`VAULT_TOKEN` and optionally `VAULT_PATH` come from `.env`/the container environment.
+The entrypoint applies **only these 9 keys** from Vault (an allowlist in `apps/sim/env-filter.mjs`).
+Anything else in the document (`AUTH_DEV_BYPASS`, `NODE_ENV`, `NODE_OPTIONS`,
+`NODE_TLS_REJECT_UNAUTHORIZED`, `LD_PRELOAD`, `PATH`, new keys nobody allowlisted) is dropped and its
+NAME logged as `Ignored non-allowlisted key(s)`. Adding a new setting means adding it to the
+allowlist, `provision-secrets.sh` and this table together. `VAULT_ADDR`/`VAULT_TOKEN`/`VAULT_PATH`
+come from `.env` and are removed from the sim process's environment.
 
 **Stopping the sim:** the container receives SIGTERM, which the entrypoint forwards to the sim's
 `gracefulShutdown` (stop accepting connections, kick clients with `server shutting down`, flush and
@@ -73,6 +76,10 @@ ssh S1 'cd /opt/actions-runner-daemonet && sudo -u runner bash -c "curl -sSL -o 
 ```
 
 Verify: the runner shows **Idle** with label `daemonet` on GitHub.
+
+- [ ] **Step 2b: GitHub environment `production` (you, in the GitHub UI)**
+
+`deploy.yml` runs in the environment `production`. Create it: repository Settings → Environments → New environment → `production`, then **Deployment branches and tags → Selected branches and tags → add `main` only**. Optionally add yourself as a required reviewer so every deploy waits for an approval click. Without the branch restriction a manual `workflow_dispatch` from another branch could be pointed at the self-hosted runner (the workflow also refuses non-`main` dispatches itself, but the environment rule is the enforced one).
 
 - [ ] **Step 3: PostgreSQL user + database, reachable from S1 (S2)**
 
@@ -199,7 +206,24 @@ ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml ps'
 4. **Group gate:** remove a user from `daemonet-users`, restart their bot → `E_AUTH` (`authentication failed`; the real reason, `not in daemonet-users`, is in the sim log). Add them back.
 5. **Real client IPs and no PII:** `ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml logs --tail 50 sim | grep "operator connected"'` shows your public IP in `ip` and a `sub`, never a name or email. If `ip` is the LC2/Caddy/Docker address instead of your public IP, `TRUST_PROXY_HOPS` is wrong: fix it in Vault (`vault kv patch secret/daemonet TRUST_PROXY_HOPS=<n>`) and restart before going further, otherwise the per-IP connection cap applies to everyone together.
 6. **Existing apps unaffected:** open Plantry, Third Eye and Mealie; all load.
-7. **Load:** `DAEMONET_URL=wss://daemonet.wispy-nook.casa/ws DAEMONET_BOTS=64 pnpm --filter @daemonet/starter-bot load` for 5 minutes (requires `AUTH_DEV_BYPASS`, which production refuses — so run this step against a **staging** start instead: `ssh S1 'cd /opt/daemonet && docker compose -f docker-compose.prod.yml run --rm --no-deps -p 192.168.40.21:3011:3000 -e VAULT_PATH=secret/data/daemonet -e AUTH_DEV_BYPASS=true -e NODE_ENV=development sim'` and point the bots at `ws://192.168.40.21:3011/ws` from a VLAN 40 host, or through an SSH tunnel: `ssh -L 3011:192.168.40.21:3011 S1`). The staging start has no proxy in front, so all 64 bots share one IP and the per-IP cap (16) would reject most of them: before the staging start run `vault kv patch secret/daemonet MAX_CONNECTIONS_PER_IP=128` on LC3 (Vault values override `-e` flags, except the protected keys), and restore it with `vault kv patch secret/daemonet MAX_CONNECTIONS_PER_IP=16` afterwards. The `tick stats` log lines must show `p99` under 32 ms. Afterwards remove the load operators: `ssh S2 'docker exec shared-infra-postgresql-1 psql -U daemonet -d daemonet -c "DELETE FROM \"Daemon\" WHERE \"operatorId\" IN (SELECT id FROM \"Operator\" WHERE sub LIKE '"'"'dev-%'"'"'); DELETE FROM \"Operator\" WHERE sub LIKE '"'"'dev-%'"'"';"'`.
+7. **Load (staging sim with its own throwaway database; never production data):** the load test needs `AUTH_DEV_BYPASS`, which production refuses, so it runs a **separate staging container** that does not use Vault and is never pointed at the `daemonet` database. Rule: a sim with dev bypass on must only ever see a throwaway database.
+
+   ```bash
+   # 1. Throwaway database + env file (password piped S2 -> S1, never on a command line; env file in tmpfs).
+   ssh S2 'docker exec shared-infra-postgresql-1 psql -U postgres -c "CREATE DATABASE daemonet_staging OWNER daemonet TEMPLATE template0;"'
+   ssh S2 'cat /root/.daemonet-db-pw' | ssh S1 'umask 077; read -r PW; printf "DATABASE_URL=postgresql://daemonet:%s@192.168.40.20:5432/daemonet_staging\nAUTH_DEV_BYPASS=true\nNODE_ENV=development\nMAX_CONNECTIONS_PER_IP=128\nSUBNET=lo\nLOG_LEVEL=info\n" "$PW" > /dev/shm/daemonet-staging.env'
+   # 2. Migrate it and start the staging sim, bound to S1 loopback only (reach it through an SSH tunnel).
+   H="--rm --env-file /dev/shm/daemonet-staging.env --entrypoint '' --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true"
+   ssh S1 "docker run $H daemonet-sim:latest sh -c 'cd packages/db && node_modules/.bin/prisma migrate deploy' && \
+     docker run $H -p 127.0.0.1:3011:3000 --name daemonet-staging daemonet-sim:latest node apps/sim/dist/runtime/main.js"
+   ```
+
+   (Plain `docker run` on the image built by the last deploy, not `compose run`: the compose service would also inject the Vault `.env`. `--entrypoint ''` skips the Vault entrypoint on purpose; the sim gets only the staging env file. `MAX_CONNECTIONS_PER_IP=128` is set for this container only: all 64 bots share your tunnel's one IP. Production's cap is untouched.) From the workstation: `ssh -L 3011:127.0.0.1:3011 S1`, then `DAEMONET_URL=ws://127.0.0.1:3011/ws DAEMONET_BOTS=64 pnpm --filter @daemonet/starter-bot load` for 5 minutes. The `tick stats` log lines must show `p99` under 32 ms. Never publish port 3011 on the LAN address. Clean up afterwards (stop the sim with Ctrl+C or `docker stop daemonet-staging`):
+
+   ```bash
+   ssh S2 'docker exec shared-infra-postgresql-1 psql -U postgres -c "DROP DATABASE daemonet_staging;"'
+   ssh S1 'rm -f /dev/shm/daemonet-staging.env'
+   ```
 
 - [ ] **Step 10: Record it in the homelab doc**
 

@@ -20,6 +20,11 @@ services:
     # S1 is otherwise idle, but keep the 16 Hz loop from starving the box during builds.
     cpus: 1.5
     mem_limit: 1g
+    pids_limit: 256
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: ["/tmp"]
     logging: *default-logging
 
   frontend:
@@ -29,5 +34,6 @@ services:
     depends_on:
       sim:
         condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
     ports: ["192.168.40.21:3010:80"]   # LAN address only; nginx on LC2 is the only intended client
     logging: *default-logging

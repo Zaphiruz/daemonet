@@ -14,9 +14,12 @@ concurrency: { group: deploy, cancel-in-progress: false }
 jobs:
   deploy:
     # workflow_run fires for CI runs from forks and any branch; without these guards a green CI run
-    # on a fork's pull_request would deploy that fork's code.
+    # on a fork's pull_request would deploy that fork's code. A manual dispatch only deploys main:
+    # a run started from another branch is skipped here, and the `production` environment (branch
+    # protection configured in the repository settings, OPERATIONS step 2b) enforces it again.
+    environment: production
     if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
+      ${{ (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
           (github.event.workflow_run.conclusion == 'success' &&
            github.event.workflow_run.event == 'push' &&
            github.event.workflow_run.head_branch == 'main' &&
@@ -43,9 +46,12 @@ jobs:
         run: |
           set -euo pipefail
           source .env
-          DB_URL=$(curl -sf -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/daemonet" \
+          # DATABASE_URL travels by environment only (never argv, which other users can read in ps).
+          DATABASE_URL=$(curl -sf --cacert /usr/local/share/ca-certificates/cloudflare-origin-ca.crt \
+            -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/daemonet" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['data']['DATABASE_URL'])")
-          docker compose -f docker-compose.prod.yml run --rm --no-deps -e DATABASE_URL="$DB_URL" --entrypoint "" sim \
+          export DATABASE_URL
+          docker compose -f docker-compose.prod.yml run --rm --no-deps -e DATABASE_URL --entrypoint "" sim \
             sh -c 'cd packages/db && node_modules/.bin/prisma migrate deploy'
 
       - name: Deploy
