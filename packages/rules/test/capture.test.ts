@@ -1,7 +1,15 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
+import { fromHex, fromUtf8, utf8 } from '../src/capture/common.js';
 import { hammingEncode } from '../src/capture/glitch.js';
-import { checkAnswer, generateChallenge, hasFamily, publicChallenge } from '../src/capture/index.js';
+import {
+  checkAnswer,
+  generateChallenge,
+  getFamily,
+  hasFamily,
+  publicChallenge,
+  type ChainPayload,
+} from '../src/capture/index.js';
 import { challengeSize, type ChallengeTarget } from '../src/capture/size.js';
 import { getTool, type Noise } from '../src/content/items.js';
 import { createRng } from '../src/rng.js';
@@ -96,6 +104,32 @@ describe('chained challenges', () => {
       }),
       { numRuns: 48 },
     );
+  });
+
+  it('resists a known-prefix repeating-XOR attack on packet -> glitch chains', () => {
+    for (let seed = 0; seed < 32; seed++) {
+      const challenge = generateChallenge(['packet', 'glitch'], 24, 1, createRng(seed));
+      const chain = challenge.payload as ChainPayload;
+      const cipher = fromHex(chain.sealed);
+
+      // Rebuild the real stage two from the same seed to know the plaintext and first answer.
+      const rng = createRng(seed);
+      const first = getFamily('packet').generate(24, 1, rng);
+      const second = getFamily('glitch').generate(24, 1, rng);
+      expect(second.answer).toEqual(challenge.answer);
+      const plaintext = JSON.stringify({ params: second.params, payload: second.payload });
+      const prefix = '{"params":{"encoding":"hamming74","bytes":24},"payload":{"blocks":[';
+      expect(plaintext.startsWith(prefix)).toBe(true);
+
+      // A repeating-XOR attacker assumes the key period is the length of the canonical first answer.
+      const period = JSON.stringify(first.answer).length;
+      expect(period).toBe(23);
+      const known = utf8(prefix);
+      const key = Array.from({ length: period }, (_, i) => cipher[i]! ^ known[i]!);
+      const guess = fromUtf8(cipher.map((b, i) => b ^ key[i % period]!));
+      expect(guess).not.toBe(plaintext);
+      expect(guess.slice(prefix.length)).not.toBe(plaintext.slice(prefix.length));
+    }
   });
 
   it('never exposes the answer publicly', () => {
