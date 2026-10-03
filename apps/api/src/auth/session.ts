@@ -8,6 +8,8 @@ export interface SessionRecord {
   operatorId: string;
   groups: string[];
   expiresAt: Date;
+  /** Current `Operator.isAdmin`: the source of truth for admin rights (kept up to date at login). */
+  isAdmin: boolean;
 }
 
 export interface SessionStore {
@@ -16,6 +18,9 @@ export interface SessionStore {
   touch(token: string): Promise<void>;
   destroy(token: string): Promise<void>;
 }
+
+/** A session is never valid longer than this after creation, however often its sliding expiry was extended. */
+export const SESSION_ABSOLUTE_MS = 30 * 24 * 3600 * 1000;
 
 /** Sessions live in PostgreSQL; only the SHA-256 of the cookie value is stored. */
 export function createSessionStore(prisma: PrismaClient, ttlSeconds: number): SessionStore {
@@ -27,13 +32,13 @@ export function createSessionStore(prisma: PrismaClient, ttlSeconds: number): Se
       return token;
     },
     async get(token) {
-      const row = await prisma.session.findUnique({ where: { tokenHash: hashToken(token) } });
+      const row = await prisma.session.findUnique({ where: { tokenHash: hashToken(token) }, include: { operator: { select: { isAdmin: true } } } });
       if (!row) return null;
-      if (row.expiresAt.getTime() <= Date.now()) {
+      if (row.expiresAt.getTime() <= Date.now() || row.createdAt.getTime() + SESSION_ABSOLUTE_MS <= Date.now()) {
         await prisma.session.deleteMany({ where: { tokenHash: row.tokenHash } });
         return null;
       }
-      return { operatorId: row.operatorId, groups: row.groups, expiresAt: row.expiresAt };
+      return { operatorId: row.operatorId, groups: row.groups, expiresAt: row.expiresAt, isAdmin: row.operator.isAdmin };
     },
     async touch(token) {
       await prisma.session.updateMany({ where: { tokenHash: hashToken(token) }, data: { expiresAt: expiry(), lastSeenAt: new Date() } });

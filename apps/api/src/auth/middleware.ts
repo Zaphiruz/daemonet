@@ -22,7 +22,6 @@ export interface AuthMiddlewareDeps {
   cookieName: string;
   cookieSecure: boolean;
   ttlSeconds: number;
-  adminGroup: string;
 }
 
 /** Mutating requests must carry this header: browsers cannot add it cross-site, so it doubles as CSRF protection. */
@@ -42,7 +41,7 @@ export function makeRequireAuth(deps: AuthMiddlewareDeps) {
       await deps.sessionStore.touch(token);
       reply.setCookie(deps.cookieName, token, { path: '/', httpOnly: true, sameSite: 'lax', secure: deps.cookieSecure, maxAge: deps.ttlSeconds });
     }
-    req.operator = { id: session.operatorId, isAdmin: session.groups.includes(deps.adminGroup) };
+    req.operator = { id: session.operatorId, isAdmin: session.isAdmin };
   };
 }
 

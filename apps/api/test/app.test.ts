@@ -195,6 +195,42 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   });
 });
 
+describe.skipIf(!url)('API session lifetime and admin rights', () => {
+  it('rejects and deletes a session older than 30 days even if its sliding expiry is fresh, and reads isAdmin from the operator', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator" CASCADE');
+    const oidc = fakeOidc();
+    const app = await buildApp({
+      prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      oidcClient: oidc, requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false, disableRateLimit: true,
+    });
+    app.get('/api/test/admin', { preHandler: [app.requireAuth, app.requireAdmin] }, async () => ({ ok: true }));
+    await app.ready();
+    const login = async () => {
+      const start = await app.inject({ method: 'GET', url: '/api/auth/login' });
+      const pkce = start.cookies.find((c) => c.name === 'daemonet_oidc')!;
+      const cb = await app.inject({ method: 'GET', url: '/api/auth/callback?code=abc&state=st1', cookies: { daemonet_oidc: pkce.value } });
+      return { [COOKIE_NAME]: cb.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    };
+
+    oidc.identity = { sub: 'boss', groups: ['daemonet-users', 'daemonet-admins'] };
+    const admin = await login();
+    expect((await app.inject({ method: 'GET', url: '/api/test/admin', cookies: admin })).statusCode).toBe(200);
+    await prisma!.operator.update({ where: { sub: 'boss' }, data: { isAdmin: false } });
+    expect((await app.inject({ method: 'GET', url: '/api/test/admin', cookies: admin })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/me', cookies: admin })).json().isAdmin).toBe(false);
+
+    oidc.identity = { sub: 'old', groups: ['daemonet-users'] };
+    const old = await login();
+    await prisma!.session.updateMany({
+      where: { operator: { sub: 'old' } },
+      data: { createdAt: new Date(Date.now() - 31 * 24 * 3600 * 1000), expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000) },
+    });
+    expect((await app.inject({ method: 'GET', url: '/api/me', cookies: old })).statusCode).toBe(401);
+    expect(await prisma!.session.count({ where: { operator: { sub: 'old' } } })).toBe(0);
+    await app.close();
+  });
+});
+
 describe.skipIf(!url)('API logging', () => {
   it('never logs the OIDC callback query string', async () => {
     await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator" CASCADE');
