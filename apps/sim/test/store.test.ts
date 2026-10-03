@@ -1,4 +1,4 @@
-import { createPrisma } from '@daemonet/db';
+import { createPrisma, type PrismaClient } from '@daemonet/db';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Intent, OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
@@ -111,6 +111,32 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
 
 contract('MemoryStore', async () => new MemoryStore(), async () => {});
 
+describe('PrismaStore.loadOrCreateOperator unique races', () => {
+  const uniqueViolation = () => Object.assign(new Error('Unique constraint failed on the fields: (`sub`)'), { code: 'P2002' });
+  const row = { id: 'op-1', sub: 's', name: null, starterClaimed: false, x: 1, y: 2, bits: 0n, inventory: {}, daemons: [] };
+  const storeWith = (upsert: () => Promise<unknown>) => new PrismaStore({ operator: { upsert } } as unknown as PrismaClient);
+
+  it('retries once when a simultaneous first login for the same sub wins the insert', async () => {
+    let calls = 0;
+    const store = storeWith(async () => {
+      if (++calls === 1) throw uniqueViolation();
+      return row;
+    });
+    await expect(store.loadOrCreateOperator('s', 'lo', SPAWN)).resolves.toMatchObject({ id: 'op-1', x: 1, y: 2 });
+    expect(calls).toBe(2);
+  });
+
+  it('does not retry more than once', async () => {
+    let calls = 0;
+    const store = storeWith(async () => {
+      calls++;
+      throw uniqueViolation();
+    });
+    await expect(store.loadOrCreateOperator('s', 'lo', SPAWN)).rejects.toMatchObject({ code: 'P2002' });
+    expect(calls).toBe(2);
+  });
+});
+
 const url = process.env.DATABASE_URL;
 const prisma = url ? createPrisma(url) : null;
 describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
@@ -134,5 +160,13 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     ]);
     expect(results).toEqual([{ ok: true }, { ok: true }]);
     expect(await prisma!.daemon.count({ where: { operatorId: a.id } })).toBe(1);
+  });
+
+  it('simultaneous first logins for one sub all get the same operator', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "Operator", "SubnetSeed", "AppliedAction" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const recs = await Promise.all(Array.from({ length: 8 }, () => store.loadOrCreateOperator('sub-first', 'lo', SPAWN)));
+    expect(new Set(recs.map((r) => r.id)).size).toBe(1);
+    expect(await prisma!.operator.count({ where: { sub: 'sub-first' } })).toBe(1);
   });
 });

@@ -13,7 +13,7 @@ import { TEST_SUBNET } from './helpers.js';
 const log = { info() {}, warn() {}, error() {} };
 let running: RunningServer | null = null;
 
-async function boot(store: Store = new MemoryStore(), maxConnectionsPerIp?: number) {
+async function boot(store: Store = new MemoryStore(), maxConnectionsPerIp = 16) {
   const world = new World({ subnet: TEST_SUBNET, seed: 'srv', seedId: 'abcd1234', spawner: false });
   const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), seedId: 'abcd1234' });
   running = await startServer({ game, store, port: 0, host: '127.0.0.1', trustProxyHops: 0, maxConnectionsPerIp, log });

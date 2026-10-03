@@ -27,7 +27,7 @@ const verify = combineVerifiers(
 );
 
 const game = new Game({ world, store, verify, seedId: seed.id, log });
-const server = await startServer({ game, store, port: config.port, trustProxyHops: config.trustProxyHops, maxConnectionsPerIp: config.maxConnectionsPerIp, log});
+const server = await startServer({ game, store, port: config.port, trustProxyHops: config.trustProxyHops, maxConnectionsPerIp: config.maxConnectionsPerIp, log });
 const stopLoop = startLoop(() => game.tick());
 const statsTimer = setInterval(() => log.info({ tick: world.tick, ...game.stats() }, 'tick stats'), 64_000);
 
@@ -44,11 +44,11 @@ async function shutdown(signal: string) {
   process.exit(0);
 }
 process.on('uncaughtException', (err) => {
-  log.fatal({ err: err.message }, 'uncaught exception');
+  log.fatal({ err: err.stack ?? err.message }, 'uncaught exception');
   process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-  log.fatal({ err: String(reason) }, 'unhandled rejection');
+  log.fatal({ err: reason instanceof Error ? (reason.stack ?? reason.message) : String(reason) }, 'unhandled rejection');
   process.exit(1);
 });
 process.on('SIGTERM', () => void shutdown('SIGTERM'));

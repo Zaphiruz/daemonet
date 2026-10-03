@@ -26,7 +26,7 @@ const clients: GameClient[] = [];
 async function boot(store: MemoryStore, seedId: string): Promise<Harness> {
   const world = new World({ subnet: TEST_SUBNET, seed: seedId, seedId, spawner: false });
   const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), seedId, retryDelaysMs: [1, 1, 1] });
-  const server = await startServer({ game, store, port: 0, host: '127.0.0.1', trustProxyHops: 0, log: silent });
+  const server = await startServer({ game, store, port: 0, host: '127.0.0.1', trustProxyHops: 0, maxConnectionsPerIp: 16, log: silent });
   // 16 ms ticks: fast tests, while the 64-tick resume window (~1 s) still outlasts the SDK's first reconnect backoff.
   const stopLoop = startLoop(() => game.tick(), 16);
   const h: Harness = {

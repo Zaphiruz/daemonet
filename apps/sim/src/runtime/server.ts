@@ -17,7 +17,8 @@ export interface ServerOptions {
   host?: string;
   /** Number of trusted reverse proxies in front of the sim (Caddy, nginx, cloudflared = 3). */
   trustProxyHops: number;
-  maxConnectionsPerIp?: number;
+  /** Open sockets allowed per client IP (the default lives in config: MAX_CONNECTIONS_PER_IP). */
+  maxConnectionsPerIp: number;
   log: Logger;
 }
 
@@ -42,7 +43,7 @@ export interface RunningServer {
 
 export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const perIp = new Map<string, number>();
-  const maxPerIp = opts.maxConnectionsPerIp ?? 16;
+  const maxPerIp = opts.maxConnectionsPerIp;
   const sockets = new Set<WebSocket>();
 
   const http = createServer((req, res) => {

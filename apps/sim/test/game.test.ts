@@ -141,6 +141,9 @@ describe('Game connections', () => {
     game.disconnect(back);
     const stale = await join(game, 'alice', { resumeToken: 'wrong', lastTick: seenTick });
     expect(stale.sent.map((m) => m.t)).toEqual(['authOk', 'snapshot']);
+    game.disconnect(stale);
+    const forged = await join(game, 'alice', { resumeToken: '0'.repeat(auth.d.resumeToken.length), lastTick: seenTick });
+    expect(forged.sent.map((m) => m.t)).toEqual(['authOk', 'snapshot']);
   });
 
   it('checkpoints and removes the operator after the controller has been gone long enough', async () => {
@@ -340,6 +343,34 @@ describe('checkpoint ordering', () => {
     await store.releaseNewestFirst();
     await game.flush();
     expect([...store.operators.values()][0]!.x).toBeCloseTo(9.5);
+  });
+});
+
+describe('shutdown', () => {
+  it('waits for in-flight intents before the final checkpoint', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const store = new MemoryStore();
+    const apply = store.applyIntent.bind(store);
+    store.applyIntent = async (...args) => {
+      await gate;
+      return apply(...args);
+    };
+    const checkpoints: Array<Parameters<MemoryStore['checkpoint']>[0]> = [];
+    const write = store.checkpoint.bind(store);
+    store.checkpoint = async (records) => {
+      checkpoints.push(records);
+      return write(records);
+    };
+    const { game } = setup(store);
+    const conn = await join(game, 'alice');
+    await game.message(conn, cmd({ cmd: 'claimStarter', actor: 'self', args: { species: 'pingling', operatorName: 'alice' } }));
+    game.tick(); // the claim is persisting
+    const done = game.shutdown();
+    release();
+    await done;
+    expect(conn.last('kick')!.d.reason).toBe('server shutting down');
+    expect(checkpoints.at(-1)!.map((r) => r.ram.length)).toEqual([1]); // the claimed starter is in the last checkpoint
   });
 });
 

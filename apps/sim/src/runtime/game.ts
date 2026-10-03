@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
 import { INTEREST_RADIUS, distance, entitiesNear, toSelf, type Input, type Intent, type IntentResult, type OperatorRecord, type World } from '../core/index.js';
 import type { TokenVerifier } from './auth.js';
@@ -87,6 +88,13 @@ const SLOW_TICK_MS = 50;
 const RECOVERED_TICK_MS = 25;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Constant-time string comparison; different lengths never match. */
+function sameSecret(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
 
 export class Game {
   readonly world: World;
@@ -263,7 +271,7 @@ export class Game {
   }
 
   private tryResume(st: ConnState, session: Session, token: string | undefined, lastTick: number | undefined): boolean {
-    if (token !== session.resumeToken || lastTick === undefined || !session.savedKnown) return false;
+    if (token === undefined || !sameSecret(token, session.resumeToken) || lastTick === undefined || !session.savedKnown) return false;
     if (lastTick < session.baseTick || lastTick > this.world.tick) return false;
     st.known = new Map(session.savedKnown);
     st.lastSelf = session.savedSelf;
@@ -493,9 +501,10 @@ export class Game {
     while (this.inflight.size > 0) await Promise.all([...this.inflight]);
   }
 
-  /** Checkpoint everyone and wait for persistence. */
+  /** Kick everyone, let in-flight intents complete, then checkpoint everyone and wait for persistence. */
   async shutdown(): Promise<void> {
     for (const st of [...this.conns.values()]) this.kick(st, 'server shutting down', 1001);
+    await this.flush();
     this.checkpointAll();
     await this.flush();
   }

@@ -63,12 +63,21 @@ export class PrismaStore implements Store {
   }
 
   async loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord> {
-    const op = await this.prisma.operator.upsert({
-      where: { sub },
-      update: {},
-      create: { sub, subnet, x: spawn.x, y: spawn.y },
-      include: { daemons: { orderBy: { slot: 'asc' } } },
-    });
+    const upsert = () =>
+      this.prisma.operator.upsert({
+        where: { sub },
+        update: {},
+        create: { sub, subnet, x: spawn.x, y: spawn.y },
+        include: { daemons: { orderBy: { slot: 'asc' } } },
+      });
+    let op: Awaited<ReturnType<typeof upsert>>;
+    try {
+      op = await upsert();
+    } catch (err) {
+      // Two simultaneous first logins for one sub: the other insert won, so the retry finds its row.
+      if (!isUniqueViolation(err) || !/Operator_sub_key|\(`sub`\)/.test(violatedConstraint(err))) throw err;
+      op = await upsert();
+    }
     return {
       id: op.id,
       name: op.name,
