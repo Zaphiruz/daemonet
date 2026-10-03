@@ -1,3 +1,5 @@
+import { deepFreeze } from '../freeze.js';
+
 export interface Rect {
   x: number;
   y: number;
@@ -32,7 +34,7 @@ export interface SubnetDef {
 }
 
 /** SP1's only subnet: 128 x 128, one host, four spawn regions of rising level. */
-export const LO: SubnetDef = {
+export const LO: SubnetDef = deepFreeze<SubnetDef>({
   id: 'lo',
   width: 128,
   height: 128,
@@ -51,9 +53,9 @@ export const LO: SubnetDef = {
     { name: 'cache', rect: { x: 8, y: 64, w: 48, h: 56 }, levels: [9, 16], species: { bitrot: 3, voidlet: 3, glitchmite: 1, nullpup: 1 }, cap: 16, respawnMs: 4096 },
     { name: 'core', rect: { x: 72, y: 64, w: 48, h: 56 }, levels: [14, 24], species: { floodhound: 2, cipherbat: 2, bitrot: 2, voidlet: 2 }, cap: 16, respawnMs: 4096 },
   ],
-};
+});
 
-export const SUBNETS: readonly SubnetDef[] = [LO];
+export const SUBNETS: readonly SubnetDef[] = deepFreeze([LO]);
 
 export function getSubnet(id: string): SubnetDef {
   const s = SUBNETS.find((x) => x.id === id);

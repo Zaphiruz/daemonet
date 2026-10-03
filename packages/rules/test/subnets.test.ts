@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getSpecies } from '../src/content/species.js';
-import { LO, getSubnet } from '../src/content/subnets.js';
+import { LO, SUBNETS, getSubnet } from '../src/content/subnets.js';
 
 const inside = (r: { x: number; y: number; w: number; h: number }, w: number, h: number) =>
   r.x >= 1 && r.y >= 1 && r.x + r.w <= w - 1 && r.y + r.h <= h - 1;
@@ -20,5 +20,11 @@ describe('subnets', () => {
       expect(region.cap).toBe(16);
       for (const id of Object.keys(region.species)) expect(() => getSpecies(id)).not.toThrow();
     }
+  });
+
+  it('is deep-frozen', () => {
+    expect(Object.isFrozen(LO)).toBe(true);
+    expect(Object.isFrozen(LO.regions[0]!.species)).toBe(true);
+    expect(Object.isFrozen(SUBNETS)).toBe(true);
   });
 });
