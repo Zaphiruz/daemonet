@@ -113,6 +113,15 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
 
+  packages/sandbox:
+    dependencies:
+      '@daemonet/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      '@daemonet/shared':
+        specifier: workspace:*
+        version: link:../shared
+
   packages/sdk:
     dependencies:
       '@daemonet/rules':
