@@ -5,8 +5,14 @@
   "type": "module",
   "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
   "files": ["dist"],
+  "scripts": {
+    "build:static": "tsc -b && node scripts/build-static.mjs"
+  },
   "dependencies": {
     "@daemonet/sdk": "workspace:*",
     "@daemonet/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^8.3.1"
   }
 }
