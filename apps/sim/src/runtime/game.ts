@@ -1,5 +1,5 @@
 import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
-import { INTEREST_RADIUS, distance, entitiesNear, toSelf, type Input, type Intent, type IntentResult, type World } from '../core/index.js';
+import { INTEREST_RADIUS, distance, entitiesNear, toSelf, type Input, type Intent, type IntentResult, type OperatorRecord, type World } from '../core/index.js';
 import type { TokenVerifier } from './auth.js';
 import { diffEntities } from './interest.js';
 import { randomHex, type Store } from './store.js';
@@ -107,6 +107,8 @@ export class Game {
   private readonly loads = new Map<string, Set<{ stale: boolean }>>();
   private readonly inflight = new Set<Promise<void>>();
   private inputs: Input[] = [];
+  /** Tail of the serialized checkpoint writes (never rejects). */
+  private checkpointChain: Promise<void> = Promise.resolve();
   /**
    * Pending command replies keyed `conn.id:reqId` (the key is the reqId the world sees), so a later connection that
    * reuses a reqId never receives an earlier connection's reply.
@@ -432,10 +434,9 @@ export class Game {
       this.replyTo.delete(key);
       route.st.routes.delete(key);
     }
-    const done = this.store
-      .checkpoint([record])
-      .catch((err: Error) => this.log.error({ sub: session.sub, err: err.message }, 'leave checkpoint failed'))
-      .finally(() => this.leaving.delete(session.sub));
+    const done = this.writeCheckpoint([record], (err) => this.log.error({ sub: session.sub, err: err.message }, 'leave checkpoint failed')).finally(() =>
+      this.leaving.delete(session.sub),
+    );
     this.leaving.set(session.sub, done);
     this.track(done);
     this.log.info({ sub: session.sub }, 'operator left');
@@ -443,7 +444,18 @@ export class Game {
 
   private checkpointAll(): void {
     const records = [...this.world.operators.keys()].map((id) => this.world.checkpoint(id));
-    this.track(this.store.checkpoint(records).catch((err: Error) => this.log.error({ err: err.message }, 'checkpoint failed')));
+    if (records.length === 0) return;
+    this.track(this.writeCheckpoint(records, (err) => this.log.error({ err: err.message }, 'checkpoint failed')));
+  }
+
+  /**
+   * Queues a checkpoint write behind every earlier one, so writes commit in the order their records were taken (a slow
+   * periodic checkpoint can never overwrite a newer leave checkpoint). Failures are reported and do not break the chain.
+   */
+  private writeCheckpoint(records: readonly OperatorRecord[], onError: (err: Error) => void): Promise<void> {
+    const write = this.checkpointChain.then(() => this.store.checkpoint(records)).catch((err: Error) => onError(err));
+    this.checkpointChain = write;
+    return write;
   }
 
   private persist(intent: Intent): void {

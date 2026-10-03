@@ -308,6 +308,41 @@ describe('reply routing across connections', () => {
   });
 });
 
+/** A MemoryStore whose checkpoint writes wait until the test releases them (in any order). */
+class HeldCheckpointStore extends MemoryStore {
+  readonly held: Array<() => void> = [];
+  override checkpoint(records: Parameters<MemoryStore['checkpoint']>[0]): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.held.push(() => super.checkpoint(records).then(resolve, reject));
+    });
+  }
+  /** Releases every held write newest-first (the worst case for ordering) until none are left. */
+  async releaseNewestFirst(): Promise<void> {
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 0));
+      if (this.held.length === 0) return;
+      for (const release of this.held.splice(0).reverse()) release();
+    }
+  }
+}
+
+describe('checkpoint ordering', () => {
+  it('the last checkpoint taken is the one that sticks, even when an older write would commit later', async () => {
+    const store = new HeldCheckpointStore();
+    const world = new World({ subnet: TEST_SUBNET, seed: 'game', seedId: 'abcd1234', spawner: false });
+    const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), seedId: 'abcd1234', checkpointEveryTicks: 8, leaveAfterTicks: 4 });
+    const conn = await join(game, 'alice');
+    await game.message(conn, cmd({ cmd: 'moveTo', actor: 'self', args: { x: 9.5, y: 4.5 } }));
+    for (let i = 0; i < 40; i++) game.tick(); // periodic checkpoints along the way
+    game.disconnect(conn);
+    for (let i = 0; i < 5; i++) game.tick(); // the leave checkpoint, at 9.5
+    expect(world.operators.size).toBe(0);
+    await store.releaseNewestFirst();
+    await game.flush();
+    expect([...store.operators.values()][0]!.x).toBeCloseTo(9.5);
+  });
+});
+
 describe('restart', () => {
   it('a captured daemon survives a restart with the same store', async () => {
     const store = new MemoryStore();
