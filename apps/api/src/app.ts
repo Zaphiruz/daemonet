@@ -8,6 +8,7 @@ import type { OidcClient } from './auth/oidc.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import { createSessionStore } from './auth/session.js';
 import { AppError } from './errors.js';
+import { registerScriptRoutes } from './routes/scripts.js';
 
 export const COOKIE_NAME = 'daemonet_sid';
 export const SESSION_TTL_SECONDS = 7 * 24 * 3600;
@@ -50,5 +51,6 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
 
   registerAuthRoutes(app, { prisma: o.prisma, sessionStore, oidcClient: o.oidcClient, frontendOrigin: o.frontendOrigin, redirectUri: o.redirectUri ?? null, requiredGroup: o.requiredGroup, ...common });
   if (o.devBypass) registerDevBypass(app, { prisma: o.prisma, sessionStore, frontendOrigin: o.frontendOrigin, requiredGroup: o.requiredGroup, ...common });
+  registerScriptRoutes(app, o.prisma);
   return app;
 }

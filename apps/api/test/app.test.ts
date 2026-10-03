@@ -3,8 +3,12 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { COOKIE_NAME, buildApp } from '../src/app.js';
 import type { OidcClient, OidcIdentity } from '../src/auth/oidc.js';
+import { CSRF_HEADER, CSRF_VALUE } from '../src/auth/middleware.js';
 import { hashToken } from '../src/auth/session.js';
 import { loadConfig } from '../src/config.js';
+import { KEPT_VERSIONS, MAX_SCRIPT_BYTES } from '../src/routes/scripts.js';
+
+const csrf = { [CSRF_HEADER]: CSRF_VALUE };
 
 const url = process.env.DATABASE_URL;
 const prisma = url ? createPrisma(url) : null;
@@ -116,6 +120,24 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(r.statusCode).toBe(302);
     expect(await prisma!.operator.count({ where: { sub: 'dev-alice' } })).toBe(1);
     expect((await app.inject({ method: 'GET', url: '/api/auth/dev?name=Bad%20Name' })).statusCode).toBe(400);
+  });
+
+  it('saves scripts with versions, keeps the last 16, and enforces the CSRF header and size limit', async () => {
+    const { cookie } = await login();
+    const cookies = { [COOKIE_NAME]: cookie! };
+    expect((await app.inject({ method: 'GET', url: '/api/scripts/main', cookies })).json()).toEqual({ source: '', version: 0, updatedAt: null });
+    expect((await app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, payload: { source: 'x' } })).statusCode).toBe(403);
+    for (let i = 1; i <= 20; i++) {
+      const r = await app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, headers: csrf, payload: { source: `// v${i}` } });
+      expect(r.json().version).toBe(i);
+    }
+    expect((await app.inject({ method: 'GET', url: '/api/scripts/main', cookies })).json()).toMatchObject({ source: '// v20', version: 20 });
+    const versions = (await app.inject({ method: 'GET', url: '/api/scripts/main/versions', cookies })).json() as Array<{ version: number }>;
+    expect(versions.map((v) => v.version)).toEqual(Array.from({ length: KEPT_VERSIONS }, (_, i) => 20 - i));
+    expect((await app.inject({ method: 'GET', url: '/api/scripts/main/versions/7', cookies })).json().source).toBe('// v7');
+    expect((await app.inject({ method: 'GET', url: '/api/scripts/main/versions/2', cookies })).statusCode).toBe(404);
+    const big = await app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, headers: csrf, payload: { source: 'a'.repeat(MAX_SCRIPT_BYTES + 1) } });
+    expect(big.statusCode).toBe(400);
   });
 
   it('stores only the SHA-256 of the session token and sets HttpOnly/SameSite=Lax cookies', async () => {
