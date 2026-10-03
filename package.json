@@ -3,12 +3,17 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.33.2",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "build": "tsc -b",
-    "typecheck": "tsc -b && tsc -p tsconfig.tests.json",
+    "generate": "pnpm --filter @daemonet/db generate",
+    "build": "pnpm generate && tsc -b",
+    "typecheck": "pnpm generate && tsc -b && tsc -p tsconfig.tests.json && tsc -p examples/starter-bot/tsconfig.json",
     "lint": "eslint .",
-    "test": "tsc -b && vitest run"
+    "test": "pnpm generate && tsc -b && vitest run",
+    "db:migrate": "pnpm --filter @daemonet/db migrate:deploy",
+    "sim": "pnpm --filter @daemonet/sim start"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -1,4 +1,17 @@
 {
   "files": [],
-  "references": [{ "path": "packages/rules" }, { "path": "packages/shared" }, { "path": "apps/sim" }]
+  "references": [
+    {
+      "path": "packages/rules"
+    },
+    {
+      "path": "packages/shared"
+    },
+    {
+      "path": "packages/db"
+    },
+    {
+      "path": "apps/sim"
+    }
+  ]
 }

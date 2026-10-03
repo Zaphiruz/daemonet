@@ -3,9 +3,25 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": { "./core": { "types": "./dist/core/index.d.ts", "default": "./dist/core/index.js" } },
+  "exports": {
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./dist/core/index.js"
+    }
+  },
+  "scripts": {
+    "start": "node dist/runtime/main.js"
+  },
   "dependencies": {
+    "@daemonet/db": "workspace:*",
     "@daemonet/rules": "workspace:*",
-    "@daemonet/shared": "workspace:*"
+    "@daemonet/shared": "workspace:*",
+    "jose": "^6.2.12",
+    "pino": "^10.3.1",
+    "ws": "^8.20.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

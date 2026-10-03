@@ -1,0 +1,78 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+  runtime             = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Location {
+  RAM
+  DISK
+}
+
+model Operator {
+  id             String   @id @default(uuid())
+  sub            String   @unique
+  name           String?  @unique
+  starterClaimed Boolean  @default(false)
+  bits           BigInt   @default(0)
+  subnet         String   @default("lo")
+  x              Float
+  y              Float
+  /// item id -> count
+  inventory      Json     @default("{}")
+  createdAt      DateTime @default(now())
+  lastSeenAt     DateTime @default(now())
+  daemons        Daemon[]
+}
+
+model Daemon {
+  id                 String   @id
+  operatorId         String
+  operator           Operator @relation(fields: [operatorId], references: [id])
+  species            String
+  level              Int
+  xp                 Int
+  nature             Int
+  traitSlot          Int
+  /// 8 values in STAT_KEYS order
+  ivs                Int[]
+  bonus              Int[]
+  clean              Boolean
+  signature          Int
+  hp                 Int
+  energy             Int
+  moves              String[]
+  crashed            Boolean
+  location           Location
+  slot               Int
+  // capture log
+  originalOperatorId String
+  capturedAt         DateTime
+  captureSubnet      String
+  captureTool        String
+  spawnSeedId        String
+  spawnIndex         Int?
+
+  @@unique([operatorId, location, slot])
+  @@index([operatorId])
+}
+
+model SubnetSeed {
+  /// 8 hex chars; prefixes every id the world generates
+  id        String   @id
+  subnet    String
+  seed      String
+  startedAt DateTime @default(now())
+}
+
+model AppliedAction {
+  key       String   @id
+  kind      String
+  createdAt DateTime @default(now())
+}

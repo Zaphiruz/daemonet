@@ -7,3 +7,4 @@ coverage/
 .superpowers/
 *.log
 *.pid
+packages/db/src/generated/
