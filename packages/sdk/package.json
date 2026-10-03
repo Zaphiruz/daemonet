@@ -1,0 +1,16 @@
+{
+  "name": "@daemonet/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Daemonet player SDK: connect, mirror the world, and script your operator and daemons.",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./node": { "types": "./dist/node.d.ts", "default": "./dist/node.js" }
+  },
+  "files": ["dist"],
+  "dependencies": {
+    "@daemonet/rules": "workspace:*",
+    "@daemonet/shared": "workspace:*"
+  }
+}

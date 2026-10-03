@@ -51,6 +51,9 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
+      '@daemonet/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.2
@@ -76,6 +79,15 @@ importers:
       zod:
         specifier: ^4.6.5
         version: 4.6.5
+
+  packages/sdk:
+    dependencies:
+      '@daemonet/rules':
+        specifier: workspace:*
+        version: link:../rules
+      '@daemonet/shared':
+        specifier: workspace:*
+        version: link:../shared
 
   packages/shared:
     dependencies:
