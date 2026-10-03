@@ -2,6 +2,7 @@ import { createPrisma } from '@daemonet/db';
 import { buildApp } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
 import { loadConfig } from './config.js';
+import { loggerOptions } from './log.js';
 
 for (const event of ['uncaughtException', 'unhandledRejection'] as const) {
   process.on(event, (err) => {
@@ -25,7 +26,7 @@ const app = await buildApp({
   adminGroup: config.adminGroup,
   devBypass: config.devBypass,
   trustProxyHops: config.trustProxyHops,
-  logger: { level: config.logLevel, redact: ['req.headers.cookie', 'req.headers.authorization', 'res.headers["set-cookie"]'] },
+  logger: loggerOptions(config.logLevel),
 });
 
 await app.listen({ port: config.port, host: '0.0.0.0' });

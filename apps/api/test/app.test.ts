@@ -6,6 +6,7 @@ import type { OidcClient, OidcIdentity } from '../src/auth/oidc.js';
 import { CSRF_HEADER, CSRF_VALUE } from '../src/auth/middleware.js';
 import { hashToken } from '../src/auth/session.js';
 import { loadConfig } from '../src/config.js';
+import { loggerOptions } from '../src/log.js';
 import { KEPT_VERSIONS, MAX_SCRIPT_BYTES } from '../src/routes/scripts.js';
 
 const csrf = { [CSRF_HEADER]: CSRF_VALUE };
@@ -191,6 +192,29 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     await prisma!.session.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
     expect((await app.inject({ method: 'GET', url: '/api/me', cookies: { [COOKIE_NAME]: cookie! } })).statusCode).toBe(401);
     expect(await prisma!.session.count()).toBe(0);
+  });
+});
+
+describe.skipIf(!url)('API logging', () => {
+  it('never logs the OIDC callback query string', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator" CASCADE');
+    const lines: string[] = [];
+    const stream = { write: (l: string) => void lines.push(l) };
+    const app = await buildApp({
+      prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false, disableRateLimit: true,
+      logger: { ...loggerOptions('info'), stream },
+    });
+    const start = await app.inject({ method: 'GET', url: '/api/auth/login' });
+    const pkce = start.cookies.find((c) => c.name === 'daemonet_oidc')!;
+    const cb = await app.inject({ method: 'GET', url: '/api/auth/callback?code=SECRETCODE123&state=st1', cookies: { daemonet_oidc: pkce.value } });
+    expect(cb.statusCode).toBe(302);
+    await app.close();
+    expect(lines.length).toBeGreaterThan(0);
+    const all = lines.join('');
+    expect(all).toContain('/api/auth/callback');
+    expect(all).not.toContain('code=');
+    expect(all).not.toContain('SECRETCODE123');
   });
 });
 
