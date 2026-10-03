@@ -28,3 +28,20 @@ Task F: minor (deferred): XP recipients filtered by RAM not running (spec: runni
 Task F: minor (deferred): timid wild flees 8 tiles vs sniff range 4 — design note
 Task F: minor (deferred): tag expiry runs in upkeep rather than with crash resolution
 Task F: minor (deferred): recommend World.pendingIntents() so the runtime can drain/refuse reconnects with pending intents
+
+## 2026-09-29-daemonet-sp1-plan3-runtime
+
+Fixed before merge: store P2002 classification + RAM-only checkpoints; auth discovery/IdP resilience; spectator sessions; reply routing by connection; WS crash paths, backpressure, shutdown kick order; SDK connect/reconnect policy; device-login single-flight refresh; configurable per-IP cap; leave/connect race; serialized checkpoints
+
+- T1: prisma.config.ts falls back to '' DATABASE_URL (opaque error when unset)
+- T2: Memory checkpoint skips unknown operators while Prisma throws and rolls back the whole batch; no tests for 'daemon not found', failed-intent replay, failNext; stateFields duplicated
+- T2: DB test files share one database — keep vitest fileParallelism false when a second DB suite arrives
+- T3: userinfo sub not compared to token sub; error messages carry jose internals/group name (transport must return generic text); injected opts.userinfo throws escape as non-AuthError
+- T4: replyTo map leaks an entry when an intent outlives its operator; keyed operatorId:reqId so reqId reuse across a takeover can misroute an intent reply (key by connection id)
+- T4: maxSpectators reject on a brand-new session leaves leaveAtTick null; untested: spectator cap, idle timeout, violation kick, reauth, radius shrink, bucket E_RATE, store-failure auth path
+- T5: shutdown skips game.shutdown if server.close rejects; fatal handlers log no stack; 429 path writes then destroys immediately (use socket.end); slow-consumer close untested; TRUST_PROXY_HOPS must be documented for deploy
+- T6: close() during the first token await leaves ready unsettled (start() callers only); canUse throws on an unknown move id; GameClient delta merge/bestMoveAgainst untested
+- T7: sharedRefresh caches a stale resolved false when refreshToken is null (finally runs before ??= assignment); transient errors during device polling abort the login; discovery runs before the cache is consulted; background-timer path untested
+- T8: load.ts leaves a connection open when claimStarter fails; example packet solver throws on a missing fragment; per-IP default 16 lives in config and server; main.ts formatting
+Task F: minor (deferred): server never enforces token exp during a session (kick on exp without reauth — SP2); auth/reauth bound by the 4 KiB message limit (large Authentik tokens); /ws/ready uncached DB round-trip; TRUST_PROXY_HOPS must be set in plan 4 (3-proxy chain) or the per-IP cap locks everyone out
+Task F: minor (deferred): plan doc still shows maxConnectionsPerIp optional and close()-only server
