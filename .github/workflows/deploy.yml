@@ -1,0 +1,63 @@
+name: Deploy
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+# Nothing here talks to the GitHub API; the runner only needs the checkout it already has on disk.
+permissions: {}
+
+concurrency: { group: deploy, cancel-in-progress: false }
+
+jobs:
+  deploy:
+    # workflow_run fires for CI runs from forks and any branch; without these guards a green CI run
+    # on a fork's pull_request would deploy that fork's code.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          (github.event.workflow_run.conclusion == 'success' &&
+           github.event.workflow_run.event == 'push' &&
+           github.event.workflow_run.head_branch == 'main' &&
+           github.event.workflow_run.head_repository.full_name == github.repository) }}
+    runs-on: [self-hosted, daemonet]
+    defaults: { run: { working-directory: /opt/daemonet } }
+    steps:
+      - name: Check out the exact commit CI validated
+        run: |
+          set -euo pipefail
+          git fetch origin
+          git checkout --detach "${{ github.event.workflow_run.head_sha || github.sha }}"
+
+      - name: Build images
+        run: |
+          set -e
+          for i in 1 2 3; do
+            if docker compose -f docker-compose.prod.yml build sim frontend; then exit 0; fi
+            echo "Attempt $i failed, retrying..."; sleep 10
+          done
+          echo "Build failed after 3 attempts."; exit 1
+
+      - name: Run migrations (before the new code starts)
+        run: |
+          set -euo pipefail
+          source .env
+          DB_URL=$(curl -sf -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/daemonet" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['data']['DATABASE_URL'])")
+          docker compose -f docker-compose.prod.yml run --rm --no-deps -e DATABASE_URL="$DB_URL" --entrypoint "" sim \
+            sh -c 'cd packages/db && node_modules/.bin/prisma migrate deploy'
+
+      - name: Deploy
+        run: docker compose -f docker-compose.prod.yml up -d
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf http://192.168.40.21:3010/ws/ready; then echo healthy; exit 0; fi
+            sleep 3
+          done
+          docker compose -f docker-compose.prod.yml logs --tail 80 sim; exit 1
+
+      - name: Prune dangling images (S1 has a 64 GB disk)
+        run: docker image prune -f

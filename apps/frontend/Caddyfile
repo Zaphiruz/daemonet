@@ -1,0 +1,30 @@
+# Caddy drops an incoming X-Forwarded-For unless the peer is a trusted proxy. Trust ONLY LC2
+# (static 192.168.40.11): any other host on the VLAN that reaches this port directly has its
+# X-Forwarded-For discarded, so client IPs cannot be spoofed.
+# Chain: Cloudflare edge -> cloudflared (LC2, 127.0.0.1) -> nginx (LC2) -> Caddy -> sim,
+# which is why the sim runs with TRUST_PROXY_HOPS=3.
+{
+  servers {
+    trusted_proxies static 192.168.40.11/32
+  }
+}
+
+:80 {
+  encode gzip zstd
+
+  # The game protocol and its readiness probe. WebSocket upgrades pass through reverse_proxy as-is.
+  handle /ws* {
+    reverse_proxy sim:3000
+  }
+
+  handle {
+    root * /srv
+    header {
+      X-Content-Type-Options "nosniff"
+      Referrer-Policy "strict-origin-when-cross-origin"
+      X-Frame-Options "DENY"
+      Cache-Control "no-cache"
+    }
+    file_server
+  }
+}

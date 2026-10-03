@@ -1,8 +1,12 @@
 name: CI
 on:
+  # Docs-only changes do not run CI, and because Deploy is triggered by a green CI run on main,
+  # they do not redeploy production either.
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
 permissions:
   contents: read
 jobs:

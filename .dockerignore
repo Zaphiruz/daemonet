@@ -1,0 +1,9 @@
+node_modules
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.git
+docs
+.env
+**/.daemonet-token.json
+packages/db/src/generated
