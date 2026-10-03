@@ -850,7 +850,7 @@ import { fnv1a32Hex, fromHex, fromUtf8, utf8, xorRepeating } from '../src/captur
 import type { CryptoParams, CryptoPayload } from '../src/capture/crypto.js';
 import type { GlitchPayload } from '../src/capture/glitch.js';
 import type { HeapPayload } from '../src/capture/heap.js';
-import type { ChainPayload, PublicChallenge } from '../src/capture/index.js';
+import { unsealStage, type ChainPayload, type PublicChallenge } from '../src/capture/index.js';
 import type { KernelParams, KernelPayload } from '../src/capture/kernel.js';
 import type { NullParams, NullPayload } from '../src/capture/null.js';
 import { packetCrc, type PacketParams, type PacketPayload } from '../src/capture/packet.js';
@@ -1111,7 +1111,7 @@ export function solve(challenge: PublicChallenge): unknown {
   if (challenge.kind === 'single') return solveStage(challenge.families[0]!, challenge.params, challenge.payload);
   const chain = challenge.payload as ChainPayload;
   const firstAnswer = solveStage(challenge.families[0]!, chain.first.params, chain.first.payload);
-  const second = JSON.parse(fromUtf8(xorRepeating(fromHex(chain.sealed), utf8(JSON.stringify(firstAnswer))))) as {
+  const second = JSON.parse(unsealStage(chain.sealed, firstAnswer)) as {
     params: unknown;
     payload: unknown;
   };
@@ -1403,7 +1403,7 @@ import type { TypeId } from '../types.js';
 import { bufferFamily } from './buffer.js';
 import { cacheFamily } from './cache.js';
 import { cloudFamily } from './cloud.js';
-import { toHex, utf8, xorRepeating, type ChallengeFamily } from './common.js';
+import { fromHex, fromUtf8, toHex, utf8, type ChallengeFamily } from './common.js';
 import { cryptoFamily } from './crypto.js';
 import { glitchFamily } from './glitch.js';
 import { heapFamily } from './heap.js';
@@ -1412,11 +1412,14 @@ import { nullFamily } from './null.js';
 import { packetFamily } from './packet.js';
 import { proxyFamily } from './proxy.js';
 import { rootFamily } from './root.js';
+import { sha256 } from './sha256.js';
 import { shellFamily } from './shell.js';
 import { signalFamily } from './signal.js';
 import { socketFamily } from './socket.js';
 import { stackFamily } from './stack.js';
 import { threadFamily } from './thread.js';
+
+export { sha256 };
 
 const FAMILIES: Record<TypeId, ChallengeFamily> = {
   kernel: kernelFamily as ChallengeFamily,
@@ -1450,9 +1453,7 @@ export function hasFamily(type: TypeId): boolean {
 /**
  * Wire shape of a challenge (what the operator receives).
  * single: `params`/`payload` belong to families[0].
- * chain:  payload = { first: { params, payload }, sealed } where `sealed` is hex of
- *         UTF-8(JSON.stringify({ params, payload })) of the second stage, XORed with the repeating key
- *         UTF-8(JSON.stringify(firstStageAnswer)). The submitted answer is the second stage's answer.
+ * chain:  payload is a {@link ChainPayload}. The submitted answer is the second stage's answer.
  */
 export interface PublicChallenge {
   kind: 'single' | 'chain';
@@ -1466,9 +1467,56 @@ export interface Challenge extends PublicChallenge {
   answer: unknown;
 }
 
+/**
+ * Payload of a chained (dual-type) challenge.
+ *
+ * `first` is stage one in the clear. `sealed` is stage two, `{ params, payload }`, sealed with a key derived from the
+ * answer to stage one (see {@link sealStage}):
+ *
+ * - canonical answer: `JSON.stringify(firstAnswer)` — compact JSON (no whitespace) with the family's own key order,
+ *   e.g. `{"checksum":"0a1b2c3d"}`. Players must reproduce it byte for byte.
+ * - `key = SHA-256(UTF-8(canonicalAnswer))`.
+ * - keystream block i (i = 0, 1, 2, ...) = `SHA-256(key ‖ u32be(i))`; the keystream is the blocks concatenated and cut
+ *   to the plaintext length.
+ * - `sealed = lowercase hex(UTF-8(JSON.stringify({ params, payload })) XOR keystream)`.
+ */
 export interface ChainPayload {
   first: { params: unknown; payload: unknown };
   sealed: string;
+}
+
+/** The canonical form of a stage answer used to derive the chain key: compact JSON in the family's key order. */
+export function canonicalAnswer(answer: unknown): string {
+  return JSON.stringify(answer);
+}
+
+function keystream(firstAnswer: unknown, length: number): Uint8Array {
+  const key = sha256(utf8(canonicalAnswer(firstAnswer)));
+  const out = new Uint8Array(length);
+  const input = new Uint8Array(key.length + 4);
+  input.set(key);
+  const counter = new DataView(input.buffer, key.length, 4);
+  for (let i = 0; i * 32 < length; i++) {
+    counter.setUint32(0, i);
+    const block = sha256(input);
+    out.set(block.subarray(0, Math.min(32, length - i * 32)), i * 32);
+  }
+  return out;
+}
+
+function xorKeystream(data: Uint8Array, firstAnswer: unknown): Uint8Array {
+  const ks = keystream(firstAnswer, data.length);
+  return data.map((b, i) => b ^ ks[i]!);
+}
+
+/** Seal a stage-two plaintext with the SHA-256 keystream derived from the stage-one answer; returns lowercase hex. */
+export function sealStage(plaintext: string, firstAnswer: unknown): string {
+  return toHex(xorKeystream(utf8(plaintext), firstAnswer));
+}
+
+/** Inverse of {@link sealStage}. */
+export function unsealStage(sealed: string, firstAnswer: unknown): string {
+  return fromUtf8(xorKeystream(fromHex(sealed), firstAnswer));
 }
 
 /** Types are the target daemon's types (1 or 2). Both stages of a chain use the same size and noise. */
@@ -1481,8 +1529,7 @@ export function generateChallenge(types: readonly TypeId[], size: number, noise:
   const [a, b] = types as readonly [TypeId, TypeId];
   const first = getFamily(a).generate(size, noise, rng);
   const second = getFamily(b).generate(size, noise, rng);
-  const key = utf8(JSON.stringify(first.answer));
-  const sealed = toHex(xorRepeating(utf8(JSON.stringify({ params: second.params, payload: second.payload })), key));
+  const sealed = sealStage(JSON.stringify({ params: second.params, payload: second.payload }), first.answer);
   const payload: ChainPayload = { first: { params: first.params, payload: first.payload }, sealed };
   return { kind: 'chain', families: [a, b], params: {}, payload, answer: second.answer };
 }

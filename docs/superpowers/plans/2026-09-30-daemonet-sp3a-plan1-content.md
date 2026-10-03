@@ -15,6 +15,7 @@
 ## Global Constraints
 
 - Everything from the earlier plans.
+- Content tables stay deep-frozen (added after SP1 plan 1's final review): wherever this plan replaces `items.ts`, `traits.ts`, `types.ts`, `moves.ts` or `species.ts`, wrap every exported table (`ITEMS`, `STARTING_INVENTORY`, `TRAITS`, `TYPES`, the type chart, `MOVES`, `SPECIES`) and the new `BESTIARY` in `deepFreeze(...)` from `../freeze.js`, as the SP1 code does; `packages/rules/test/freeze.test.ts` must stay green (add `BESTIARY` to it).
 - Base-stat totals: 300 / 420 / 500 / 540 by tree depth, capstones 600, starter lines ×0.95 — a test asserts every species sums exactly to its budget.
 - Every evolution edge, requirement item/type/stat and hidden flag in `bestiary.ts` must match the bestiary spec (the transcription is verbatim; if the spec changes, change both).
 - The SP1 corner of the chart and the SP1 move numbers do not change (existing sim tests rely on them).
