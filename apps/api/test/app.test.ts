@@ -141,6 +141,24 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(big.statusCode).toBe(400);
   });
 
+  it('handles concurrent script saves without a 500 and validates the version parameter', async () => {
+    const { cookie } = await login();
+    const cookies = { [COOKIE_NAME]: cookie! };
+    const put = (source: string) => app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, headers: csrf, payload: { source } });
+    for (const round of ['first', 'second']) {
+      const rs = await Promise.all([put(`${round}-a`), put(`${round}-b`), put(`${round}-c`)]);
+      expect(rs.map((r) => r.statusCode).filter((c) => c >= 500)).toEqual([]);
+      const ok = rs.filter((r) => r.statusCode === 200).map((r) => r.json().version as number);
+      expect(new Set(ok).size).toBe(ok.length);
+      expect(ok.length).toBeGreaterThan(0);
+    }
+    const saved = (await app.inject({ method: 'GET', url: '/api/scripts/main', cookies })).json();
+    expect(await prisma!.scriptVersion.count({ where: { version: saved.version } })).toBe(1);
+    for (const bad of ['0x10', '1e1', '99999999999', '0', '-1', '1.5']) {
+      expect((await app.inject({ method: 'GET', url: `/api/scripts/main/versions/${bad}`, cookies })).statusCode, bad).toBe(400);
+    }
+  });
+
   it('stores only the SHA-256 of the session token and sets HttpOnly/SameSite=Lax cookies', async () => {
     const { response, cookie } = await login();
     const set = response.cookies.find((c) => c.name === COOKIE_NAME)!;

@@ -24,14 +24,13 @@ export function registerScriptRoutes(app: FastifyInstance, prisma: PrismaClient)
     if (Buffer.byteLength(source, 'utf8') > MAX_SCRIPT_BYTES) throw badRequest(`script exceeds ${MAX_SCRIPT_BYTES} bytes`);
     const operatorId = req.operator!.id;
     return prisma.$transaction(async (tx) => {
-      const current = await tx.script.findUnique({ where: { operatorId } });
-      const version = (current?.version ?? 0) + 1;
+      // The increment happens in the database, so concurrent saves each get a distinct version.
       const saved = await tx.script.upsert({
         where: { operatorId },
-        update: { source, version },
-        create: { operatorId, source, version },
+        update: { source, version: { increment: 1 } },
+        create: { operatorId, source, version: 1 },
       });
-      await tx.scriptVersion.create({ data: { operatorId, version, source } });
+      await tx.scriptVersion.create({ data: { operatorId, version: saved.version, source } });
       const stale = await tx.scriptVersion.findMany({
         where: { operatorId },
         orderBy: { version: 'desc' },
@@ -53,8 +52,9 @@ export function registerScriptRoutes(app: FastifyInstance, prisma: PrismaClient)
   });
 
   app.get<{ Params: { version: string } }>('/api/scripts/main/versions/:version', auth, async (req) => {
+    if (!/^\d{1,9}$/.test(req.params.version)) throw badRequest('bad version');
     const version = Number(req.params.version);
-    if (!Number.isInteger(version) || version < 1) throw badRequest('bad version');
+    if (version < 1) throw badRequest('bad version');
     const row = await prisma.scriptVersion.findUnique({ where: { operatorId_version: { operatorId: req.operator!.id, version } } });
     if (!row) throw notFound('no such version');
     return { version: row.version, createdAt: row.createdAt, source: row.source };
