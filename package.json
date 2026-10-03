@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "test": "pnpm generate && tsc -b && vitest run",
     "db:migrate": "pnpm --filter @daemonet/db migrate:deploy",
-    "sim": "pnpm --filter @daemonet/sim start"
+    "sim": "pnpm --filter @daemonet/sim start",
+    "api": "pnpm --filter @daemonet/api start"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

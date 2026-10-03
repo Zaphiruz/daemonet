@@ -1,0 +1,45 @@
+import { createHash, randomBytes } from 'node:crypto';
+import type { PrismaClient } from '@daemonet/db';
+
+export const hashToken = (token: string): string => createHash('sha256').update(token).digest('hex');
+export const randomToken = (): string => randomBytes(32).toString('base64url');
+
+export interface SessionRecord {
+  operatorId: string;
+  groups: string[];
+  expiresAt: Date;
+}
+
+export interface SessionStore {
+  create(operatorId: string, groups: string[]): Promise<string>;
+  get(token: string): Promise<SessionRecord | null>;
+  touch(token: string): Promise<void>;
+  destroy(token: string): Promise<void>;
+}
+
+/** Sessions live in PostgreSQL; only the SHA-256 of the cookie value is stored. */
+export function createSessionStore(prisma: PrismaClient, ttlSeconds: number): SessionStore {
+  const expiry = () => new Date(Date.now() + ttlSeconds * 1000);
+  return {
+    async create(operatorId, groups) {
+      const token = randomToken();
+      await prisma.session.create({ data: { tokenHash: hashToken(token), operatorId, groups, expiresAt: expiry() } });
+      return token;
+    },
+    async get(token) {
+      const row = await prisma.session.findUnique({ where: { tokenHash: hashToken(token) } });
+      if (!row) return null;
+      if (row.expiresAt.getTime() <= Date.now()) {
+        await prisma.session.deleteMany({ where: { tokenHash: row.tokenHash } });
+        return null;
+      }
+      return { operatorId: row.operatorId, groups: row.groups, expiresAt: row.expiresAt };
+    },
+    async touch(token) {
+      await prisma.session.updateMany({ where: { tokenHash: hashToken(token) }, data: { expiresAt: expiry(), lastSeenAt: new Date() } });
+    },
+    async destroy(token) {
+      await prisma.session.deleteMany({ where: { tokenHash: hashToken(token) } });
+    },
+  };
+}
