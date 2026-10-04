@@ -4,6 +4,7 @@ import { GROUPS, USERS } from '../src/capture/root.js';
 import { FLAGS, TRANSITIONS } from '../src/capture/socket.js';
 import { FRAGMENT_IDS, RECIPES, SHOP } from '../src/content/economy.js';
 import { BESTIARY } from '../src/content/bestiary.js';
+import { DEFAULT_FILTER, DEFAULT_TERMS } from '../src/content/chatfilter.js';
 import { BESTIARY_WITH_RULES, EVOLUTION_RULES } from '../src/evolution/rules.js';
 import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
 import { MOVES, STATUS_IDS, TYPE_MOVES, TYPE_STATUS, getMove, type MoveDef } from '../src/content/moves.js';
@@ -48,6 +49,8 @@ describe('content tables are deep-frozen', () => {
     ['TYPE_MOVES', TYPE_MOVES],
     ['TYPE_STATUS', TYPE_STATUS],
     ['WORDS', WORDS],
+    ['DEFAULT_TERMS', DEFAULT_TERMS],
+    ['DEFAULT_FILTER', DEFAULT_FILTER],
     ['TRANSITIONS', TRANSITIONS],
     ['FLAGS', FLAGS],
     ['USERS', USERS],
