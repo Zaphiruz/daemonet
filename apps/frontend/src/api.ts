@@ -1,6 +1,7 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import { chatStore } from './game/chat.ts';
 import { clusterStore } from './game/clusters.ts';
+import { exchangeStore, type Book } from './game/exchange.ts';
 import { incidentStore } from './game/incident.ts';
 import type { CodexBestiaryRow, ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
 
@@ -216,6 +217,31 @@ export interface TicketHistory {
   completedAt: string | null;
 }
 
+export interface ExchangeItem {
+  id: string;
+  name: string;
+  kind: string;
+  bid: number | null;
+  ask: number | null;
+}
+export interface MyOrder {
+  id: string;
+  item: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  qty: number;
+  remaining: number;
+  status: 'OPEN' | 'FILLED' | 'CANCELLED' | 'EXPIRED';
+  createdAt: string;
+  expiresAt: string;
+}
+export interface PlaceOrderArgs {
+  item: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  qty: number;
+}
+
 /** All mutations carry the CSRF header the API requires. */
 /** A history page: the newest lines, or those before the `(at, id)` cursor of the oldest line held. */
 export interface ChatHistoryArgs {
@@ -243,13 +269,21 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault', 'Orders', 'Book'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
     disk: b.query<DiskDaemon[], void>({ query: () => '/disk', providesTags: ['Disk'] }),
     ledger: b.query<LedgerEntry[], void>({ query: () => '/ledger' }),
     vault: b.query<Record<string, number>, void>({ query: () => '/exchange/vault', providesTags: ['Vault'] }),
+    exchangeItems: b.query<ExchangeItem[], void>({ query: () => '/exchange/items', providesTags: ['Book'] }),
+    book: b.query<Book, string>({ query: (item) => `/exchange/book/${encodeURIComponent(item)}`, providesTags: ['Book'] }),
+    myOrders: b.query<MyOrder[], void>({ query: () => '/exchange/orders', providesTags: ['Orders'] }),
+    placeOrder: b.mutation<{ order: MyOrder; fills: Array<{ price: number; qty: number; fee: number }> }, PlaceOrderArgs>({
+      query: (body) => ({ url: '/exchange/orders', method: 'POST', body }),
+      invalidatesTags: ['Orders', 'Book', 'Vault'],
+    }),
+    cancelOrder: b.mutation<{ ok: boolean }, string>({ query: (id) => ({ url: `/exchange/orders/${encodeURIComponent(id)}`, method: 'DELETE' }), invalidatesTags: ['Orders', 'Book', 'Vault'] }),
     board: b.query<{ day: string; subnet: string; tickets: BoardTicket[]; acceptedToday: number }, string>({ query: (subnet) => `/tickets/board?subnet=${encodeURIComponent(subnet)}`, providesTags: ['Tickets'] }),
     ticketHistory: b.query<TicketHistory[], void>({ query: () => '/tickets', providesTags: ['Tickets'] }),
     chatHistory: b.query<ChatHistoryLine[], ChatHistoryArgs>({ query: chatHistoryUrl }),
@@ -297,6 +331,7 @@ export const api = createApi({
           chatStore.clear();
           clusterStore.clear();
           incidentStore.reset();
+          exchangeStore.clear();
         } catch {
           // a failed logout keeps the session and its caches
         }
@@ -322,6 +357,11 @@ export const {
   useRenameMutation,
   useIncidentsQuery,
   useStartIncidentMutation,
+  useExchangeItemsQuery,
+  useBookQuery,
+  useMyOrdersQuery,
+  usePlaceOrderMutation,
+  useCancelOrderMutation,
   useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useVaultQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */

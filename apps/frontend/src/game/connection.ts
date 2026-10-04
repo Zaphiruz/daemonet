@@ -6,6 +6,7 @@ import { capture as appCapture, type CaptureStore } from './capture.ts';
 import { chatStore, setMe, type ChatStore } from './chat.ts';
 import { clusterStore, type ClusterStore } from './clusters.ts';
 import { getControls, setControls } from './controls.ts';
+import { describeFill, exchangeStore, parseFill, type ExchangeStore } from './exchange.ts';
 import { describeIncidentEvent, incidentStore, type IncidentStore } from './incident.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
@@ -48,6 +49,10 @@ export interface ConnectionDeps {
   invalidateTickets?(): void;
   /** Holds the running Incident and its telegraphs (events arrive before any panel mounts). Optional: tests may omit it. */
   incident?: IncidentStore;
+  /** Holds the player's latest Exchange fills (they arrive before any panel mounts). Optional: tests may omit it. */
+  exchange?: ExchangeStore;
+  /** Refetches the orders, book and vault queries (a fill moved items and bits; also after a reconnect). Optional. */
+  invalidateExchange?(): void;
   /** Refetches /api/incidents (after a reconnect, when an Incident ended): the API re-seeds the store. Optional. */
   invalidateIncidents?(): void;
 }
@@ -125,6 +130,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.capture.clear();
     deps.chat?.clear();
     deps.clusters?.clear();
+    deps.exchange?.clear();
     deps.incident?.resync();
     client.close();
     set({ status, kickReason: reason, client: null });
@@ -200,6 +206,7 @@ export function createConnection(deps: ConnectionDeps) {
       // the end of an Incident may have been missed while away: forget it and ask the API what is running
       deps.incident?.resync();
       deps.invalidateIncidents?.();
+      deps.invalidateExchange?.();
       set({ status: 'online' });
       deps.log.push('system', 'reconnected');
     });
@@ -214,6 +221,16 @@ export function createConnection(deps: ConnectionDeps) {
     on('bits', (e) => deps.log.push('event', `${e.delta >= 0 ? '+' : ''}${e.delta} bits (${e.reason}) → ${e.balance}`));
     on('decompiled', (e) => deps.log.push('event', `decompiled ${e.species} into ${Object.entries(e.fragments).map(([k, v]) => `${v} ${k}`).join(', ')}`));
     on('ticketProgress', (e) => deps.log.push('event', `ticket ${e.ticketId}: ${e.progress}/${e.target}`));
+    // fills are captured here, not in the Exchange panel: they arrive whether or not that tab is open. Every exchange
+    // event makes the orders, book and vault queries refetch (a fill moved items and bits).
+    on('exchange', (e) => {
+      const fill = e.kind === 'fill' ? parseFill(e.detail) : null;
+      if (fill) {
+        deps.exchange?.push(fill);
+        deps.log.push('event', `Exchange: ${describeFill(fill)}`);
+      } else deps.log.push('event', `Exchange: ${e.kind}`);
+      deps.invalidateExchange?.();
+    });
     on('ticketDone', (e) => {
       deps.log.push('event', e.unpaid ? `ticket ${e.ticketId} closed without payout` : `ticket ${e.ticketId} done: +${e.reward} bits`);
       deps.invalidateTickets?.();
@@ -311,6 +328,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.capture.clear();
     deps.chat?.clear();
     deps.clusters?.clear();
+    deps.exchange?.clear();
     deps.incident?.resync();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
@@ -340,10 +358,12 @@ const connection = createConnection({
   chat: chatStore,
   clusters: clusterStore,
   incident: incidentStore,
+  exchange: exchangeStore,
   stopSandbox,
   invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
   invalidateTickets: () => store.dispatch(api.util.invalidateTags(['Tickets'])),
   invalidateIncidents: () => store.dispatch(api.util.invalidateTags(['Incidents'])),
+  invalidateExchange: () => store.dispatch(api.util.invalidateTags(['Orders', 'Book', 'Vault'])),
 });
 
 // the sandbox only starts a script on a live socket

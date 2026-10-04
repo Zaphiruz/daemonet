@@ -9,6 +9,7 @@ import { IncidentsPanel } from './panels/IncidentsPanel.tsx';
 import { AdminPanel } from './panels/AdminPanel.tsx';
 import { ChatPanel } from './panels/ChatPanel.tsx';
 import { DiskPanel } from './panels/DiskPanel.tsx';
+import { ExchangePanel } from './panels/ExchangePanel.tsx';
 import { HostPanel } from './panels/HostPanel.tsx';
 import { OrgPanel } from './panels/OrgPanel.tsx';
 import { LogPanel } from './panels/LogPanel.tsx';
@@ -18,7 +19,7 @@ import { RamPanel } from './panels/RamPanel.tsx';
 // Monaco is big: load it (and its workers) only when the Script tab is first opened, never on the login page.
 const ScriptPanel = lazy(() => import('./panels/ScriptPanel.tsx'));
 
-const TABS = ['play', 'ram', 'disk', 'host', 'items', 'codex', 'chat', 'org', 'incidents', 'script', 'log', 'admin'] as const;
+const TABS = ['play', 'ram', 'disk', 'host', 'items', 'codex', 'exchange', 'chat', 'org', 'incidents', 'script', 'log', 'admin'] as const;
 type Tab = (typeof TABS)[number];
 
 export function Login() {
@@ -105,6 +106,7 @@ export function App() {
             {tab === 'host' && client?.self && <HostPanel client={client} />}
             {tab === 'items' && client?.self && <ItemsPanel inventory={client.self.inventory} />}
             {tab === 'codex' && <CodexPanel />}
+            {tab === 'exchange' && (client?.self ? <ExchangePanel client={client} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
             {tab === 'chat' && (client?.self ? <ChatPanel client={client} isAdmin={isAdmin} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
             {tab === 'org' && (client?.self ? <OrgPanel client={client} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
             {tab === 'incidents' && <IncidentsPanel />}

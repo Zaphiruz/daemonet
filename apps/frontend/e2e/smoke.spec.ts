@@ -201,6 +201,30 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await pa.getByTestId('org-confirm').click();
   await expect(pa.getByTestId('org-create')).toBeVisible({ timeout: 10_000 });
 
+  // Exchange: B sells fragments from the vault; A (who still has bits) buys them at B's price
+  const hdr = { 'x-requested-with': 'daemonet' };
+  expect((await pb.request.post('/api/dev/vault', { data: { item: 'frag:heap', qty: 5 }, headers: hdr })).ok()).toBeTruthy();
+  await pb.getByTestId('tab-exchange').click();
+  await pb.getByTestId('exchange-item').selectOption('frag:heap');
+  await pb.getByTestId('side-SELL').click();
+  await pb.getByTestId('order-price').fill('20');
+  await pb.getByTestId('order-qty').fill('3');
+  await expect(pb.getByTestId('exchange-vault')).toContainText('vault ×5', { timeout: 10_000 });
+  await pb.getByTestId('order-place').click();
+  await expect(pb.getByTestId('my-orders')).toContainText('0/3 @ 20', { timeout: 10_000 });
+  await pa.getByTestId('tab-exchange').click();
+  await pa.getByTestId('exchange-item').selectOption('frag:heap');
+  await expect(pa.getByTestId('ask-20')).toContainText('×3', { timeout: 10_000 });
+  await pa.getByTestId('side-BUY').click();
+  await pa.getByTestId('order-price').fill('25');
+  await pa.getByTestId('order-qty').fill('3');
+  await pa.getByTestId('order-place').click();
+  await expect(pa.getByTestId('my-orders')).toContainText('3/3 @ 25', { timeout: 10_000 });
+  await expect(pa.getByTestId('exchange-vault')).toContainText('vault ×3', { timeout: 10_000 });
+  await expect(pb.getByTestId('my-orders')).toContainText('3/3 @ 20', { timeout: 10_000 });
+  await pb.getByTestId('tab-log').click();
+  await expect(pb.getByTestId('log')).toContainText('Exchange: sold 3 frag:heap @ 20', { timeout: 10_000 });
+
   // Incidents: an admin starts one; every connected operator sees the banner and the Incidents tab lists it
   const adm = await browser.newContext({ baseURL: 'http://127.0.0.1:4173' });
   expect((await adm.request.get(`/api/auth/dev?name=${name}adm&admin=true`, { maxRedirects: 0 })).status()).toBe(302);

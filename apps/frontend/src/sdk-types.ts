@@ -100,6 +100,8 @@ declare module '@daemonet/sdk' {
     on(name: 'telegraph', handler: (ev: { x: number; y: number; radius: number; atTick: number }) => void): () => void;
     /** Your payout from a cleared Incident. */
     on(name: 'incidentReward', handler: (ev: { incidentId: string; reward: number; share: number }) => void): () => void;
+    /** Something happened to you on the Exchange: kind 'fill' has detail { item, price, qty, side: 'buy' | 'sell', fee? } (fee only on a sale). */
+    on(name: 'exchange', handler: (ev: { kind: string; detail: Record<string, unknown> }) => void): () => void;
     on(name: 'chat', handler: (line: ChatLine) => void): () => void;
     on(name: 'chatDeleted', handler: (ev: { id: string; channel: string }) => void): () => void;
     /** Your mute state changed: until is the end of the mute (ISO time), or null when it was lifted. */

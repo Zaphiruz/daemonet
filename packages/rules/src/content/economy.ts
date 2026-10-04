@@ -18,6 +18,16 @@ export const CRAFT_MAX_QTY = 16;
 /** Largest quantity one deposit / withdraw (and one Exchange order) moves. */
 export const VAULT_MAX_QTY = 1024;
 
+/** Exchange limits and the fee (SP5 spec §3, §5): shared by the api (authoritative) and the client (previews). */
+export const MAX_OPEN_ORDERS = 16;
+export const ORDER_TTL_MS = 7 * 86_400_000;
+export const MAX_PRICE = 1_048_576;
+export const MAX_QTY = 1024;
+export const FEE_DIVISOR = 16;
+
+/** The fee on a fill worth `bits`: 1/16, floored. The seller pays it out of the proceeds; it is destroyed. */
+export const feeOn = (bits: number): number => Math.floor(bits / FEE_DIVISOR);
+
 /** Items the Exchange trades (SP5): everything an inventory can hold. */
 export function isTradable(id: string): boolean {
   try {

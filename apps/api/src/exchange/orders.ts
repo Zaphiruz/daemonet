@@ -1,18 +1,12 @@
 import { consoleBusLogger, type Bus } from '@daemonet/bus';
 import type { Prisma, PrismaClient } from '@daemonet/db';
+import { FEE_DIVISOR, MAX_OPEN_ORDERS, MAX_PRICE, MAX_QTY, ORDER_TTL_MS, feeOn } from '@daemonet/rules';
 import { AppError, badRequest, forbidden, notFound } from '../errors.js';
 import { publishSafely, type PublishLog } from '../publish.js';
 import type { BitsPushMessage } from '../routes/orgs.js';
 
-/** Exchange limits and the fee (SP5 spec §3, §5). */
-export const MAX_OPEN_ORDERS = 16;
-export const ORDER_TTL_MS = 7 * 86_400_000;
-export const MAX_PRICE = 1_048_576;
-export const MAX_QTY = 1024;
-export const FEE_DIVISOR = 16;
-
-/** The fee on a fill worth `bits`: 1/16, floored. The seller pays it out of the proceeds; it is destroyed. */
-export const feeOn = (bits: number): number => Math.floor(bits / FEE_DIVISOR);
+/** Exchange limits and the fee live in `@daemonet/rules` (the client previews with the same numbers); re-exported for the api. */
+export { FEE_DIVISOR, MAX_OPEN_ORDERS, MAX_PRICE, MAX_QTY, ORDER_TTL_MS, feeOn };
 
 /**
  * Ledger reasons the order book writes. None of them is one of the sim's intent reasons (SIM_LEDGER_REASONS), so the
