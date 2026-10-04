@@ -7,8 +7,8 @@ export type Shape =
   | { kind: 'circle'; radius: number };
 
 /** throttled: +50% own cooldowns · stalled: cannot move · leaking: -2 energy/s · exposed: +25% damage taken */
-export type StatusId = 'throttled' | 'stalled' | 'leaking' | 'exposed';
-export const STATUS_IDS: readonly StatusId[] = deepFreeze(['throttled', 'stalled', 'leaking', 'exposed'] as const);
+export const STATUS_IDS = deepFreeze(['throttled', 'stalled', 'leaking', 'exposed'] as const);
+export type StatusId = (typeof STATUS_IDS)[number];
 
 export interface MoveDef {
   id: string;

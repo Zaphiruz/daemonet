@@ -65,7 +65,7 @@ export type ClientMessage = z.infer<typeof ClientMessage>;
 
 // ---- Entities (public, within interest radius) ----
 
-export const StatusSchema = z.enum(STATUS_IDS as [string, ...string[]]);
+export const StatusSchema = z.enum(STATUS_IDS);
 
 export const OperatorEntity = z.object({
   kind: z.literal('operator'),
