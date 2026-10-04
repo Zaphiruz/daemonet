@@ -1,4 +1,4 @@
-import { DISK_SLOTS, RAM_SLOTS, getSpecies } from '@daemonet/rules';
+import { RAM_SLOTS, getSpecies } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useDiskQuery } from '../api.ts';
 import { run } from '../components/WorldCanvas.tsx';
@@ -13,7 +13,7 @@ export function DiskPanel({ client }: { client: GameClient }) {
   return (
     <div className="space-y-2 p-3 text-sm">
       <p className="text-xs text-neutral-500">
-        Disk {rows.length}/{DISK_SLOTS} · <button className="underline" onClick={() => disk.refetch()}>refresh</button>
+        Disk {rows.length}/{me.diskCapacity} · <button className="underline" onClick={() => disk.refetch()}>refresh</button>
       </p>
       {rows.length === 0 && <p className="text-neutral-500">nothing on Disk</p>}
       {rows.map((d) => {

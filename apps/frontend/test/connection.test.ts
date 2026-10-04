@@ -324,6 +324,20 @@ describe('evolution events', () => {
   });
 });
 
+describe('economy events', () => {
+  it('logs bits and decompiled events from the store, before any panel mounts', async () => {
+    const t = setup([{ kind: 'ready' }]);
+    await t.conn.open('controller');
+    const c = t.clients[0]!;
+    c.emit('bits', { delta: -16, reason: 'craft', balance: 368 });
+    c.emit('bits', { delta: 50, reason: 'admin', balance: 418 });
+    c.emit('decompiled', { daemon: 'd1', species: 'tracerat', fragments: { 'frag:packet': 4, 'frag:socket': 2 } });
+    expect(t.texts()).toContain('event:-16 bits (craft) → 368');
+    expect(t.texts()).toContain('event:+50 bits (admin) → 418');
+    expect(t.texts()).toContain('event:decompiled tracerat into 4 frag:packet, 2 frag:socket');
+  });
+});
+
 describe('travel', () => {
   it('logs the arrival from the store and re-renders subscribers on a mid-session snapshot', async () => {
     const t = setup([{ kind: 'ready' }]);

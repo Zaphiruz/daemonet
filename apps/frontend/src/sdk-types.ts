@@ -16,7 +16,7 @@ declare module '@daemonet/sdk' {
     heldItem: string | null; patched: boolean; moveTypeUses: number[]; crashes: number; evolutions: EvolutionOption[];
   }
   export interface OperatorSelf extends Positioned {
-    id: string; name: string | null; starterClaimed: boolean; bits: number; ram: RamDaemon[]; running: string[];
+    id: string; name: string | null; starterClaimed: boolean; bits: number; diskCapacity: number; ram: RamDaemon[]; running: string[];
     inventory: Record<string, number>; swapReadyTick: number; capture: { captureId: string; targetId: string; deadlineTick: number } | null;
   }
   export class Query<T extends Positioned> {
@@ -40,6 +40,7 @@ declare module '@daemonet/sdk' {
     claimStarter(species: string, operatorName: string): Promise<unknown>; store(daemonId: string): Promise<unknown>; load(daemonId: string): Promise<unknown>;
     travel(gatewayId: string): Promise<unknown>; evolve(daemonId: string, formId: string): Promise<unknown>; hold(daemonId: string, itemId: string): Promise<unknown>; unhold(daemonId: string): Promise<unknown>;
     useBitFlipper(daemonId: string, stat: 'hp' | 'attack' | 'defense' | 'focus' | 'resolve' | 'speed' | 'haste' | 'energy'): Promise<unknown>;
+    buy(itemId: string, qty?: number): Promise<unknown>; craft(recipeId: string, qty?: number, using?: string): Promise<unknown>; decompile(daemonId: string, confirm?: boolean): Promise<unknown>;
     script(fn: (ctx: OperatorScriptContext) => void): () => void;
   }
   export class DaemonsApi { get(id: string): DaemonHandle; script(fn: (ctx: DaemonScriptContext) => void): () => void }
@@ -52,6 +53,8 @@ declare module '@daemonet/sdk' {
     on(name: 'evolved', handler: (ev: { daemon: string; from: string; to: string; changes: unknown[] }) => void): () => void;
     on(name: 'discovery', handler: (ev: { form: string; operator: string; operatorName: string | null }) => void): () => void;
     on(name: 'travelled', handler: (ev: { from: string; to: string }) => void): () => void;
+    on(name: 'bits', handler: (ev: { delta: number; reason: string; balance: number }) => void): () => void;
+    on(name: 'decompiled', handler: (ev: { daemon: string; species: string; fragments: Record<string, number> }) => void): () => void;
     on(name: string, handler: (value: any) => void): () => void;
   }
 }

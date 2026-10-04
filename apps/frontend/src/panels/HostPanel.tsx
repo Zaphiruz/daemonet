@@ -1,0 +1,155 @@
+import { DISK_MAX, DISK_STEP, RECIPES, SHOP, diskExpansionPrice, getItem, type TypeId } from '@daemonet/rules';
+import type { GameClient } from '@daemonet/sdk';
+import { useRef, useState } from 'react';
+import { useLedgerQuery } from '../api.ts';
+import { run } from '../components/WorldCanvas.tsx';
+import { craftCheck, formatBits, fragmentTypes } from '../game/economy.ts';
+import { nearHost } from './RamPanel.tsx';
+
+const VIEWS = ['shop', 'craft', 'ledger'] as const;
+type View = (typeof VIEWS)[number];
+
+/** Everything that happens at a host node: the NPC shop, Disk expansion, crafting, and the bits ledger. */
+export function HostPanel({ client }: { client: GameClient }) {
+  const me = client.self;
+  const manual = client.role === 'controller';
+  const atHost = nearHost(client.subnet, me);
+  const [view, setView] = useState<View>('shop');
+  const [qty, setQty] = useState(1);
+  const [using, setUsing] = useState<TypeId | ''>('');
+  // one buy/craft at a time: the buttons stay disabled until the request settles (the ref also covers the gap before the re-render)
+  const [inFlight, setInFlight] = useState(false);
+  const busy = useRef(false);
+  const ledger = useLedgerQuery(undefined, { skip: view !== 'ledger', refetchOnMountOrArgChange: true });
+  const diskPrice = diskExpansionPrice(me.diskCapacity);
+  const can = manual && atHost && !inFlight;
+
+  const submit = (request: () => Promise<unknown>, label: string) => {
+    if (busy.current) return;
+    busy.current = true;
+    setInFlight(true);
+    const p = request();
+    run(p, label);
+    const done = () => {
+      busy.current = false;
+      setInFlight(false);
+    };
+    void p.then(done, done);
+  };
+
+  return (
+    <div className="space-y-3 p-3 text-sm">
+      <p className="text-xs text-neutral-500" data-testid="host-status">
+        {atHost ? 'at the host' : 'walk to the host node to trade'} · {me.bits} bits ({formatBits(me.bits)}) · Disk {me.diskCapacity}
+      </p>
+      <nav className="flex gap-1 text-xs">
+        {VIEWS.map((v) => (
+          <button key={v} className={`rounded px-2 py-0.5 ${view === v ? 'bg-neutral-800 text-sky-300' : 'text-neutral-400 hover:text-neutral-200'}`} onClick={() => setView(v)} data-testid={`host-${v}`}>
+            {v}
+          </button>
+        ))}
+        <label className="ml-auto text-neutral-500">
+          qty
+          <input className="ml-1 w-12 rounded bg-neutral-800 px-1" type="number" min={1} max={64} value={qty} onChange={(e) => setQty(Math.max(1, Math.min(64, Number(e.target.value) || 1)))} data-testid="qty" />
+        </label>
+      </nav>
+
+      {view === 'shop' && (
+        <section className="space-y-1" data-testid="shop">
+          {Object.entries(SHOP).map(([id, price]) => (
+            <div key={id} className="flex items-center justify-between rounded border border-neutral-800 px-2 py-1">
+              <span>
+                {getItem(id).name} <span className="mono text-xs text-neutral-500">×{me.inventory[id] ?? 0}</span>
+              </span>
+              <button
+                className="rounded bg-sky-800 px-2 py-0.5 hover:bg-sky-700 disabled:opacity-40"
+                disabled={!can || me.bits < price * qty}
+                onClick={() => submit(() => client.operator.buy(id, qty), 'buy')}
+                data-testid={`buy-${id}`}
+              >
+                buy {qty > 1 ? `×${qty} ` : ''}for {price * qty}
+              </button>
+            </div>
+          ))}
+          <div className="flex items-center justify-between rounded border border-neutral-800 px-2 py-1">
+            <span>
+              Disk expansion <span className="mono text-xs text-neutral-500">+{DISK_STEP} slots (max {DISK_MAX})</span>
+            </span>
+            <button
+              className="rounded bg-sky-800 px-2 py-0.5 hover:bg-sky-700 disabled:opacity-40"
+              disabled={!can || diskPrice === null || me.bits < diskPrice}
+              onClick={() => submit(() => client.operator.buy('diskExpansion', 1), 'buy')}
+              data-testid="buy-diskExpansion"
+            >
+              {diskPrice === null ? 'maxed' : `buy for ${diskPrice}`}
+            </button>
+          </div>
+        </section>
+      )}
+
+      {view === 'craft' && (
+        <section className="space-y-1" data-testid="craft">
+          <label className="text-xs text-neutral-500">
+            fragment type for “any” recipes
+            <select className="ml-1 rounded bg-neutral-800 px-1" value={using} onChange={(e) => setUsing(e.target.value as TypeId | '')} data-testid="using">
+              <option value="">—</option>
+              {fragmentTypes(me.inventory).map((t) => (
+                <option key={t} value={t}>
+                  {t} ×{me.inventory[`frag:${t}`]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {RECIPES.map((r) => {
+            const check = craftCheck(r, qty, me.inventory, me.bits, using || undefined);
+            return (
+              <div key={r.id} className="rounded border border-neutral-800 px-2 py-1" data-testid={`recipe-${r.id}`}>
+                <div className="flex items-center justify-between">
+                  <span>
+                    {getItem(r.output.item).name}
+                    {r.output.qty > 1 ? ` ×${r.output.qty}` : ''} <span className="mono text-xs text-neutral-500">×{me.inventory[r.output.item] ?? 0}</span>
+                  </span>
+                  <button
+                    className="rounded bg-emerald-800 px-2 py-0.5 hover:bg-emerald-700 disabled:opacity-40"
+                    disabled={!can || !check.ok}
+                    onClick={() => submit(() => client.operator.craft(r.id, qty, using || undefined), 'craft')}
+                    data-testid={`craft-${r.id}`}
+                  >
+                    craft for {check.bits}
+                  </button>
+                </div>
+                <div className="mono text-xs text-neutral-500">
+                  {check.needsType && 'pick a fragment type · '}
+                  {check.needs.map((n) => (
+                    <span key={n.item} className={n.have >= n.need ? 'text-neutral-400' : 'text-red-400'}>
+                      {n.item.slice(5)} {n.have}/{n.need}{' '}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      )}
+
+      {view === 'ledger' && (
+        <section className="mono text-xs" data-testid="ledger">
+          {ledger.data?.length === 0 && <p className="text-neutral-500">no bits have moved yet</p>}
+          {ledger.data?.map((l, i) => (
+            <div key={i} className="flex justify-between border-b border-neutral-900 py-0.5">
+              <span className="text-neutral-500">{new Date(l.at).toLocaleString()}</span>
+              <span>{l.reason}</span>
+              <span className={l.delta >= 0 ? 'text-emerald-300' : 'text-red-300'}>
+                {l.delta >= 0 ? '+' : ''}
+                {l.delta}
+              </span>
+            </div>
+          ))}
+          <button className="mt-1 text-neutral-500 underline" onClick={() => ledger.refetch()}>
+            refresh
+          </button>
+        </section>
+      )}
+    </div>
+  );
+}

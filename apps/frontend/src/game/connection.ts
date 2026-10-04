@@ -166,6 +166,8 @@ export function createConnection(deps: ConnectionDeps) {
     on('crash', (e) => deps.log.push('event', `${e.daemon} crashed`));
     on('evolved', (e) => deps.log.push('event', `${e.daemon} evolved: ${e.from} -> ${e.to}`));
     on('travelled', (e) => deps.log.push('event', `travelled ${e.from} -> ${e.to}`));
+    on('bits', (e) => deps.log.push('event', `${e.delta >= 0 ? '+' : ''}${e.delta} bits (${e.reason}) → ${e.balance}`));
+    on('decompiled', (e) => deps.log.push('event', `decompiled ${e.species} into ${Object.entries(e.fragments).map(([k, v]) => `${v} ${k}`).join(', ')}`));
     // a snapshot after the first one (travel) swaps the whole world: re-render without waiting for the next tick
     /** The subnet of the last snapshot this store saw (set when the client goes online). */
     let subnet: string | null = null;

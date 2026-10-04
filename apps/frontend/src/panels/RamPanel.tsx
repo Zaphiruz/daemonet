@@ -4,7 +4,7 @@ import { useDiskQuery } from '../api.ts';
 import { run } from '../components/WorldCanvas.tsx';
 import { setControls } from '../game/controls.ts';
 import { spriteCanvas } from '../render/draw.ts';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { EvolveSection, HeldSlot } from './EvolveSection.tsx';
 
 export function SpriteImg({ species, types, clean, signature, size = 32 }: { species: string; types: readonly string[]; clean: boolean; signature: number; size?: number }) {
@@ -36,6 +36,20 @@ export function RamPanel({ client }: { client: GameClient }) {
   const manual = client.role === 'controller';
   const atHost = nearHost(client.subnet, me);
   const disk = useDiskQuery();
+  // daemons with a decompile request in flight: the button stays disabled until it settles (the daemon is gone, or it failed)
+  const [decompiling, setDecompiling] = useState<ReadonlySet<string>>(new Set());
+  const decompile = (id: string, confirm: boolean) => {
+    const p = client.operator.decompile(id, confirm);
+    setDecompiling((s) => new Set(s).add(id));
+    run(p, 'decompile');
+    const done = () =>
+      setDecompiling((s) => {
+        const n = new Set(s);
+        n.delete(id);
+        return n;
+      });
+    void p.then(done, done);
+  };
   return (
     <div className="space-y-2 p-3 text-sm">
       <p className="text-xs text-neutral-500">
@@ -99,6 +113,19 @@ export function RamPanel({ client }: { client: GameClient }) {
                     onClick={() => run(client.operator.store(d.id).then(() => disk.refetch()), 'store')}
                   >
                     store
+                  </button>
+                  <button
+                    className="text-red-300 hover:text-red-200 disabled:opacity-40"
+                    disabled={!manual || running || !atHost || decompiling.has(d.id)}
+                    onClick={() => {
+                      const rare = d.clean || d.signature > 0;
+                      const what = d.clean ? 'a clean image' : d.signature > 0 ? `signature T${d.signature}` : 'a daemon';
+                      if (!window.confirm(`Decompile ${sp.name} (${what}) into fragments? The daemon is destroyed.`)) return;
+                      decompile(d.id, rare);
+                    }}
+                    data-testid={`decompile-${d.slot}`}
+                  >
+                    decompile
                   </button>
                 </div>
               </div>

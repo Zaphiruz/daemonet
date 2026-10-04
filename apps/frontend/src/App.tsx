@@ -6,6 +6,7 @@ import { WorldCanvas } from './components/WorldCanvas.tsx';
 import { open, useConnection } from './game/connection.ts';
 import { CodexPanel, ItemsPanel } from './panels/CodexPanel.tsx';
 import { DiskPanel } from './panels/DiskPanel.tsx';
+import { HostPanel } from './panels/HostPanel.tsx';
 import { LogPanel } from './panels/LogPanel.tsx';
 import { PlayPanel } from './panels/PlayPanel.tsx';
 import { RamPanel } from './panels/RamPanel.tsx';
@@ -13,7 +14,7 @@ import { RamPanel } from './panels/RamPanel.tsx';
 // Monaco is big: load it (and its workers) only when the Script tab is first opened, never on the login page.
 const ScriptPanel = lazy(() => import('./panels/ScriptPanel.tsx'));
 
-const TABS = ['play', 'ram', 'disk', 'items', 'codex', 'script', 'log'] as const;
+const TABS = ['play', 'ram', 'disk', 'host', 'items', 'codex', 'script', 'log'] as const;
 type Tab = (typeof TABS)[number];
 
 export function Login() {
@@ -95,6 +96,7 @@ export function App() {
             {tab === 'play' && (client?.self ? <PlayPanel client={client} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
             {tab === 'ram' && client?.self && <RamPanel client={client} />}
             {tab === 'disk' && client?.self && <DiskPanel client={client} />}
+            {tab === 'host' && client?.self && <HostPanel client={client} />}
             {tab === 'items' && client?.self && <ItemsPanel inventory={client.self.inventory} />}
             {tab === 'codex' && <CodexPanel />}
             {tab === 'script' && (

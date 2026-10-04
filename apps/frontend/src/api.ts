@@ -35,6 +35,12 @@ export interface DiskDaemon {
   history: Array<{ at: string; kind: string; detail: string }>;
   log: { originalOperatorId: string; capturedAt: string; subnet: string; tool: string; spawnIndex: number | null };
 }
+export interface LedgerEntry {
+  delta: number;
+  reason: string;
+  ref: string | null;
+  at: string;
+}
 export interface Codex {
   types: TypeId[];
   chart: Record<TypeId, Record<TypeId, number>>;
@@ -67,6 +73,7 @@ export const api = createApi({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
     disk: b.query<DiskDaemon[], void>({ query: () => '/disk', providesTags: ['Disk'] }),
+    ledger: b.query<LedgerEntry[], void>({ query: () => '/ledger' }),
     script: b.query<ScriptDoc, void>({ query: () => '/scripts/main', providesTags: ['Script'] }),
     versions: b.query<ScriptVersion[], void>({ query: () => '/scripts/main/versions', providesTags: ['Script'] }),
     version: b.query<{ version: number; source: string }, number>({ query: (v) => `/scripts/main/versions/${v}` }),
@@ -78,7 +85,7 @@ export const api = createApi({
   }),
 });
 
-export const { useMeQuery, useCodexQuery, useDiskQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
+export const { useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */
 export class TicketError extends Error {

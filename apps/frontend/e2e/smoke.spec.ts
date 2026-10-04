@@ -83,3 +83,40 @@ test('a level-8 daemon seeded on Disk is loaded at the host and evolved from the
   await page.getByRole('button', { name: 'refresh' }).click();
   await expect(page.getByTestId('tree-echolet')).toContainText('✓', { timeout: 10_000 });
 });
+
+test('with dev bits: buy a tap at the host, decompile a seeded daemon into fragments, craft a restore from them', async ({ page }) => {
+  const who = `${name}h`;
+  // log in and seed through the API before the sim loads the operator: bits granted outside the sim are read on connect
+  const headers = { 'x-requested-with': 'daemonet' };
+  expect((await page.request.get(`/api/auth/dev?name=${who}`, { maxRedirects: 0 })).status()).toBe(302);
+  expect((await page.request.post('/api/dev/bits', { data: { amount: 512 }, headers })).ok()).toBeTruthy();
+  expect((await page.request.post('/api/dev/daemon', { data: { species: 'tracerat', level: 20 }, headers })).ok()).toBeTruthy();
+  await page.goto('/');
+  await expect(page.getByTestId('status')).toHaveText('online', { timeout: 20_000 });
+  await page.getByTestId('name-input').fill(who);
+  await page.getByTestId('claim').click();
+  await expect(page.getByTestId('operator-name')).toHaveText(who, { timeout: 15_000 });
+
+  await page.getByTestId('tab-host').click();
+  await expect(page.getByTestId('host-status')).toContainText('at the host');
+  await page.getByTestId('buy-tap').click();
+  await expect(page.getByTestId('host-status')).toContainText('384 bits', { timeout: 10_000 });
+
+  await page.getByTestId('tab-disk').click();
+  await page.getByRole('button', { name: 'refresh' }).click();
+  await page.getByRole('button', { name: 'load into RAM' }).click();
+  await page.getByTestId('tab-ram').click();
+  await expect(page.getByTestId('ram-1-name')).toHaveText('Tracerat', { timeout: 15_000 });
+  page.once('dialog', (d) => void d.accept());
+  await page.getByTestId('decompile-1').click();
+  await expect(page.getByTestId('ram-1')).toHaveCount(0, { timeout: 15_000 });
+
+  await page.getByTestId('tab-host').click();
+  await page.getByTestId('host-craft').click();
+  await page.getByTestId('using').selectOption('packet');
+  await page.getByTestId('craft-restore').click();
+  await expect(page.getByTestId('host-status')).toContainText('368 bits', { timeout: 10_000 });
+  await page.getByTestId('tab-log').click();
+  await expect(page.getByTestId('log')).toContainText('decompiled tracerat');
+  await expect(page.getByTestId('log')).toContainText('-16 bits (craft)');
+});
