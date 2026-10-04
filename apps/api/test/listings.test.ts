@@ -108,6 +108,26 @@ describe.skipIf(!url)('Exchange daemon listings (needs DATABASE_URL)', () => {
     expect((await seller.get('/listings/mine')).body.find((l: { id: string }) => l.id === made.body.id)).toMatchObject({ id: made.body.id, status: 'ACTIVE', price: 500 });
   });
 
+  it('my listings: every ACTIVE one, however old, plus the 64 most recent closed ones', async () => {
+    const seller = await trader('sel');
+    const d = await seller.seed();
+    const old = await seller.list(await seller.seed(), 99);
+    // the active listing is older than every closed one below (it would fall off a plain "newest 64")
+    await prisma!.listing.update({ where: { id: old.body.id }, data: { createdAt: new Date(Date.now() - 86_400_000) } });
+    for (let i = 0; i < 70; i++) {
+      const { body } = await seller.list(d, 10 + i);
+      expect((await seller.unlist(body.id)).status).toBe(200);
+    }
+    const mine = (await seller.get('/listings/mine')).body as Array<{ id: string; status: string; price: number }>;
+    expect(mine.filter((l) => l.status === 'ACTIVE').map((l) => l.id)).toEqual([old.body.id]);
+    expect(mine.filter((l) => l.status === 'CANCELLED')).toHaveLength(64);
+    expect(mine).toHaveLength(65);
+    expect(new Set(mine.map((l) => l.id)).size).toBe(65);
+    // closed ones are the most recent, newest first; the old active one sorts last
+    expect(mine[0]!.price).toBe(79);
+    expect(mine.at(-1)!.id).toBe(old.body.id);
+  });
+
   it('lists the same daemon only once when two listings race', async () => {
     const seller = await trader('sel');
     const d = await seller.seed();

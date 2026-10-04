@@ -27,7 +27,9 @@ const OrderBody = z.object({
 export const CLOSED_ORDERS_SHOWN = 64;
 const OrdersQuery = z.object({ status: z.enum(['OPEN', 'FILLED', 'CANCELLED', 'EXPIRED']).optional() });
 
-const ListBody = z.object({ daemonId: z.string().min(1).max(64), price: z.number().int().min(1).max(MAX_PRICE) });
+/** How many closed (sold, cancelled, expired) listings `GET /api/exchange/listings/mine` returns; ACTIVE ones are never cut. */
+export const CLOSED_LISTINGS_SHOWN = 64;
+const ListBody =z.object({ daemonId: z.string().min(1).max(64), price: z.number().int().min(1).max(MAX_PRICE) });
 const bool = z.enum(['true', 'false']).transform((v) => v === 'true');
 const BrowseQuery = z.object({
   species: z.string().max(32).optional(),
@@ -136,9 +138,20 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
   // ---- daemon listings
   app.get<{ Querystring: unknown }>('/api/exchange/listings', auth, async (req) => browseListings(prisma, parse(BrowseQuery, req.query)));
 
-  /** The caller's listings, newest first (64); the daemon is shown only while the listing is ACTIVE. */
+  /**
+   * The caller's listings, newest first: every ACTIVE one (bounded by the active-listing cap plus any not yet swept by
+   * expiry), then the CLOSED_LISTINGS_SHOWN most recent closed ones. The daemon is shown only while the listing is ACTIVE.
+   */
   app.get('/api/exchange/listings/mine', auth, async (req) => {
-    const rows = await prisma.listing.findMany({ where: { sellerId: req.operator!.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 64 });
+    const sellerId = req.operator!.id;
+    const orderBy = [{ createdAt: 'desc' as const }, { id: 'desc' as const }];
+    const [active, closed] = await Promise.all([
+      prisma.listing.findMany({ where: { sellerId, status: 'ACTIVE' }, orderBy }),
+      prisma.listing.findMany({ where: { sellerId, status: { not: 'ACTIVE' } }, orderBy, take: CLOSED_LISTINGS_SHOWN }),
+    ]);
+    // a listing that closed between the two reads may be in both: keep it once (the closed row is the newer state)
+    const byId = new Map([...active, ...closed].map((r) => [r.id, r]));
+    const rows = [...byId.values()].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
     const daemons = new Map((await prisma.daemon.findMany({ where: { id: { in: rows.filter((r) => r.status === 'ACTIVE').map((r) => r.daemonId) } } })).map((d) => [d.id, d]));
     return rows.map((r) => {
       const d = r.status === 'ACTIVE' ? daemons.get(r.daemonId) : undefined;
