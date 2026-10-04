@@ -105,6 +105,8 @@ export const SIGNATURE_UPGRADE_CHANCE = 1 / 256;
  * Game design §7.1, in order: IV growth (each IV below 31 gains +1 with p = ½), the clean check (all 31
  * and not patched → clean, entering at T0), the signature upgrade (clean → 1/256 chance of +1 tier with
  * +1 bonus on a random stat), then the species change. Consumes a held evolution item the branch requires.
+ *
+ * Does not check eligibility: the caller must verify the option's `met` (via `evolutionOptions`) first.
  */
 export function applyEvolution(d: EvolvableDaemon, formId: string, rng: Rng, chances = { iv: 0.5, signature: SIGNATURE_UPGRADE_CHANCE }): EvolutionResult {
   const form: SpeciesDef = getSpecies(formId);
