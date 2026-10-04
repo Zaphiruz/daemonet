@@ -81,9 +81,10 @@ export function resolveDefeats(world: World, out: Out): void {
   for (const d of down) {
     if (!d.wild) continue;
     out.emit({ e: 'crash', daemon: d.id }, { at: d });
-    // The Incident boss and its adds are open (no tag): no XP and no clear for anyone.
-    const owner = d.wild.personal !== undefined ? world.operators.get(d.wild.personal) : undefined;
+    // A personal boss copy credits its owner alone; the Incident boss and its adds are open (never tagged): no XP and
+    // no clear for anyone.
     if (d.wild.personal !== undefined) {
+      const owner = world.operators.get(d.wild.personal);
       if (owner) {
         awardXp(world, personalRecipients(world, owner.id, d.wild.damagedBy), xpYield(getSpecies(d.species).baseYield, d.level), out);
         advanceTickets(world, owner, { kind: 'clear', type: d.types[0]! }, out);
