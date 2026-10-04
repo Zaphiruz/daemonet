@@ -11,10 +11,6 @@ export interface ChallengeTarget {
   statused: boolean;
 }
 
-/**
- * size = 16 * 2^stage * (1 + hpFraction), x2 clean, x2 signature >= 1, x2 hardened, x0.5 statused,
- * x tool.sizeMultiplier; rounded; minimum 8, maximum {@link MAX_CHALLENGE_SIZE}.
- */
 /** Upper bound on a challenge's size parameter; keeps every public challenge (single or chain) under 64 KiB. */
 export const MAX_CHALLENGE_SIZE = 1024;
 
@@ -25,6 +21,10 @@ export const MAX_CHALLENGE_SIZE = 1024;
  */
 export const MAX_ANSWER_BYTES = 12_288;
 
+/**
+ * size = 16 * 2^stage * (1 + hpFraction), x2 clean, x2 signature >= 1, x2 hardened, x0.5 statused,
+ * x tool.sizeMultiplier; rounded; minimum 8, maximum {@link MAX_CHALLENGE_SIZE}.
+ */
 export function challengeSize(target: ChallengeTarget, tool: ToolDef): number {
   const hp = Math.min(1, Math.max(0, target.hpFraction));
   let size = 16 * 2 ** target.stage * (1 + hp);

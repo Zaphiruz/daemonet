@@ -191,9 +191,8 @@ describe.each(FAMILIES)('%s family', (type) => {
     expect(a).toEqual(b);
   });
 
-  it('stays under 64 KiB at the largest SP1 size', () => {
-    // stage 0, full HP, clean, signature, hardened: 16 * 2 * 2 * 2 * 2 = 256; allow 4x headroom.
-    const challenge = generateChallenge([type], 1024, 2, createRng('big'));
+  it('stays under 64 KiB at MAX_CHALLENGE_SIZE', () => {
+    const challenge = generateChallenge([type], MAX_CHALLENGE_SIZE, 2, createRng('big'));
     expect(JSON.stringify(publicChallenge(challenge)).length).toBeLessThan(65536);
   });
 
@@ -208,7 +207,8 @@ describe('chained challenges', () => {
   it('solving stage one unseals stage two', () => {
     fc.assert(
       fc.property(fc.constantFrom(...FAMILIES), fc.constantFrom(...FAMILIES), fc.integer(), (a, b, seed) => {
-        const challenge = generateChallenge([a, b], 24, 1, createRng(seed));
+        // size >= 64 so both stages are non-trivial (each stage is min(size, 256))
+        const challenge = generateChallenge([a, b], 64, 1, createRng(seed));
         expect(challenge.kind).toBe('chain');
         expect(challenge.families).toEqual([a, b]);
         const answer = solve(publicChallenge(challenge));
@@ -365,6 +365,13 @@ describe('hand-computed family fixtures', () => {
     const expected = { a: 'CLOSE_WAIT', b: 'CLOSED', c: 'CLOSED', d: 'SYN_RCVD', e: 'CLOSED', z: 'SYN_RCVD' };
     expect(finalStates(connections, segments)).toEqual(expected);
     expect(solveSocket({ connections }, { segments })).toEqual({ states: expected });
+    // the answer schema bounds key length and entry count
+    const states = (n: number, key = (i: number) => `c${i}`) => ({ states: Object.fromEntries(Array.from({ length: n }, (_, i) => [key(i), 'CLOSED'])) });
+    const schema = getFamily('socket').answerSchema;
+    expect(schema.safeParse(states(256)).success).toBe(true);
+    expect(schema.safeParse(states(257)).success).toBe(false);
+    expect(schema.safeParse(states(1, () => 'x'.repeat(256))).success).toBe(true);
+    expect(schema.safeParse(states(1, () => 'x'.repeat(257))).success).toBe(false);
     // SYNACK and FIN in CLOSED do nothing; ACK in CLOSE_WAIT does nothing; RST in LAST_ACK closes
     const more = [
       seg('a', 'SYNACK'),

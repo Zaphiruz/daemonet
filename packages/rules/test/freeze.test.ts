@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { WORDS } from '../src/capture/crypto.js';
+import { GROUPS, USERS } from '../src/capture/root.js';
+import { FLAGS, TRANSITIONS } from '../src/capture/socket.js';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
 import { MOVES, STATUS_IDS, TYPE_MOVES, TYPE_STATUS, getMove, type MoveDef } from '../src/content/moves.js';
@@ -33,7 +35,12 @@ describe('content tables are deep-frozen', () => {
     ['TYPE_MOVES', TYPE_MOVES],
     ['TYPE_STATUS', TYPE_STATUS],
     ['WORDS', WORDS],
+    ['TRANSITIONS', TRANSITIONS],
+    ['FLAGS', FLAGS],
+    ['USERS', USERS],
+    ['GROUPS', GROUPS],
   ])('%s is frozen', (_name, table) => {
+    expect(table).toBeTypeOf('object'); // Object.isFrozen(undefined) is true: a missing export must not pass
     expect(Object.isFrozen(table)).toBe(true);
   });
 
@@ -62,6 +69,7 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(EVOLUTION_ITEMS[0])).toBe(true);
     expect(Object.isFrozen(BEATS.kernel)).toBe(true);
     expect(Object.isFrozen(RESISTED_BY.kernel)).toBe(true);
+    expect(Object.isFrozen(TRANSITIONS.SYN_RCVD)).toBe(true);
   });
 
   it('assigning to a move throws (ESM is strict)', () => {

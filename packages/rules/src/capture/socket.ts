@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { deepFreeze } from '../freeze.js';
 import type { ChallengeFamily } from './common.js';
 
 /**
@@ -24,13 +25,13 @@ export interface SocketAnswer {
   states: Record<string, SocketState>;
 }
 
-const TRANSITIONS: Record<SocketState, Partial<Record<SocketFlag, SocketState>>> = {
+export const TRANSITIONS: Readonly<Record<SocketState, Readonly<Partial<Record<SocketFlag, SocketState>>>>> = deepFreeze({
   CLOSED: { SYN: 'SYN_RCVD' },
   SYN_RCVD: { ACK: 'ESTABLISHED', SYNACK: 'ESTABLISHED' },
   ESTABLISHED: { FIN: 'CLOSE_WAIT' },
   CLOSE_WAIT: { FIN: 'LAST_ACK' },
   LAST_ACK: { ACK: 'CLOSED' },
-};
+});
 
 export function finalStates(connections: readonly string[], segments: readonly Segment[]): Record<string, SocketState> {
   const states: Record<string, SocketState> = Object.fromEntries(connections.map((c) => [c, 'CLOSED' as const]));
@@ -41,11 +42,18 @@ export function finalStates(connections: readonly string[], segments: readonly S
   return states;
 }
 
-const FLAGS: SocketFlag[] = ['SYN', 'SYNACK', 'ACK', 'FIN', 'RST'];
+export const FLAGS: readonly SocketFlag[] = deepFreeze(['SYN', 'SYNACK', 'ACK', 'FIN', 'RST']);
+
+/** Most entries a submitted `states` answer may have (a generated challenge has at most 4). */
+export const SOCKET_MAX_STATES = 256;
 
 export const socketFamily: ChallengeFamily<SocketParams, SocketPayload, SocketAnswer> = {
   type: 'socket',
-  answerSchema: z.object({ states: z.record(z.string(), z.enum(['CLOSED', 'SYN_RCVD', 'ESTABLISHED', 'CLOSE_WAIT', 'LAST_ACK'])) }),
+  answerSchema: z.object({
+    states: z
+      .record(z.string().max(256), z.enum(['CLOSED', 'SYN_RCVD', 'ESTABLISHED', 'CLOSE_WAIT', 'LAST_ACK']))
+      .refine((s) => Object.keys(s).length <= SOCKET_MAX_STATES, { message: 'too many entries' }),
+  }),
   generate(size, noise, rng) {
     const connections = Array.from({ length: rng.int(2, 4) }, (_, i) => `c${i}`);
     const segments: Segment[] = [];

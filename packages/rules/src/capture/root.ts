@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { deepFreeze } from '../freeze.js';
 import type { ChallengeFamily } from './common.js';
 
 /**
@@ -47,8 +48,8 @@ export function checkAccess(params: RootParams, req: RootRequest): boolean {
   return has(params.mode.slice(6, 9), req.op);
 }
 
-const USERS = ['root', 'alice', 'bob', 'carol', 'dave', 'erin'];
-const GROUPS = ['wheel', 'staff', 'ops', 'guest'];
+export const USERS: readonly string[] = deepFreeze(['root', 'alice', 'bob', 'carol', 'dave', 'erin']);
+export const GROUPS: readonly string[] = deepFreeze(['wheel', 'staff', 'ops', 'guest']);
 
 const triple = (rng: { chance(p: number): boolean }) => `${rng.chance(0.6) ? 'r' : '-'}${rng.chance(0.4) ? 'w' : '-'}${rng.chance(0.4) ? 'x' : '-'}`;
 
