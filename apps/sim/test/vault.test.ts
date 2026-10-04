@@ -232,6 +232,12 @@ const tick = (g: Game, n = 1) => {
   for (let i = 0; i < n; i++) g.tick();
 };
 const settle = () => new Promise((r) => setTimeout(r, 5));
+/**
+ * Tests that keep a vault intent failing across `settle()`s must not reach the until-known retry cap: with 1 ms retry
+ * delays, 32 attempts take ~35 ms on Linux (1 ms timers) but ~500 ms on Windows (~15 ms timers), so the cap path (reload
+ * required) would depend on the platform's timer resolution. The cap itself is tested in economy.test.ts.
+ */
+const UNCAPPED = { unknownRetryLimit: Number.MAX_SAFE_INTEGER } as const;
 
 describe('vault intents in the runtime', () => {
   it('a withdrawal the store committed but did not acknowledge is replayed: the items arrive once', async () => {
@@ -273,7 +279,7 @@ describe('vault intents in the runtime', () => {
       }
       return result;
     };
-    const { a, game: g } = game(store, { checkpointEveryTicks: 1 });
+    const { a, game: g } = game(store, { checkpointEveryTicks: 1, ...UNCAPPED });
     const id = await trader(store, 'vic', { tap: 4, restore: 1 });
     const conn = await join(g, 'vic');
     const checkpoints: OperatorRecord[] = [];
@@ -427,7 +433,7 @@ function unholdThenDeposit(name: string, make: () => Promise<Fixture>) {
         if (intent.kind === 'vault') throw new Error('connection reset');
         return apply(intent, ctx);
       };
-      const { game: g } = game(f.store, { checkpointEveryTicks: 100_000 });
+      const { game: g } = game(f.store, { checkpointEveryTicks: 100_000, ...UNCAPPED });
       const conn = await join(g, 'hal');
       await send(g, conn, unhold);
       tick(g);

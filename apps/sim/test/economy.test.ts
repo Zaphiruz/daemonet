@@ -463,6 +463,12 @@ const tick = (g: Game, n = 1) => {
   for (let i = 0; i < n; i++) g.tick();
 };
 const settle = () => new Promise((r) => setTimeout(r, 5));
+/**
+ * Tests that keep an until-known intent failing across `settle()`s must not reach the retry cap: with 1 ms retry delays,
+ * 32 attempts take ~35 ms on Linux (1 ms timers) but ~500 ms on Windows (~15 ms timers), so the cap path (reload
+ * required) would depend on the platform's timer resolution. The cap itself is tested on its own below.
+ */
+const UNCAPPED = { unknownRetryLimit: Number.MAX_SAFE_INTEGER } as const;
 
 describe('economy in the runtime', () => {
   it('a checkpoint taken before a purchase cannot rewind it, and one taken while it is pending leaves the inventory alone', async () => {
@@ -601,7 +607,7 @@ describe('economy in the runtime', () => {
       }
       return result;
     };
-    const { a, game: g } = game(store, { checkpointEveryTicks: 1 });
+    const { a, game: g } = game(store, { checkpointEveryTicks: 1, ...UNCAPPED });
     const id = await shopper(store, 'vic', 1000, { restore: 1 });
     const conn = await join(g, 'vic');
     const checkpoints: OperatorRecord[] = [];
@@ -661,7 +667,7 @@ describe('economy in the runtime', () => {
       if (intent.kind === 'decompile') throw new Error('connection reset after commit');
       return result;
     };
-    const { a, game: g } = game(store);
+    const { a, game: g } = game(store, UNCAPPED);
     const id = await shopper(store, 'yul', 0, { restore: 1 });
     const conn = await join(g, 'yul');
     const checkpoints: OperatorRecord[] = [];
@@ -693,7 +699,7 @@ describe('economy in the runtime', () => {
       if (intent.kind === 'claimStarter' && (blocked ??= intent.id) === intent.id && !healthy) throw new Error('connection reset');
       return apply(intent, ctx);
     };
-    const { a, game: g } = game(store);
+    const { a, game: g } = game(store, UNCAPPED);
     const conn = await join(g, 'zed');
     const id = conn.of('authOk')[0]!.d.operatorId;
     await g.message(conn, cmd({ cmd: 'claimStarter', actor: self, args: { species: 'pingling', operatorName: 'zed' } }));
