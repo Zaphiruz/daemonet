@@ -64,8 +64,8 @@ export function ChatPanel({ client, isAdmin }: { client: GameClient; isAdmin: bo
   const subnetChannel = `subnet:${client.subnet}`;
   const [picked, setPicked] = useState<string | null>(null);
   // the subnet channel follows the current world (travel); other subnets' lines stay in the store but are not shown
-  // a cluster channel exists only while you are a member (lines of a cluster you left stay in the store, hidden)
-  const channels = [...new Set([...client.chat.channels, ...[...chat.lines.keys()].filter((c) => !c.startsWith('subnet:') && !c.startsWith('cluster:')), ...(picked?.startsWith('dm:') ? [picked] : [])])];
+  // cluster and org channels exist only while you are a member (lines of one you left stay in the store, hidden)
+  const channels = [...new Set([...client.chat.channels, ...[...chat.lines.keys()].filter((c) => !c.startsWith('subnet:') && !c.startsWith('cluster:') && !c.startsWith('org:')), ...(picked?.startsWith('dm:') ? [picked] : [])])];
   const active = picked !== null && channels.includes(picked) ? picked : subnetChannel;
   const [text, setText] = useState('');
   const [dm, setDm] = useState('');
@@ -77,12 +77,12 @@ export function ChatPanel({ client, isAdmin }: { client: GameClient; isAdmin: bo
   /** Channels whose history has been paged back to the start (an older page came back empty). */
   const [exhausted, setExhausted] = useState<ReadonlySet<string>>(new Set());
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const pagesHistory = active.startsWith('subnet:') || active.startsWith('dm:');
+  const pagesHistory = !active.startsWith('cluster:');
 
   useEffect(() => {
     chatStore.setActive(active);
-    // cluster history is live-only and org history is not served yet
-    if (!active.startsWith('subnet:') && !active.startsWith('dm:')) return;
+    // cluster history is live-only; subnet, dm and (for current members) org history is served
+    if (active.startsWith('cluster:')) return;
     let stale = false;
     loadHistory({ channel: active })
       .unwrap()

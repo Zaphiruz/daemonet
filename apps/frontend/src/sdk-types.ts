@@ -9,7 +9,7 @@ declare module '@daemonet/sdk' {
     scan?: { nature?: number; ivBuckets?: number[]; ivs?: number[] };
   }
   export interface DaemonView extends DaemonEntity { hpPct: number }
-  export interface OperatorEntity extends Positioned { kind: 'operator'; id: string; name: string | null }
+  export interface OperatorEntity extends Positioned { kind: 'operator'; id: string; name: string | null; /** The tag of the org this operator belongs to, or null. */ tag: string | null }
   export type Entity = OperatorEntity | DaemonEntity;
   export interface EvolutionOption { form: string; name: string; level: number; hidden: boolean; revealed: boolean; met: boolean; requirement: unknown[] | null }
   export interface RamDaemon {
@@ -27,6 +27,8 @@ declare module '@daemonet/sdk' {
     inventory: Record<string, number>; swapReadyTick: number; capture: { captureId: string; targetId: string; deadlineTick: number } | null;
     /** The cluster you are in (join code, leader, members; away = not in your subnet), or null. */
     cluster: ClusterView | null;
+    /** The org you are in (id, name, 4-character tag, your rank), or null. */
+    org: { id: string; name: string; tag: string; rank: 'OWNER' | 'OFFICER' | 'MEMBER' } | null;
   }
   export class Query<T extends Positioned> {
     readonly length: number;

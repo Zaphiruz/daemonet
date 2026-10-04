@@ -37,6 +37,35 @@ export interface DiskDaemon {
   history: Array<{ at: string; kind: string; detail: string }>;
   log: { originalOperatorId: string; capturedAt: string; subnet: string; tool: string; spawnIndex: number | null };
 }
+export type OrgRank = 'OWNER' | 'OFFICER' | 'MEMBER';
+export interface OrgMemberRow {
+  operatorId: string;
+  name: string | null;
+  rank: OrgRank;
+  joinedAt: string;
+}
+export interface OrgView {
+  id: string;
+  name: string;
+  tag: string;
+  ownerId: string;
+  members: OrgMemberRow[];
+}
+export interface OrgMine {
+  org: OrgView | null;
+  rank: OrgRank | null;
+  invites: Array<{ orgId: string; name: string; tag: string; byId: string; at: string }>;
+  prices: { create: number; tag: number; rename: number };
+}
+export interface OrgLeaderRow {
+  operatorId: string;
+  name: string | null;
+  rank: OrgRank;
+  captures: number;
+  highestSignature: number;
+  evolutions: number;
+  ticketsDone: number;
+}
 export interface LedgerEntry {
   delta: number;
   reason: string;
@@ -100,6 +129,21 @@ export function describeApiError(err: unknown): string {
   if (typeof status === 'number' && status >= 500) return 'server error: try again later';
   if ((code === 'validation_error' || code === 'bad_request' || code === 'not_found') && message) return message;
   return 'request failed';
+}
+
+/**
+ * A readable message for a failed org / rename call. The API's own short reasons are shown (`costs 8192 bits`, `that name
+ * is taken`, `that name or tag is not allowed` for a filter refusal, `requires owner`); a 402 says the balance is short.
+ */
+export function describeOrgError(err: unknown): string {
+  const e = err as { status?: unknown; data?: { error?: unknown; message?: unknown } } | null | undefined;
+  if (e === null || typeof e !== 'object') return 'request failed';
+  const code = typeof e.data?.error === 'string' ? e.data.error : '';
+  const message = typeof e.data?.message === 'string' ? e.data.message : '';
+  if (e.status === 402 || code === 'insufficient_bits') return `not enough bits${message ? `: ${message}` : ''}`;
+  if (e.status === 403 || code === 'forbidden') return message ? `not allowed: ${message}` : 'not allowed: your rank cannot do that';
+  if ((e.status === 400 || e.status === 404) && message) return message;
+  return describeApiError(err);
 }
 
 export interface Codex {
@@ -172,7 +216,7 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
@@ -200,6 +244,11 @@ export const api = createApi({
       query: (body) => ({ url: '/admin/chat/mute', method: 'POST', body }),
     }),
     adminEconomy: b.query<EconomyView, void>({ query: () => '/admin/economy' }),
+    orgMine: b.query<OrgMine, void>({ query: () => '/orgs/mine', providesTags: ['Org'] }),
+    orgLeaderboard: b.query<OrgLeaderRow[], string>({ query: (id) => `/orgs/${encodeURIComponent(id)}/leaderboard`, providesTags: ['Org'] }),
+    /** POST /api/orgs<path> — create (''), /invite, /<id>/accept, /<id>/decline, /leave, /kick, /rank, /transfer, /tag. */
+    orgAction: b.mutation<unknown, { path: string; body: object }>({ query: ({ path, body }) => ({ url: `/orgs${path}`, method: 'POST', body }), invalidatesTags: ['Org'] }),
+    rename: b.mutation<{ ok: boolean; name: string; bits: number }, { name: string }>({ query: (body) => ({ url: '/me/rename', method: 'POST', body }), invalidatesTags: ['Me', 'Org'] }),
     script: b.query<ScriptDoc, void>({ query: () => '/scripts/main', providesTags: ['Script'] }),
     versions: b.query<ScriptVersion[], void>({ query: () => '/scripts/main/versions', providesTags: ['Script'] }),
     version: b.query<{ version: number; source: string }, number>({ query: (v) => `/scripts/main/versions/${v}` }),
@@ -236,6 +285,10 @@ export const {
   useAdminDeleteMessageMutation,
   useAdminMuteMutation,
   useAdminEconomyQuery,
+  useOrgMineQuery,
+  useOrgLeaderboardQuery,
+  useOrgActionMutation,
+  useRenameMutation,
   useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */

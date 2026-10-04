@@ -2,6 +2,7 @@ import { getSubnet, TICK_HZ, type SubnetDef } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { signatureColor, spriteFor, SPRITE_SIZE } from '@daemonet/sprites';
 import type { Controls } from '../game/controls.ts';
+import { taggedName } from '../game/names.ts';
 import { scale, visibleTiles, worldToScreen, type Camera } from './camera.ts';
 
 const spriteCache = new Map<string, HTMLCanvasElement>();
@@ -118,7 +119,7 @@ export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): voi
       ctx.arc(p.sx, p.sy, s * 0.35, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = '#e5e7eb';
-      ctx.fillText(e.name ?? '?', p.sx + s * 0.4, p.sy - s * 0.4);
+      ctx.fillText(taggedName(e.tag, e.name), p.sx + s * 0.4, p.sy - s * 0.4);
       continue;
     }
     const sprite = spriteCanvas(e.species, e.types, e.clean, e.signature);

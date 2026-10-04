@@ -177,6 +177,21 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await expect(pb.getByTestId('cluster-members')).toContainText(`${name}ca`);
   await pb.getByTestId('cluster-leave').click();
   await expect(pa.getByTestId('cluster-members').locator('li')).toHaveCount(1, { timeout: 10_000 });
+
+  // orgs: A (granted bits while online — the balance arrives over the bus) founds one; the tag shows in the top bar and on chat lines
+  const tag = name.slice(-4).toUpperCase();
+  expect((await pa.request.post('/api/dev/bits', { data: { amount: 10000 }, headers: { 'x-requested-with': 'daemonet' } })).ok()).toBeTruthy();
+  await pa.getByTestId('tab-org').click();
+  await pa.getByTestId('org-name').fill(`Org ${name}`);
+  await pa.getByTestId('org-tag').fill(tag);
+  await expect(pa.getByTestId('org-create')).toBeEnabled({ timeout: 10_000 });
+  await pa.getByTestId('org-create').click();
+  await pa.getByTestId('org-confirm').click(); // paid: confirmed first
+  await expect(pa.getByTestId('org-current-tag')).toHaveText(`[${tag}]`, { timeout: 10_000 });
+  await expect(pa.getByTestId('operator-name')).toContainText(`[${tag}]`, { timeout: 10_000 });
+  await pa.getByTestId('org-leave').click(); // the last member: disband, confirmed first
+  await pa.getByTestId('org-confirm').click();
+  await expect(pa.getByTestId('org-create')).toBeVisible({ timeout: 10_000 });
   await a.close();
   await b.close();
 });

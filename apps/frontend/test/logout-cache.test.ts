@@ -17,13 +17,14 @@ describe('session change', () => {
     });
     vi.stubGlobal('fetch', vi.fn(async (input: Request | string) => {
       const url = typeof input === 'string' ? input : input.url;
-      const body = url.includes('/codex') ? { research: { '5': 256 }, hints: [{ formId: 'x', kind: 'k' }] } : url.includes('/auth/logout') ? { ok: true, endSessionUrl: null } : [];
+      const body = url.includes('/codex') ? { research: { '5': 256 }, hints: [{ formId: 'x', kind: 'k' }] } : url.includes('/auth/logout') ? { ok: true, endSessionUrl: null } : url.includes('/orgs/mine') ? { org: null, rank: null, invites: [], prices: { create: 1, tag: 1, rename: 1 } } : [];
       const status = url.includes('/auth/logout') && !logoutOk ? 500 : 200;
       return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
     }));
     const store = configureStore({ reducer: { [api.reducerPath]: api.reducer }, middleware: (d) => d().concat(api.middleware) });
     await store.dispatch(api.endpoints.codex.initiate());
     await store.dispatch(api.endpoints.ticketHistory.initiate());
+    await store.dispatch(api.endpoints.orgMine.initiate());
     expect(api.endpoints.codex.select()(store.getState()).data).toBeDefined();
     logoutOk = false;
     await store.dispatch(api.endpoints.logout.initiate());
@@ -35,5 +36,6 @@ describe('session change', () => {
     expect(clusterStore.get().invites).toEqual([]); // pending invites belong to the operator who just left
     expect(api.endpoints.codex.select()(store.getState()).data).toBeUndefined();
     expect(api.endpoints.ticketHistory.select()(store.getState()).data).toBeUndefined();
+    expect(api.endpoints.orgMine.select()(store.getState()).data).toBeUndefined(); // the previous operator's org, invites and prices
   });
 });

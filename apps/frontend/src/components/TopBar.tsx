@@ -3,6 +3,7 @@ import { useLogoutMutation, type Me } from '../api.ts';
 import { open, useConnection, type Role } from '../game/connection.ts';
 import { setControls, useControls } from '../game/controls.ts';
 import { log } from '../game/log.ts';
+import { taggedName } from '../game/names.ts';
 
 const reconnect = (role: Role) => void open(role).catch(() => {});
 
@@ -20,7 +21,7 @@ export function TopBar({ me }: { me: Me }) {
     <header className="flex items-center gap-4 border-b border-neutral-800 px-3 py-1.5 text-sm">
       <span className="font-semibold tracking-wide text-sky-300">daemonet</span>
       <span className="mono text-neutral-300" data-testid="operator-name">
-        {client?.self?.name ?? me.name ?? 'unnamed operator'}
+        {taggedName(client?.self?.org?.tag, client?.self?.name ?? me.name, 'unnamed operator')}
       </span>
       <span className="mono text-neutral-500">
         <SubnetStat client={client} /> · tick <span data-testid="tick">{client?.tick ?? 0}</span> · bits {client?.self?.bits ?? me.bits}
