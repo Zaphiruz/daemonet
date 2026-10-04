@@ -1,8 +1,9 @@
 import type { Bus } from '@daemonet/bus';
-import type { Prisma, PrismaClient } from '@daemonet/db';
+import type { PrismaClient } from '@daemonet/db';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { AppError, badRequest, forbidden, notFound } from '../errors.js';
+import type { BitsPushMessage, Tx } from '../exchange/ledger.js';
 import { publishSafely } from '../publish.js';
 import { nameAllowed } from './chat.js';
 
@@ -30,7 +31,6 @@ const RenameBody = z.object({ name: OperatorName });
 const SearchQuery = z.object({ q: z.string().max(32).optional() });
 
 type Rank = 'OWNER' | 'OFFICER' | 'MEMBER';
-type Tx = Prisma.TransactionClient;
 const insufficient = (price: number) => new AppError(402, 'insufficient_bits', `costs ${price} bits`);
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -38,18 +38,6 @@ function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   if (!r.success) throw badRequest(r.error.issues[0]?.message ?? 'invalid request');
   return r.data;
 }
-
-/** The bits push the sim applies once per ledger row (apps/sim/src/runtime/pushes.ts `BitsPush`). */
-export type BitsPushMessage = {
-  kind: 'bits';
-  operatorId: string;
-  ledgerId: string;
-  seq: number;
-  delta: number;
-  reason: string;
-  balance: number;
-  origin: 'api';
-};
 
 /**
  * Takes `price` bits with a guarded UPDATE (402 when short). It is the first statement of every paid transaction: the

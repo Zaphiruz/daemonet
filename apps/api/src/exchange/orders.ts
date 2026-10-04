@@ -1,9 +1,9 @@
 import { consoleBusLogger, type Bus } from '@daemonet/bus';
-import type { Prisma, PrismaClient } from '@daemonet/db';
+import type { PrismaClient } from '@daemonet/db';
 import { FEE_DIVISOR, MAX_OPEN_ORDERS, MAX_PRICE, MAX_QTY, ORDER_TTL_MS, feeOn } from '@daemonet/rules';
-import { AppError, badRequest, forbidden, notFound } from '../errors.js';
-import { publishSafely, type PublishLog } from '../publish.js';
-import type { BitsPushMessage } from '../routes/orgs.js';
+import { badRequest, forbidden, notFound } from '../errors.js';
+import type { PublishLog } from '../publish.js';
+import { Outbox, announce, credit, debit, lockOperators, type FillView, type Tx } from './ledger.js';
 
 /** Exchange limits and the fee live in `@daemonet/rules` (the client previews with the same numbers); re-exported for the api. */
 export { FEE_DIVISOR, MAX_OPEN_ORDERS, MAX_PRICE, MAX_QTY, ORDER_TTL_MS, feeOn };
@@ -13,30 +13,14 @@ export { FEE_DIVISOR, MAX_OPEN_ORDERS, MAX_PRICE, MAX_QTY, ORDER_TTL_MS, feeOn }
  * sim applies these rows as deltas: from the bus push, or on its next resync if the push is lost.
  */
 export const EXCHANGE_LEDGER_REASONS = Object.freeze({ escrow: 'exchange:escrow', refund: 'exchange:refund', sale: 'exchange:sale' } as const);
-type ExchangeReason = (typeof EXCHANGE_LEDGER_REASONS)[keyof typeof EXCHANGE_LEDGER_REASONS];
 
-type Tx = Prisma.TransactionClient;
 export interface PlaceOrderInput {
   item: string;
   side: 'BUY' | 'SELL';
   price: number;
   qty: number;
 }
-export interface FillView {
-  id: string;
-  item: string;
-  price: number;
-  qty: number;
-  buyerId: string;
-  sellerId: string;
-  fee: number;
-}
-
-/** What a transaction must announce once it has committed: one push per ledger row, one message per fill. */
-class Outbox {
-  readonly bits: BitsPushMessage[] = [];
-  readonly fills: FillView[] = [];
-}
+export type { FillView };
 
 /** A matching sweep can touch up to MAX_QTY makers; give it room (the default interactive timeout is 5 s). */
 const TX_OPTIONS = { maxWait: 10_000, timeout: 30_000 } as const;
@@ -51,35 +35,6 @@ const TX_OPTIONS = { maxWait: 10_000, timeout: 30_000 } as const;
  */
 const BOOK_LOCK_SPACE = 0x45584348; // 'EXCH'
 const lockBook = (tx: Tx, item: string) => tx.$queryRaw`SELECT 1 AS "locked" FROM pg_advisory_xact_lock(${BOOK_LOCK_SPACE}::int4, hashtext(${item}))`;
-
-async function lockOperators(tx: Tx, ids: readonly string[]): Promise<void> {
-  for (const id of [...new Set(ids)].sort()) {
-    const rows = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Operator" WHERE "id" = ${id} FOR NO KEY UPDATE`;
-    if (rows.length !== 1) throw new Error(`unknown operator ${id}`);
-  }
-}
-
-/** One ledger row for a balance change just made (the operator row is locked, so seq follows commit order). */
-async function ledgerRow(tx: Tx, out: Outbox, operatorId: string, delta: number, balance: bigint, reason: ExchangeReason, ref: string): Promise<void> {
-  const row = await tx.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason, ref }, select: { id: true, seq: true } });
-  out.bits.push({ kind: 'bits', operatorId, ledgerId: row.id, seq: Number(row.seq), delta, reason, balance: Number(balance), origin: 'api' });
-}
-
-/** Adds bits (caller holds the operator lock). */
-async function credit(tx: Tx, out: Outbox, operatorId: string, bits: number, reason: ExchangeReason, ref: string): Promise<void> {
-  if (bits === 0) return;
-  const rows = await tx.$queryRaw<Array<{ bits: bigint }>>`UPDATE "Operator" SET "bits" = "bits" + ${BigInt(bits)} WHERE "id" = ${operatorId} RETURNING "bits"`;
-  if (rows.length !== 1) throw new Error(`unknown operator ${operatorId}`);
-  await ledgerRow(tx, out, operatorId, bits, BigInt(rows[0]!.bits), reason, ref);
-}
-
-/** Takes bits with a guarded decrement (402 when short; caller holds the operator lock). */
-async function debit(tx: Tx, out: Outbox, operatorId: string, bits: number, reason: ExchangeReason, ref: string): Promise<void> {
-  const rows = await tx.$queryRaw<Array<{ bits: bigint }>>`
-    UPDATE "Operator" SET "bits" = "bits" - ${BigInt(bits)} WHERE "id" = ${operatorId} AND "bits" >= ${BigInt(bits)} RETURNING "bits"`;
-  if (rows.length !== 1) throw new AppError(402, 'insufficient_bits', `needs ${bits} bits`);
-  await ledgerRow(tx, out, operatorId, -bits, BigInt(rows[0]!.bits), reason, ref);
-}
 
 /**
  * Puts items into an operator's Exchange vault (INSERT … ON CONFLICT: never a primary-key race with the sim's
@@ -97,18 +52,6 @@ export async function vaultTake(tx: Tx, operatorId: string, item: string, qty: n
   const res = await tx.exchangeVault.updateMany({ where: { operatorId, item, qty: { gte: qty } }, data: { qty: { decrement: qty } } });
   if (res.count !== 1) throw badRequest(`not enough ${item} in your vault`);
   await tx.exchangeVault.deleteMany({ where: { operatorId, item, qty: 0 } });
-}
-
-/** After commit: one BitsPush per ledger row (the sim applies each once, by seq), one `exchange` message per fill. */
-function announce(bus: Bus, log: PublishLog, out: Outbox): void {
-  for (const push of out.bits) publishSafely(bus, log, 'admin', push);
-  for (const f of out.fills) {
-    publishSafely(bus, log, 'exchange', {
-      kind: 'fill',
-      operators: [f.buyerId, f.sellerId],
-      detail: { item: f.item, price: f.price, qty: f.qty, buyerId: f.buyerId, sellerId: f.sellerId, fee: f.fee },
-    });
-  }
 }
 
 const inRange = (n: number, max: number) => Number.isSafeInteger(n) && n >= 1 && n <= max;
