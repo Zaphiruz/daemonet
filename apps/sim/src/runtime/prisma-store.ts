@@ -153,10 +153,14 @@ export class PrismaStore implements Store {
         const now = new Date();
         switch (intent.kind) {
           case 'claimStarter': {
-            await tx.operator.update({
-              where: { id: intent.operatorId },
+            // Conditional on the row still being unclaimed: a stale claim (a retry of one whose outcome was unknown, from
+            // a session that has since claimed again) must neither add a second starter nor overwrite the inventory,
+            // even when the starter's RAM slot is free again.
+            const claimed = await tx.operator.updateMany({
+              where: { id: intent.operatorId, starterClaimed: false },
               data: { name: intent.name, starterClaimed: true, inventory: intent.inventory },
             });
+            if (claimed.count !== 1) throw new DomainFailure('starter already claimed');
             const d = intent.daemon;
             await tx.daemon.create({
               data: {

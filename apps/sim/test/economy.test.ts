@@ -487,7 +487,7 @@ describe('economy in the runtime', () => {
     await settle();
     tick(g);
     await settle();
-    expect(a.hasEconomyPending(id)).toBe(true);
+    expect(a.inventoryInFlight(id)).toBe(true);
     expect(store.batches).toHaveLength(1); // the new checkpoint waits on the chain behind the held buy
     store.releaseIntents();
     await g.flush();
@@ -615,7 +615,7 @@ describe('economy in the runtime', () => {
       await settle();
     }
     expect(lost).toBeGreaterThan(4); // past the bounded retries
-    expect(a.hasEconomyPending(id)).toBe(true);
+    expect(a.inventoryInFlight(id)).toBe(true);
     expect(conn.of('err')).toEqual([]);
     expect(a.operators.get(id)).toMatchObject({ bits: 488, inventory: { restore: 1 } });
     expect(checkpoints.length).toBeGreaterThan(4);
@@ -673,13 +673,50 @@ describe('economy in the runtime', () => {
     tick(g);
     await settle();
     await g.shutdown();
-    expect(a.hasEconomyPending(id)).toBe(true);
+    expect(a.inventoryInFlight(id)).toBe(true);
     expect(conn.of('err').filter((m) => m.d.message === 'persist failed')).toEqual([]);
     expect(checkpoints.at(-1)).toMatchObject({ inventoryInFlight: true, inventory: { restore: 1 } });
     // the store's committed decompile stands: fragments in the inventory, the daemon archived
     expect(store.operators.get(id)!.inventory).toEqual({ restore: 1, 'frag:packet': 9, 'frag:signal': 9 });
     expect(store.daemons.has('yul-d0')).toBe(false);
     expect(store.archive.has('yul-d0')).toBe(true);
+  });
+
+  it('a claim whose outcome is unknown holds the leave: a reconnect cannot claim again, and the old claim lands once', async () => {
+    const store = new MemoryStore();
+    const apply = store.applyIntent.bind(store);
+    let blocked: string | null = null;
+    let healthy = false;
+    // The first claim cannot reach the store (outcome unknown to the world) until the store recovers.
+    store.applyIntent = async (intent, ctx) => {
+      if (intent.kind === 'claimStarter' && (blocked ??= intent.id) === intent.id && !healthy) throw new Error('connection reset');
+      return apply(intent, ctx);
+    };
+    const { a, game: g } = game(store);
+    const conn = await join(g, 'zed');
+    const id = conn.of('authOk')[0]!.d.operatorId;
+    await g.message(conn, cmd({ cmd: 'claimStarter', actor: self, args: { species: 'pingling', operatorName: 'zed' } }));
+    tick(g);
+    await settle();
+    expect(a.inventoryInFlight(id)).toBe(true);
+    g.disconnect(conn);
+    tick(g, 8); // the leave is due, but waits for the claim
+    expect(g.worldOf(id)).toBe(a);
+    const again = await join(g, 'zed');
+    await g.message(again, cmd({ cmd: 'claimStarter', actor: self, args: { species: 'nullpup', operatorName: 'zed2' } }));
+    tick(g);
+    expect(again.of('err').at(-1)!.d).toMatchObject({ code: 'E_STATE', message: 'starter already claimed' });
+    healthy = true;
+    await g.flush();
+    tick(g);
+    await g.flush();
+    const mine = [...store.daemons.values()].filter((d) => d.operatorId === id);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.species).toBe('pingling');
+    expect(store.operators.get(id)).toMatchObject({ name: 'zed', starterClaimed: true, inventory: { sniff: 8, restore: 2 } });
+    expect(a.operators.get(id)).toMatchObject({ name: 'zed', starterClaimed: true, inventory: { sniff: 8, restore: 2 } });
+    await g.shutdown();
+    expect(store.operators.get(id)!.inventory).toEqual({ sniff: 8, restore: 2 });
   });
 
   it('bits granted while connected are seen on the next connection, never overwritten by a checkpoint', async () => {

@@ -355,6 +355,20 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect((await store.loadOrCreateOperator('sub-s1', 'lo', SPAWN)).ram.map((d) => d.id)).toEqual(['abcd1234-h1']);
     });
 
+    it('a second claim is refused once a starter is claimed, even with the starter slot free: no second starter, no inventory overwrite', async () => {
+      const a = await store.loadOrCreateOperator('sub-s2', 'lo', SPAWN);
+      const ctx = { seedId: 'abcd1234' };
+      expect(await store.applyIntent(claim(a.id, 'sol', ownedRecord('pingling', 5, 0, 'abcd1234-k1'), 'i-k-claim1'), ctx)).toEqual({ ok: true });
+      // the starter goes to Disk (its RAM slot is free again) and the inventory moves on
+      expect(await store.applyIntent({ id: 'i-k-store', kind: 'store', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-k1', diskSlot: 0 }, ctx)).toEqual({ ok: true });
+      const rec = await store.loadOrCreateOperator('sub-s2', 'lo', SPAWN);
+      await store.checkpoint([{ ...rec, inventory: { tap: 3 } }]);
+      // a stale claim (e.g. a retry of an earlier one whose outcome was unknown) arrives now
+      expect(await store.applyIntent(claim(a.id, 'sol2', ownedRecord('nullpup', 5, 0, 'abcd1234-k2'), 'i-k-claim2'), ctx)).toEqual({ ok: false, reason: 'starter already claimed' });
+      const after = await store.loadOrCreateOperator('sub-s2', 'lo', SPAWN);
+      expect(after).toMatchObject({ name: 'sol', starterClaimed: true, inventory: { tap: 3 }, ram: [], diskSlots: [0] });
+    });
+
     it('applies evolve intents idempotently and records the first discovery of each form', async () => {
       const a = await store.loadOrCreateOperator('sub-g', 'lo', SPAWN);
       const b = await store.loadOrCreateOperator('sub-h', 'lo', SPAWN);

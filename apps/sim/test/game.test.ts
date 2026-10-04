@@ -321,10 +321,14 @@ describe('reply routing across connections', () => {
     expect(replyRoutes(game).size).toBe(1);
     game.disconnect(conn);
     for (let i = 0; i < 5; i++) game.tick();
-    expect(world.operators.size).toBe(0);
+    // A pending claim rewrites the inventory in the store: the leave waits for it (see economy.test.ts).
+    expect(world.operators.size).toBe(1);
+    expect(replyRoutes(game).size).toBe(0);
     release();
     await game.flush();
     game.tick();
+    await game.flush();
+    expect(world.operators.size).toBe(0);
     expect(replyRoutes(game).size).toBe(0);
   });
 });

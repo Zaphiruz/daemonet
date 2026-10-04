@@ -423,8 +423,10 @@ export class Game {
     if (this.ticks % this.checkpointEvery === 0) this.checkpointAll();
     for (const session of [...this.sessions.values()]) {
       // A travelling operator leaves once the hand-off has settled (from whichever world it ends up in).
-      // A pending buy / craft / decompile settles first too: the leave checkpoint then carries its outcome.
-      if (!session.controller && session.leaveAtTick !== null && session.leaveAtTick <= this.ticks && !this.travelling(session) && !this.economyPending(session)) {
+      // An intent that rewrites the inventory in the store (buy / craft / decompile / claimStarter) settles first too:
+      // the leave checkpoint then carries its outcome, and a reconnect meanwhile resumes this session (so it can never
+      // claim or spend again on a reload that predates the intent).
+      if (!session.controller && session.leaveAtTick !== null && session.leaveAtTick <= this.ticks && !this.travelling(session) && !this.inventoryInFlight(session)) {
         this.leave(session);
       }
     }
@@ -488,8 +490,9 @@ export class Game {
     return session.world.operators.get(session.operatorId)?.travelling === true;
   }
 
-  private economyPending(session: Session): boolean {
-    return session.world.hasEconomyPending(session.operatorId);
+  /** The same predicate that makes checkpoints skip the inventory (`World.inventoryInFlight`). */
+  private inventoryInFlight(session: Session): boolean {
+    return session.world.inventoryInFlight(session.operatorId);
   }
 
   private leave(session: Session): void {

@@ -222,6 +222,8 @@ export class MemoryStore implements Store {
     if (!op) throw new Error(`unknown operator ${intent.operatorId}`);
     switch (intent.kind) {
       case 'claimStarter': {
+        // Mirrors PrismaStore's conditional update (where starterClaimed = false).
+        if (op.starterClaimed) return { ok: false, reason: 'starter already claimed' };
         if ([...this.operators.values()].some((o) => o.name === intent.name && o.id !== op.id)) return { ok: false, reason: 'name taken' };
         if (this.slotTaken(op.id, 'RAM', intent.daemon.slot)) return { ok: false, reason: 'starter already claimed' };
         op.name = intent.name;

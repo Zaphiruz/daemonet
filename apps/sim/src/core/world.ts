@@ -369,12 +369,6 @@ export class World {
     return [...this.pending.values()].filter((i) => i.operatorId === operatorId);
   }
 
-  /** True while a buy / craft / decompile of `operatorId` is waiting for the store. */
-  hasEconomyPending(operatorId: string): boolean {
-    for (const i of this.pending.values()) if (i.operatorId === operatorId && isEconomyIntent(i)) return true;
-    return false;
-  }
-
   /** Queue an event for the next step (the runtime uses it when it hands an operator over between worlds). */
   emitCarry(event: ScopedEvent['event'], scope: { to: string } | { at: Point | null }): void {
     this.carry.emit(event, scope);
