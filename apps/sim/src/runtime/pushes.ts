@@ -15,7 +15,11 @@ const Origin = z.enum(['sim', 'api']).optional();
 export const OrgViewSchema = z.object({
   id: Id,
   name: z.string().min(1).max(64),
-  tag: z.string().min(1).max(8),
+  /** The api's `OrgTag` rule exactly: 4 upper-case letters or digits. */
+  tag: z
+    .string()
+    .length(4)
+    .regex(/^[A-Z0-9]{4}$/),
   rank: z.enum(['OWNER', 'OFFICER', 'MEMBER']),
 });
 

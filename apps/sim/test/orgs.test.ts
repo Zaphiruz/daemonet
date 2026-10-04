@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { World } from '../src/core/index.js';
 import { createDevVerifier } from '../src/runtime/auth.js';
 import { Game, type Conn } from '../src/runtime/game.js';
+import { OrgMembershipPush, OrgViewSchema } from '../src/runtime/pushes.js';
 import { MemoryStore, type LiveOperatorState } from '../src/runtime/store.js';
 import { TEST_SUBNET } from './helpers.js';
 
@@ -254,5 +255,14 @@ describe('org membership, balance and rename pushes from the api', () => {
     await bus.publish('admin', { kind: 'rename', operatorId: bobId, name: 'robert', origin: 'api' });
     expect(world.operators.get(aliceId)!.cluster!.members).toContainEqual(expect.objectContaining({ id: bobId, name: 'robert' }));
     await game.shutdown();
+  });
+});
+
+describe('OrgViewSchema', () => {
+  it("accepts exactly the api's tag rule: 4 upper-case letters or digits", () => {
+    const view = (tag: string) => ({ id: 'o1', name: 'Root Access', tag, rank: 'MEMBER' });
+    for (const tag of ['ROOT', 'A1B2', '0000']) expect(OrgViewSchema.safeParse(view(tag)).success).toBe(true);
+    for (const tag of ['', 'R', 'ROO', 'ROOTS', 'ROOTROOT', 'root', 'R T1', 'RO-T', '[R]1']) expect(OrgViewSchema.safeParse(view(tag)).success, tag).toBe(false);
+    expect(OrgMembershipPush.safeParse({ kind: 'membership', operatorId: 'x', org: view('ROOTROOT') }).success).toBe(false);
   });
 });
