@@ -3,7 +3,8 @@ import { WORDS } from '../src/capture/crypto.js';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
 import { MOVES, STATUS_IDS, TYPE_MOVES, TYPE_STATUS, getMove, type MoveDef } from '../src/content/moves.js';
-import { SPECIES, getSpecies } from '../src/content/species.js';
+import { ROLE_WEIGHTS, SPECIES, STAGE_BUDGETS, STAT_OVERRIDES, getSpecies } from '../src/content/species.js';
+import { LO, SUBNETS } from '../src/content/subnets.js';
 import { ROLE_TRAITS, TRAITS } from '../src/content/traits.js';
 import { NATURES } from '../src/natures.js';
 import { BEATS, IMMUNE, RESISTED_BY, TYPES } from '../src/types.js';
@@ -16,6 +17,11 @@ describe('content tables are deep-frozen', () => {
     ['BESTIARY', BESTIARY],
     ['EVOLUTION_ITEMS', EVOLUTION_ITEMS],
     ['SPECIES', SPECIES],
+    ['STAGE_BUDGETS', STAGE_BUDGETS],
+    ['ROLE_WEIGHTS', ROLE_WEIGHTS],
+    ['STAT_OVERRIDES', STAT_OVERRIDES],
+    ['LO', LO],
+    ['SUBNETS', SUBNETS],
     ['ITEMS', ITEMS],
     ['STARTING_INVENTORY', STARTING_INVENTORY],
     ['NATURES', NATURES],
@@ -41,8 +47,10 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(pingling.traits)).toBe(true);
     expect(Object.isFrozen(pingling.learnset)).toBe(true);
     expect(Object.isFrozen(pingling.learnset[0])).toBe(true);
-    // The learnset array is shared between species of a type.
-    expect(getSpecies('floodhound').learnset).toBe(pingling.learnset);
+    expect(Object.isFrozen(STAGE_BUDGETS)).toBe(true);
+    expect(Object.isFrozen(ROLE_WEIGHTS.tank)).toBe(true);
+    expect(Object.isFrozen(STAT_OVERRIDES.pingling)).toBe(true);
+    expect(Object.isFrozen(LO.regions[0]!.species)).toBe(true);
     expect(Object.isFrozen(ITEMS[0])).toBe(true);
     expect(Object.isFrozen(NATURES[4])).toBe(true);
     expect(Object.isFrozen(SPECIES[0])).toBe(true);

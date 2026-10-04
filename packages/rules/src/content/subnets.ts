@@ -1,4 +1,5 @@
 import { deepFreeze } from '../freeze.js';
+import { BESTIARY } from './bestiary.js';
 
 export interface Rect {
   x: number;
@@ -33,7 +34,24 @@ export interface SubnetDef {
   regions: readonly RegionDef[];
 }
 
-/** SP1's only subnet: 128 x 128, one host, four spawn regions of rising level. */
+/**
+ * `lo` spawns every base form (SP3a): the 50 bases are split into four level bands by bestiary
+ * line order so each band has 12-13 species; starters are always in the lobby.
+ */
+function loWeights(band: number): Record<string, number> {
+  const bases = BESTIARY.filter((r) => r.stage === 0);
+  const out: Record<string, number> = {};
+  bases.forEach((r, i) => {
+    if (r.starter) {
+      if (band === 0) out[r.id] = 3;
+      return;
+    }
+    if (i % 4 === band) out[r.id] = 2;
+  });
+  return out;
+}
+
+/** 128 x 128, one host, four spawn regions of rising level. */
 export const LO: SubnetDef = deepFreeze<SubnetDef>({
   id: 'lo',
   width: 128,
@@ -48,10 +66,10 @@ export const LO: SubnetDef = deepFreeze<SubnetDef>({
   host: { x: 16.5, y: 16.5 },
   spawn: { x: 18.5, y: 16.5 },
   regions: [
-    { name: 'lobby', rect: { x: 24, y: 8, w: 32, h: 36 }, levels: [2, 6], species: { pingling: 3, hashling: 3, glitchmite: 2, nullpup: 2 }, cap: 16, respawnMs: 4096 },
-    { name: 'uplink', rect: { x: 72, y: 8, w: 48, h: 40 }, levels: [5, 10], species: { floodhound: 3, cipherbat: 3, pingling: 1, hashling: 1 }, cap: 16, respawnMs: 4096 },
-    { name: 'cache', rect: { x: 8, y: 64, w: 48, h: 56 }, levels: [9, 16], species: { bitrot: 3, voidlet: 3, glitchmite: 1, nullpup: 1 }, cap: 16, respawnMs: 4096 },
-    { name: 'core', rect: { x: 72, y: 64, w: 48, h: 56 }, levels: [14, 24], species: { floodhound: 2, cipherbat: 2, bitrot: 2, voidlet: 2 }, cap: 16, respawnMs: 4096 },
+    { name: 'lobby', rect: { x: 24, y: 8, w: 32, h: 36 }, levels: [2, 6], species: loWeights(0), cap: 16, respawnMs: 4096 },
+    { name: 'uplink', rect: { x: 72, y: 8, w: 48, h: 40 }, levels: [5, 10], species: loWeights(1), cap: 16, respawnMs: 4096 },
+    { name: 'cache', rect: { x: 8, y: 64, w: 48, h: 56 }, levels: [9, 16], species: loWeights(2), cap: 16, respawnMs: 4096 },
+    { name: 'core', rect: { x: 72, y: 64, w: 48, h: 56 }, levels: [14, 24], species: loWeights(3), cap: 16, respawnMs: 4096 },
   ],
 });
 

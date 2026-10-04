@@ -3,6 +3,8 @@ import { STAT_KEYS } from '../src/constants.js';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { EVOLUTION_ITEMS, getItem } from '../src/content/items.js';
 import { MOVES, STATUS_IDS, TYPE_MOVES, getMove, moveSlot } from '../src/content/moves.js';
+import { SPECIES, budgetFor, dominantStat, evolutionsOf, getSpecies, movesAtLevel } from '../src/content/species.js';
+import { LO } from '../src/content/subnets.js';
 import { ROLE_TRAITS, TRAITS, getTrait } from '../src/content/traits.js';
 import { BEATS, IMMUNE, RESISTED_BY, TYPES, singleMultiplier, typeMultiplier } from '../src/types.js';
 
@@ -72,6 +74,49 @@ describe('type chart', () => {
   });
 });
 
+describe('generated species', () => {
+  it('sum exactly to their budget, within 1-256 per stat', () => {
+    for (const s of SPECIES) {
+      const total = STAT_KEYS.reduce((a, k) => a + s.base[k], 0);
+      expect(total, s.id).toBe(budgetFor(BESTIARY.find((r) => r.id === s.id)!));
+      for (const k of STAT_KEYS) {
+        expect(s.base[k]).toBeGreaterThanOrEqual(1);
+        expect(s.base[k]).toBeLessThanOrEqual(256);
+      }
+    }
+    expect(budgetFor(BESTIARY.find((r) => r.id === 'pingling')!)).toBe(285);
+    expect(budgetFor(BESTIARY.find((r) => r.id === 'hopmaster')!)).toBe(513);
+    expect(budgetFor(BESTIARY.find((r) => r.id === 'pidzero')!)).toBe(600);
+  });
+
+  it('keeps the SP1 hand-authored stats and follows role identities', () => {
+    expect(getSpecies('pingling').base).toEqual({ hp: 34, attack: 36, defense: 28, focus: 34, resolve: 28, speed: 50, haste: 42, energy: 33 });
+    const wall = getSpecies('sysvern').base;
+    expect(wall.resolve).toBeGreaterThan(wall.attack);
+    const sweeper = getSpecies('hopmaster').base;
+    expect(sweeper.speed).toBeGreaterThan(sweeper.defense);
+    expect(getSpecies('dataracer').base).not.toEqual(getSpecies('hazardash').base);
+    expect(evolutionsOf('forkling')).toHaveLength(4);
+    expect(evolutionsOf('pidzero')).toHaveLength(0);
+  });
+
+  it('learns its primary type moves and the secondary type area move', () => {
+    const multicastor = getSpecies('multicastor'); // packet/buffer
+    expect(multicastor.learnset.map((e) => e.move)).toEqual(['ping', 'traceroute', 'wrap', 'synflood']);
+    expect(movesAtLevel(getSpecies('pingling'), 20)).toEqual(['ping', 'traceroute', 'broadcast', 'synflood']);
+    for (const s of SPECIES) {
+      for (const e of s.learnset) expect(() => getMove(e.move)).not.toThrow();
+      for (const t of s.traits) expect(() => getTrait(t)).not.toThrow();
+      expect(s.baseYield).toBe(32 + 8 * s.stage);
+    }
+  });
+
+  it('dominantStat returns the strict maximum or null on ties', () => {
+    expect(dominantStat({ hp: 1, attack: 9, defense: 2, focus: 3, resolve: 4, speed: 5, haste: 6, energy: 7 })).toBe('attack');
+    expect(dominantStat({ hp: 9, attack: 9, defense: 2, focus: 3, resolve: 4, speed: 5, haste: 6, energy: 7 })).toBeNull();
+  });
+});
+
 describe('moves', () => {
   it('has 64 moves, 4 per type, with one status per type and power-of-2 cooldowns', () => {
     expect(MOVES).toHaveLength(64);
@@ -91,5 +136,14 @@ describe('moves', () => {
     expect(getMove('broadcast').status?.id).toBe('leaking');
     expect(getMove('panic').status?.id).toBe('exposed');
     expect(getMove('bruteforce')).toMatchObject({ power: 100, energyCost: 56, cooldownMs: 8192 });
+  });
+});
+
+describe('lo spawns every base form', () => {
+  it('covers all 50 bases across the four regions, starters in the lobby only', () => {
+    const covered = new Set(LO.regions.flatMap((r) => Object.keys(r.species)));
+    expect(covered.size).toBe(50);
+    expect(Object.keys(LO.regions[0]!.species)).toEqual(expect.arrayContaining(['pingling', 'hashling', 'glitchmite', 'nullpup']));
+    expect(LO.regions[3]!.species).not.toHaveProperty('pingling');
   });
 });

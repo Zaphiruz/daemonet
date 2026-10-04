@@ -201,7 +201,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect((await app.inject({ method: 'GET', url: '/api/disk', cookies })).json()).toEqual([]);
     const codex = (await app.inject({ method: 'GET', url: '/api/codex', cookies })).json();
     expect(codex.types).toHaveLength(16);
-    expect(codex.species).toHaveLength(8);
+    expect(codex.species).toHaveLength(256);
     expect(codex.chart.glitch.null).toBe(0);
     expect((await app.inject({ method: 'GET', url: '/api/ready' })).json()).toEqual({ ok: true });
   });
