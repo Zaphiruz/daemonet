@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { deviceLogin } from '../src/node.js';
+import { getSubnet } from '@daemonet/rules';
+import { WorldView, type GameClient } from '../src/client.js';
 import { Query } from '../src/views.js';
 
 describe('Query', () => {
@@ -25,6 +27,25 @@ describe('Query', () => {
   });
 });
 
+describe('WorldView.gateways', () => {
+  const view = (subnet: string, x: number, y: number) => new WorldView({ subnet, self: { x, y }, entities: new Map() } as unknown as GameClient).gateways;
+
+  it('lists the current subnet’s gateways nearest first, from wherever the operator stands', () => {
+    const lo = getSubnet('lo').gateways;
+    expect(view('lo', 5, 5).map((g) => g.id)).toEqual(lo.map((g) => g.id));
+    expect(view('lo', 120, 120)).toEqual([...lo]);
+    // lo has one gateway, so the order shows on subnets with several
+    expect(view('lan', 5, 5).map((g) => g.id)).toEqual(['lan-lo', 'lan-dmz']);
+    expect(view('lan', 120, 120).map((g) => g.id)).toEqual(['lan-dmz', 'lan-lo']);
+    expect(view('backbone', 5, 5).map((g) => g.id)).toEqual(['backbone-dmz', 'backbone-darknet', 'backbone-cloudnet']);
+    expect(view('backbone', 120, 120).map((g) => g.id)).toEqual(['backbone-cloudnet', 'backbone-darknet', 'backbone-dmz']);
+  });
+
+  it('is empty for a subnet the rules do not know', () => {
+    expect(view('nowhere', 5, 5)).toEqual([]);
+    expect(view('', 5, 5)).toEqual([]);
+  });
+});
 
 type Reply = [number, unknown];
 

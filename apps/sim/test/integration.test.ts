@@ -162,7 +162,8 @@ describe('SDK against a live sim', () => {
     op.x = gate.at.x;
     op.y = gate.at.y;
     h.world.daemons.get(op.ram[0]!)!.level = 10;
-    await until(alice, () => alice.world.gateways.length === 0 || alice.self.x === gate.at.x);
+    // the moved position reaches the bot in a delta before it travels (its local view must agree with the server)
+    await until(alice, () => alice.self.x === gate.at.x && alice.self.y === gate.at.y);
     const travelled = new Promise((resolve) => alice.on('travelled', resolve));
     await expect(alice.operator.travel(gate.id)).resolves.toMatchObject({ subnet: 'testb' });
     await expect(travelled).resolves.toMatchObject({ from: 'test', to: 'testb' });
