@@ -635,7 +635,10 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(queue).toHaveLength(2);
     expect(queue[0]).toMatchObject({ id: r1.id, recent: [{ id: 's1', text: 'buy gold' }], hits: [{ term: 'plum+' }] });
     expect((await app.inject({ method: 'GET', url: '/api/admin/chat/hits', cookies: cb })).json()).toMatchObject([{ operatorId: ben.id, term: 'plum+' }]);
-    const resolve = (id: string, payload: object) => app.inject({ method: 'POST', url: `/api/admin/reports/${id}/resolve`, cookies: cb, headers: csrf, payload });
+    // another admin resolves the reports against ben (an admin cannot mute themselves)
+    const cd = await session('dee', true);
+    const dee = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-dee' } });
+    const resolve = (id: string, payload: object) => app.inject({ method: 'POST', url: `/api/admin/reports/${id}/resolve`, cookies: cd, headers: csrf, payload });
     expect((await resolve(r2.id, { action: 'DELETE' })).statusCode).toBe(400); // no message on this report
     expect((await prisma!.report.findUniqueOrThrow({ where: { id: r2.id } })).status).toBe('OPEN');
     const both = await Promise.all([resolve(r2.id, { action: 'MUTE', minutes: 15 }), resolve(r2.id, { action: 'MUTE', minutes: 15 })]);
@@ -643,7 +646,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(bus.log.filter((l) => (l.message as { kind: string }).kind === 'mute' && (l.message as { operatorId: string }).operatorId === ben.id)).toHaveLength(1);
     expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'mute', operatorId: ben.id, reason: 'report', origin: 'api' } });
     expect((await prisma!.operator.findUniqueOrThrow({ where: { id: ben.id } })).mutedUntil).not.toBeNull();
-    expect(await prisma!.report.findUniqueOrThrow({ where: { id: r2.id } })).toMatchObject({ status: 'ACTIONED', action: 'MUTE', resolvedBy: ben.id });
+    expect(await prisma!.report.findUniqueOrThrow({ where: { id: r2.id } })).toMatchObject({ status: 'ACTIONED', action: 'MUTE', resolvedBy: dee.id });
     expect((await resolve(r1.id, { action: 'DISMISS' })).json()).toEqual({ ok: true });
     expect((await app.inject({ method: 'GET', url: '/api/admin/reports?status=DISMISSED', cookies: cb })).json()).toHaveLength(1);
     expect((await resolve('nope', { action: 'DISMISS' })).statusCode).toBe(404);
@@ -821,8 +824,9 @@ describe.skipIf(!url)('API chat with a failing bus', () => {
     const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=root&admin=true' });
     const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
     const op = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-root' } });
+    const other = await prisma!.operator.create({ data: { sub: 'dev-other', x: 0, y: 0 } });
     await prisma!.chatMessage.create({ data: { id: 'f1', channel: 'subnet:lo', operatorId: op.id, text: 'secret chat text', at: new Date() } });
-    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies, headers: csrf, payload: { operatorId: op.id, minutes: 5 } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies, headers: csrf, payload: { operatorId: other.id, minutes: 5 } })).statusCode).toBe(200);
     expect((await app.inject({ method: 'DELETE', url: '/api/admin/chat/f1', cookies, headers: csrf })).statusCode).toBe(200);
     expect((await app.inject({ method: 'POST', url: '/api/admin/chat/filter', cookies, headers: csrf, payload: { pattern: 'fig', kind: 'WORD', action: 'MASK' } })).statusCode).toBe(200);
     await new Promise((r) => setTimeout(r, 20));
@@ -877,5 +881,32 @@ describe.skipIf(!url)('chat retention', () => {
     // once the report is resolved, the line ages out like any other
     await prisma!.report.updateMany({ where: { messageId: 'r-open' }, data: { status: 'ACTIONED' } });
     expect(await pruneChat(prisma!, now)).toEqual({ messages: 1, hits: 0 });
+  });
+});
+
+describe.skipIf(!url)('admin self-moderation', () => {
+  it('an admin cannot mute themselves, directly or by resolving a report against themselves', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator", "ChatMessage", "Report" CASCADE');
+    const bus = new MemoryBus();
+    const app = await buildApp({
+      prisma: prisma!, bus, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: true, disableRateLimit: true,
+    });
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=root&admin=true' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const me = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-root' } });
+    const other = await prisma!.operator.create({ data: { sub: 'dev-other', x: 0, y: 0 } });
+    const self = await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies, headers: csrf, payload: { operatorId: me.id, minutes: 5 } });
+    expect(self.statusCode).toBe(400);
+    expect(self.json().message).toBe('cannot mute yourself');
+    const report = await prisma!.report.create({ data: { reporterId: other.id, targetId: me.id, reason: 'SPAM' } });
+    const resolve = await app.inject({ method: 'POST', url: `/api/admin/reports/${report.id}/resolve`, cookies, headers: csrf, payload: { action: 'MUTE' } });
+    expect(resolve.statusCode).toBe(400);
+    expect(resolve.json().message).toBe('cannot mute yourself');
+    expect((await prisma!.report.findUniqueOrThrow({ where: { id: report.id } })).status).toBe('OPEN');
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { id: me.id } })).mutedUntil).toBeNull();
+    expect(bus.log).toEqual([]);
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies, headers: csrf, payload: { operatorId: other.id, minutes: 5 } })).statusCode).toBe(200);
+    await app.close();
   });
 });

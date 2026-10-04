@@ -40,6 +40,16 @@ describe('MemoryBus', () => {
     expect(bus.log.map((l) => l.message)).toEqual([3, 4]);
   });
 
+  it('reports a throwing handler to the injected logger', async () => {
+    const seen: string[] = [];
+    const bus = createBus(undefined, { warn: () => {}, error: (_o, msg) => void seen.push(msg) });
+    bus.subscribe('c', () => {
+      throw new Error('boom');
+    });
+    await bus.publish('c', {});
+    expect(seen).toEqual(['bus handler failed']);
+  });
+
   it('close is idempotent and a throwing handler does not break other subscribers', async () => {
     const bus = new MemoryBus();
     const got: unknown[] = [];
@@ -60,6 +70,18 @@ describe('RedisBus without a server', () => {
     bus.subscribe('x', () => undefined)();
     bus.subscribe('y', () => undefined);
     await new Promise((r) => setTimeout(r, 300));
+    await bus.close();
+  });
+
+  it('skips the ready check (the production ACL denies INFO) and reports connection errors to the injected logger', async () => {
+    const seen: Array<{ level: string; msg: string }> = [];
+    const logger = { warn: (_o: object, msg: string) => void seen.push({ level: 'warn', msg }), error: (_o: object, msg: string) => void seen.push({ level: 'error', msg }) };
+    const bus = createBus('redis://127.0.0.1:1/0', logger) as RedisBus;
+    const conns = bus as unknown as { pub: Redis; sub: Redis };
+    expect(conns.pub.options.enableReadyCheck).toBe(false);
+    expect(conns.sub.options.enableReadyCheck).toBe(false);
+    await expect(bus.publish('x', { a: 1 })).rejects.toBeTruthy();
+    expect(seen.some((s) => s.level === 'error' && s.msg === 'bus publisher error')).toBe(true);
     await bus.close();
   });
 

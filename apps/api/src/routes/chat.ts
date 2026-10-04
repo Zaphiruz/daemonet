@@ -139,6 +139,7 @@ export function registerChatRoutes(app: FastifyInstance, prisma: PrismaClient, b
   // ---- admin (Operator.isAdmin is read on every request by requireAuth)
   app.post('/api/admin/chat/mute', admin, async (req) => {
     const { operatorId, minutes } = parse(MuteBody, req.body);
+    if (operatorId === req.operator!.id) throw badRequest('cannot mute yourself');
     const until = minutes > 0 ? new Date(Date.now() + minutes * 60_000) : null;
     const res = await prisma.operator.updateMany({ where: { id: operatorId }, data: { mutedUntil: until } });
     if (res.count !== 1) throw notFound('no such operator');
@@ -225,6 +226,7 @@ export function registerChatRoutes(app: FastifyInstance, prisma: PrismaClient, b
       const report = await tx.report.findUnique({ where: { id: req.params.id } });
       if (!report) throw notFound('no such report');
       if (body.action === 'DELETE' && !report.messageId) throw badRequest('this report has no message to delete');
+      if (body.action === 'MUTE' && report.targetId === by) throw badRequest('cannot mute yourself');
       const claimed = await tx.report.updateMany({
         where: { id: report.id, status: 'OPEN' },
         data: { status: body.action === 'DISMISS' ? 'DISMISSED' : 'ACTIONED', resolvedBy: by, resolvedAt: new Date(), action: body.action },

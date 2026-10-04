@@ -162,6 +162,12 @@ describe('cleanChatText', () => {
     expect(cleanChatText('x'.repeat(600))).toHaveLength(CHAT_MAX_CHARS);
     expect(cleanChatText('\u0007')).toBe('');
   });
+
+  it('strips format characters (\\p{Cf}): bidi overrides and isolates, zero-width characters, the BOM, soft hyphens', () => {
+    expect(cleanChatText('evil‮txt.exe')).toBe('eviltxt.exe');
+    expect(cleanChatText('a⁦b⁩c​d‌e‍f⁠g﻿h­i')).toBe('abcdefghi');
+    expect(cleanChatText('​‮')).toBe('');
+  });
 });
 
 describe('spec 5.1 bypasses (leet, elongation, separators, phrases)', () => {

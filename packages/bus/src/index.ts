@@ -21,13 +21,34 @@ export interface Bus {
   close(): Promise<void>;
 }
 
+/** Where the bus reports trouble (the sim and the api pass their pino logger). Never given message contents. */
+export interface BusLogger {
+  warn(obj: object, msg: string): void;
+  error(obj: object, msg: string): void;
+}
+
+export const consoleBusLogger: BusLogger = {
+  warn: (obj, msg) => console.warn(msg, obj),
+  error: (obj, msg) => console.error(msg, obj),
+};
+
+/** Only an error's name, code and message (ioredis connection errors carry no payload) reach the log. */
+function errInfo(err: unknown): { name: string; code?: string; message?: string } {
+  const e = err as { name?: unknown; code?: unknown; message?: unknown };
+  return {
+    name: typeof e?.name === 'string' ? e.name : 'Error',
+    ...(typeof e?.code === 'string' ? { code: e.code } : {}),
+    ...(typeof e?.message === 'string' ? { message: e.message } : {}),
+  };
+}
+
 /** A handler that throws must not stop delivery to the other subscribers or crash the process. */
-function deliver(hs: Iterable<Handler>, message: unknown): void {
+function deliver(hs: Iterable<Handler>, message: unknown, log: BusLogger, channel: string): void {
   for (const h of [...hs]) {
     try {
       h(message);
     } catch (err) {
-      console.error('bus handler failed', err);
+      log.error({ channel, err: { name: (err as Error)?.name ?? 'Error' } }, 'bus handler failed');
     }
   }
 }
@@ -38,7 +59,10 @@ export class MemoryBus implements Bus {
   /** The most recent publishes (capped at `logLimit`), for assertions. */
   readonly log: Array<{ channel: string; message: unknown }> = [];
 
-  constructor(private readonly logLimit = 1000) {}
+  constructor(
+    private readonly logLimit = 1000,
+    private readonly logger: BusLogger = consoleBusLogger,
+  ) {}
 
   async publish(channel: string, message: unknown): Promise<void> {
     this.log.push({ channel, message });
@@ -47,7 +71,7 @@ export class MemoryBus implements Bus {
     const hs = this.handlers.get(channel);
     if (!hs) return;
     await Promise.resolve();
-    deliver(hs, copy);
+    deliver(hs, copy, this.logger, channel);
   }
 
   subscribe(channel: string, handler: Handler): () => void {
@@ -84,18 +108,22 @@ export class RedisBus implements Bus {
   private readies = 0;
   private closing: Promise<void> | undefined;
 
-  constructor(url: string) {
-    // The publisher fails fast; the subscriber queues SUBSCRIBE across outages instead of flushing it.
-    this.pub = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: 2, retryStrategy });
-    this.sub = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: null, retryStrategy });
+  constructor(
+    url: string,
+    private readonly logger: BusLogger = consoleBusLogger,
+  ) {
+    // The publisher fails fast; the subscriber queues SUBSCRIBE across outages instead of flushing it. No ready check:
+    // it sends INFO, which the production ACL denies (the connection would never become ready).
+    this.pub = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: 2, retryStrategy, enableReadyCheck: false });
+    this.sub = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: null, retryStrategy, enableReadyCheck: false });
     // (Re)issue SUBSCRIBE for every wanted channel whenever the connection becomes ready; idempotent in Redis.
     this.sub.on('ready', () => {
       this.resubscribe();
       if (this.readies++ > 0) this.reconnected();
     });
     // Without an 'error' listener ioredis emits an uncaught error event; log and let it reconnect.
-    this.pub.on('error', (err: Error) => console.error('bus publisher error', err.message));
-    this.sub.on('error', (err: Error) => console.error('bus subscriber error', err.message));
+    this.pub.on('error', (err: Error) => this.logger.error({ err: errInfo(err) }, 'bus publisher error'));
+    this.sub.on('error', (err: Error) => this.logger.error({ err: errInfo(err) }, 'bus subscriber error'));
     this.sub.on('message', (channel: string, raw: string) => {
       const hs = this.handlers.get(channel);
       if (!hs) return;
@@ -103,17 +131,17 @@ export class RedisBus implements Bus {
       try {
         message = JSON.parse(raw);
       } catch {
-        console.warn('bus: dropped malformed message on', channel);
+        this.logger.warn({ channel }, 'bus: dropped a malformed message');
         return;
       }
-      deliver(hs, message);
+      deliver(hs, message, this.logger, channel);
     });
   }
 
   private resubscribe(): void {
     const keys = [...this.handlers.keys()];
     if (keys.length === 0) return;
-    this.sub.subscribe(...keys).catch((err: Error) => console.error('bus resubscribe failed', err.message));
+    this.sub.subscribe(...keys).catch((err: unknown) => this.logger.error({ err: errInfo(err) }, 'bus resubscribe failed'));
   }
 
   private reconnected(): void {
@@ -121,7 +149,7 @@ export class RedisBus implements Bus {
       try {
         h();
       } catch (err) {
-        console.error('bus reconnect handler failed', err);
+        this.logger.error({ err: { name: (err as Error)?.name ?? 'Error' } }, 'bus reconnect handler failed');
       }
     }
   }
@@ -143,7 +171,7 @@ export class RedisBus implements Bus {
     if (!hs) {
       this.handlers.set(key, (hs = new Set()));
       // ioredis re-subscribes to every channel after a reconnect; a failed first attempt is logged only.
-      this.sub.subscribe(key).catch((err: Error) => console.error('bus subscribe failed', err.message));
+      this.sub.subscribe(key).catch((err: unknown) => this.logger.error({ err: errInfo(err) }, 'bus subscribe failed'));
     }
     hs.add(handler);
     return () => {
@@ -185,6 +213,6 @@ export class RedisBus implements Bus {
 }
 
 /** `REDIS_URL` set → RedisBus, otherwise MemoryBus (single-process development). */
-export function createBus(redisUrl: string | undefined): Bus {
-  return redisUrl ? new RedisBus(redisUrl) : new MemoryBus();
+export function createBus(redisUrl: string | undefined, logger: BusLogger = consoleBusLogger): Bus {
+  return redisUrl ? new RedisBus(redisUrl, logger) : new MemoryBus(undefined, logger);
 }

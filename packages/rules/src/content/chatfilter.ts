@@ -236,10 +236,14 @@ export const AUTO_MUTE_WINDOW_MS = 10 * 60_000;
 export const AUTO_MUTE_MINUTES = 10;
 export const REPORTS_PER_DAY = 8;
 
-/** Trim, strip control characters, cap the length. Empty result = nothing to send. */
+/**
+ * Trim, strip control and format characters (\p{Cf}: bidi overrides and isolates, zero-width characters, the BOM, soft
+ * hyphens: they reorder or hide what other players see), cap the length. Empty result = nothing to send.
+ */
 export function cleanChatText(text: string): string {
   return text
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/\p{Cf}/gu, '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, CHAT_MAX_CHARS);

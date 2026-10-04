@@ -34,7 +34,7 @@ const verify = combineVerifiers(
   createTicketVerifier(store.prisma, config.requiredGroup),
 );
 
-const bus = createBus(config.redisUrl);
+const bus = createBus(config.redisUrl, log);
 if (!config.redisUrl) log.warn({}, 'REDIS_URL not set: using the in-process bus (admin chat actions from the api will not reach the sim)');
 const game = new Game({ worlds, store, verify, bus, log });
 await game.loadChatTerms();

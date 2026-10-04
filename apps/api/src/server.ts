@@ -1,4 +1,4 @@
-import { createBus } from '@daemonet/bus';
+import { consoleBusLogger, createBus, type BusLogger } from '@daemonet/bus';
 import { createPrisma } from '@daemonet/db';
 import { buildApp } from './app.js';
 import { createOidcClient } from './auth/oidc.js';
@@ -17,7 +17,9 @@ const config = loadConfig();
 const prisma = createPrisma(config.databaseUrl);
 await prisma.$queryRaw`SELECT 1`;
 
-const bus = createBus(config.redisUrl);
+// The bus may report connection trouble before the app (and its logger) exists: console until then, pino after.
+let busLog: BusLogger = consoleBusLogger;
+const bus = createBus(config.redisUrl, { warn: (obj, msg) => busLog.warn(obj, msg), error: (obj, msg) => busLog.error(obj, msg) });
 const app = await buildApp({
   prisma,
   bus,
@@ -33,6 +35,7 @@ const app = await buildApp({
   logger: loggerOptions(config.logLevel),
 });
 
+busLog = app.log;
 await app.listen({ port: config.port, host: '0.0.0.0' });
 app.log.info({ port: config.port, devBypass: config.devBypass, redis: Boolean(config.redisUrl) }, 'daemonet api started');
 if (!config.redisUrl) app.log.warn('REDIS_URL not set: using the in-process bus (admin chat actions will not reach the sim)');
