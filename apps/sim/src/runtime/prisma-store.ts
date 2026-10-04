@@ -607,8 +607,11 @@ export class PrismaStore implements Store {
   async checkpoint(records: readonly OperatorRecord[]): Promise<void> {
     if (records.length === 0) return;
     const now = new Date();
+    // Operator rows in id order (carry-forward #32): the api's Exchange locks several operators in one transaction,
+    // sorted the same way, so a checkpoint of several operators cannot deadlock against a matching sweep.
+    const sorted = [...records].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     await this.prisma.$transaction(async (tx) => {
-      for (const rec of records) {
+      for (const rec of sorted) {
         await tx.operator.update({
           where: { id: rec.id },
           // bits / diskCapacity move only through intents (the ledger); an inventory an intent is rewriting is left to it.

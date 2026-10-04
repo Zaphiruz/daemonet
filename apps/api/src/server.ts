@@ -4,6 +4,7 @@ import { buildApp } from './app.js';
 import { combineBearer, createBearerVerifier, createDevBearerVerifier } from './auth/bearer.js';
 import { createOidcClient } from './auth/oidc.js';
 import { loadConfig } from './config.js';
+import { expireOrders } from './exchange/orders.js';
 import { loggerOptions } from './log.js';
 import { pruneChat } from './routes/chat.js';
 
@@ -54,12 +55,29 @@ const prune = () =>
 void prune();
 const pruneTimer = setInterval(() => void prune(), 6 * 3_600_000);
 
+// Exchange orders past their 7 days: escrow back to their owners (one run at a time).
+let expiring = false;
+const expire = () => {
+  if (expiring) return;
+  expiring = true;
+  expireOrders(prisma, bus, new Date(), app.log)
+    .then((n) => {
+      if (n > 0) app.log.info({ expired: n }, 'expired exchange orders');
+    })
+    .catch((err: unknown) => app.log.error({ err: { name: (err as Error)?.name, code: (err as { code?: unknown })?.code } }, 'order expiry failed'))
+    .finally(() => {
+      expiring = false;
+    });
+};
+const expireTimer = setInterval(expire, 5 * 60_000);
+
 let stopping = false;
 async function shutdown(signal: string) {
   if (stopping) return;
   stopping = true;
   app.log.info({ signal }, 'shutting down');
   clearInterval(pruneTimer);
+  clearInterval(expireTimer);
   await app.close();
   await bus.close();
   await prisma.$disconnect();

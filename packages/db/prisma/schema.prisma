@@ -145,7 +145,8 @@ model BitsLedger {
   operatorId String
   delta      BigInt
   /// shop | disk | craft | ticket (the sim's store intents, SIM_LEDGER_REASONS) | admin (admin and dev grants) | org
-  /// (org creation and tag change) | rename (operator rename)
+  /// (org creation and tag change) | rename (operator rename) | exchange:escrow / exchange:refund / exchange:sale (the
+  /// api's order book)
   reason     String
   ref        String?
   at         DateTime @default(now())
@@ -162,6 +163,52 @@ model ExchangeVault {
   qty        Int
 
   @@id([operatorId, item])
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderStatus {
+  OPEN
+  FILLED
+  CANCELLED
+  EXPIRED
+}
+
+/// Exchange limit order (SP5 spec §5). BUY escrows price × qty bits, SELL escrows the items from the vault.
+model Order {
+  id         String      @id
+  operatorId String
+  item       String
+  side       OrderSide
+  price      Int
+  qty        Int
+  remaining  Int
+  status     OrderStatus @default(OPEN)
+  createdAt  DateTime    @default(now())
+  expiresAt  DateTime
+
+  @@index([item, side, status, price, createdAt])
+  @@index([operatorId, status])
+  @@index([status, expiresAt])
+}
+
+model Fill {
+  id          String   @id
+  item        String
+  price       Int
+  qty         Int
+  buyOrderId  String
+  sellOrderId String
+  buyerId     String
+  sellerId    String
+  /// bits destroyed (1/16 of price × qty, floored)
+  fee         Int
+  at          DateTime @default(now())
+
+  @@index([item, at])
 }
 
 /// Decompiled daemons keep their capture log here (never loadable again).

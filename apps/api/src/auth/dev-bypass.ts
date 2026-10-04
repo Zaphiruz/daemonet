@@ -1,15 +1,17 @@
 import type { Bus } from '@daemonet/bus';
 import type { PrismaClient } from '@daemonet/db';
-import { LO, computeStats, createRng, emptyMoveTypeUses, getSpecies, movesAtLevel, rollSpawn, statBlockToArray, xpForLevel } from '@daemonet/rules';
+import { LO, VAULT_MAX_QTY, computeStats, createRng, emptyMoveTypeUses, getSpecies, isTradable, movesAtLevel, rollSpawn, statBlockToArray, xpForLevel } from '@daemonet/rules';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { badRequest } from '../errors.js';
+import { vaultAdd } from '../exchange/orders.js';
 import { publishSafely } from '../publish.js';
 import { ensureOperator } from './routes.js';
 import type { SessionStore } from './session.js';
 
 const BitsBody = z.object({ amount: z.number().int().min(1).max(1_000_000) });
 const SeedBody = z.object({ species: z.string().min(1).max(32), level: z.number().int().min(1).max(64) });
+const VaultBody = z.object({ item: z.string().min(1).max(64), qty: z.number().int().min(1).max(VAULT_MAX_QTY) });
 
 /**
  * Development only (AUTH_DEV_BYPASS=true, refused in production): GET /api/auth/dev?name=alice
@@ -19,6 +21,8 @@ const SeedBody = z.object({ species: z.string().min(1).max(32), level: z.number(
  * POST /api/dev/bits { amount } credits bits (ledger reason `admin`, ref `dev`) and pushes the ledger row to the sim
  * over the bus (`admin { kind: 'bits' }`), so a running session sees it at once (or on the sim's next resync if the
  * push is lost).
+ * POST /api/dev/vault { item, qty } puts tradable items straight into the caller's Exchange vault (order-book tests
+ * without a hunting trip); it never touches the live inventory.
  */
 export function registerDevBypass(
   app: FastifyInstance,
@@ -85,5 +89,21 @@ export function registerDevBypass(
       },
     });
     return { id: row.id, species: row.species, level: row.level, slot: row.slot };
+  });
+
+  /** Puts items straight into the caller's Exchange vault (tests of the order book without a hunting trip). */
+  app.post('/api/dev/vault', { preHandler: app.requireAuth, config: { bearer: true } }, async (req) => {
+    const parsed = VaultBody.safeParse(req.body);
+    if (!parsed.success || !isTradable(parsed.data.item)) throw badRequest('body must be { item, qty 1-1024 }');
+    const operatorId = req.operator!.id;
+    const { item, qty } = parsed.data;
+    // The Exchange lock order: the operator row first, then its vault row (INSERT … ON CONFLICT).
+    const row = await deps.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Operator" WHERE "id" = ${operatorId} FOR NO KEY UPDATE`;
+      if (locked.length !== 1) throw badRequest('unknown operator');
+      await vaultAdd(tx, operatorId, item, qty);
+      return tx.exchangeVault.findUniqueOrThrow({ where: { operatorId_item: { operatorId, item } } });
+    });
+    return { item: row.item, qty: row.qty };
   });
 }

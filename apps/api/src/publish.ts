@@ -1,5 +1,9 @@
 import type { Bus } from '@daemonet/bus';
-import type { FastifyBaseLogger } from 'fastify';
+
+/** Where a failed publish is reported (the api passes its pino logger). */
+export interface PublishLog {
+  warn(obj: object, msg: string): void;
+}
 
 /**
  * Publishes a bus message after the database change it announces has committed. The database stays the source of truth
@@ -7,7 +11,7 @@ import type { FastifyBaseLogger } from 'fastify';
  * become an unhandled rejection; the log carries the message kind and the error class only, never the payload or the
  * error text (which can quote it).
  */
-export function publishSafely(bus: Bus, log: FastifyBaseLogger, channel: string, message: { kind: string; [field: string]: unknown }): void {
+export function publishSafely(bus: Bus, log: PublishLog, channel: string, message: { kind: string; [field: string]: unknown }): void {
   bus.publish(channel, message).catch((err: unknown) => {
     const e = err as { name?: unknown; code?: unknown };
     log.warn({ kind: message.kind, err: { name: String(e?.name ?? 'Error'), code: e?.code === undefined ? undefined : String(e.code) } }, 'bus publish failed');
