@@ -5,6 +5,9 @@
       "path": "packages/rules"
     },
     {
+      "path": "packages/bus"
+    },
+    {
       "path": "packages/shared"
     },
     {
