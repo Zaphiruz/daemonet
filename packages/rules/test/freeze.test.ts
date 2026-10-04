@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { WORDS } from '../src/capture/crypto.js';
-import { ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
+import { BESTIARY } from '../src/content/bestiary.js';
+import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
 import { MOVES, getMove, type MoveDef } from '../src/content/moves.js';
 import { SPECIES, getSpecies } from '../src/content/species.js';
-import { TRAITS } from '../src/content/traits.js';
+import { ROLE_TRAITS, TRAITS } from '../src/content/traits.js';
 import { NATURES } from '../src/natures.js';
 import { TYPES } from '../src/types.js';
 
@@ -11,6 +12,9 @@ describe('content tables are deep-frozen', () => {
   it.each([
     ['MOVES', MOVES],
     ['TRAITS', TRAITS],
+    ['ROLE_TRAITS', ROLE_TRAITS],
+    ['BESTIARY', BESTIARY],
+    ['EVOLUTION_ITEMS', EVOLUTION_ITEMS],
     ['SPECIES', SPECIES],
     ['ITEMS', ITEMS],
     ['STARTING_INVENTORY', STARTING_INVENTORY],
@@ -37,6 +41,11 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(NATURES[4])).toBe(true);
     expect(Object.isFrozen(SPECIES[0])).toBe(true);
     expect(Object.isFrozen(TRAITS[0])).toBe(true);
+    expect(Object.isFrozen(BESTIARY[0])).toBe(true);
+    expect(Object.isFrozen(BESTIARY[0]!.types)).toBe(true);
+    expect(Object.isFrozen(BESTIARY.find((r) => r.requirement)!.requirement)).toBe(true);
+    expect(Object.isFrozen(ROLE_TRAITS.tank)).toBe(true);
+    expect(Object.isFrozen(EVOLUTION_ITEMS[0])).toBe(true);
   });
 
   it('assigning to a move throws (ESM is strict)', () => {
