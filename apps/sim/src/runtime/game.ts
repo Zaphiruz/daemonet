@@ -25,7 +25,7 @@ import { ChatService } from './chat.js';
 import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
 import { diffEntities } from './interest.js';
 import { BitsPush, DiskPush, ExchangePush, exchangeView, IncidentStartPush, OrgMembershipPush, RenamePush } from './pushes.js';
-import { randomHex, withItems, type IncidentRow, type Store } from './store.js';
+import { randomHex, withItems, type ArenaResultInput, type ArenaSettlement, type ArenaSideResult, type IncidentRow, type Store } from './store.js';
 
 /** Transport-independent connection. */
 export interface Conn {
@@ -134,6 +134,13 @@ interface Session {
   nameGen: number;
   /** Bumped by every `disk` push: a resync whose store read raced one leaves Disk occupancy alone. */
   diskGen: number;
+  /**
+   * Cached arena rating for matchmaking (ArenaDeps.rating is synchronous): read from the store when the session is
+   * created and when the operator queues or challenges ranked, set by every settled match. Null until the first read.
+   */
+  arenaRating: number | null;
+  /** Bumped by every rating read started and every settlement: only the newest read may fill the cache. */
+  ratingGen: number;
 }
 
 const BUCKET_MAX = 64;
@@ -213,6 +220,8 @@ export class Game {
    * did not contain it).
    */
   private readonly parkedRewards = new Map<string, Array<{ seq: number; at: number; apply: (world: World, op: Operator) => void }>>();
+  /** Arena results still being written, per operator: a leave makes the next load wait for them (`leave`). */
+  private readonly pendingArena = new Map<string, Set<Promise<unknown>>>();
   /** Operator loads in flight per sub; a leave marks them stale so they reload after its checkpoint. */
   private readonly loads = new Map<string, Set<{ stale: boolean }>>();
   private readonly inflight = new Set<Promise<void>>();
@@ -316,8 +325,15 @@ export class Game {
       transfer: (id, to, record) => this.transfer(id, to, record),
       event: (id, event) => this.sessions.get(id)?.world.emitCarry(event, { to: id }),
       send: (id, msg) => this.sendTo(id, msg),
-      // plan 2 reads ratings from the store
-      rating: () => ARENA_START_RATING,
+      rating: (id) => this.sessions.get(id)?.arenaRating ?? ARENA_START_RATING,
+      record: (input) => this.recordArenaTracked(input),
+      rated: (id, rating) => {
+        const s = this.sessions.get(id);
+        if (!s) return;
+        s.arenaRating = rating;
+        s.ratingGen++;
+      },
+      credit: (id, r) => this.creditArena(id, r),
       now: () => Date.now(),
       newId: () => randomHex(16),
     });
@@ -588,10 +604,12 @@ export class Game {
           operatorId: rec.id, sub: claims.sub, world, controller: null, spectators: new Set(), resumeToken: randomHex(16), buffer: [], baseTick: world.tick,
           savedKnown: null, savedSelf: null, commandsThisTick: 0, violations: [], leaveAtTick: null, reloadRequired: false,
           ledgerSeq: rec.ledgerSeq, loadSeq: rec.ledgerSeq, ledgerApplied: new Map(), orgGen: 0, nameGen: 0, diskGen: 0,
+          arenaRating: null, ratingGen: 0,
         };
         this.sessions.set(rec.id, session);
         this.claimParkedRewards(session, rec.ledgerSeq);
         this.chat.loadMute(rec.id, rec.mutedUntil);
+        this.loadRating(session);
         // Pushes for this operator that landed while the load was in flight had no session and were dropped: re-read
         // org, name and the ledger rows above the load's watermark now rather than at the next periodic resync.
         void this.resyncOperators([rec.id]);
@@ -700,6 +718,8 @@ export class Game {
     if (command.cmd.startsWith('arena')) {
       // Entering and leaving matches is the runtime's business (outside the tick, no per-tick budget; the service has
       // its own limits); only fighting goes through the match world's tick. Replied to the connection that sent it.
+      // Ranked matchmaking reads the cached rating: refresh it (a season may have turned since the session loaded).
+      if ((command.cmd === 'arenaQueue' || command.cmd === 'arenaChallenge') && command.args.mode === 'ranked') this.loadRating(session);
       const r = this.arenaCommand(session.operatorId, command);
       if (isArenaError(r)) this.error(st, r.code, r.message, reqId);
       else this.send(st, { t: 'ack', seq: 0, d: { reqId, result: r } });
@@ -1077,6 +1097,105 @@ export class Game {
     for (const r of list) if (r.seq > loadSeq && Date.now() - r.at < PARKED_REWARD_MS) r.apply(session.world, op);
   }
 
+  // ---- arena results (SP6 plan 2) ----
+
+  /** Fills the session's rating cache from the store; a settlement or a newer read since it started wins. */
+  private loadRating(session: Session): void {
+    const gen = ++session.ratingGen;
+    this.track(
+      this.store.arenaRating(session.operatorId, new Date()).then(
+        (rating) => {
+          if (this.sessions.get(session.operatorId) === session && session.ratingGen === gen) session.arenaRating = rating;
+        },
+        (err: Error) => this.log.warn({ operator: session.operatorId, err: err.message }, 'arena rating load failed'),
+      ),
+    );
+  }
+
+  /**
+   * Records a finished match (raised when it ends): tracked, so `flush` and shutdown wait for it before the store
+   * closes, and held per operator, so a leave makes the operator's next load wait for it (`leave`).
+   */
+  private recordArenaTracked(input: ArenaResultInput): Promise<ArenaSettlement | null> {
+    const done = this.recordArena(input);
+    this.track(done);
+    for (const id of [input.aId, input.bId]) {
+      let set = this.pendingArena.get(id);
+      if (!set) this.pendingArena.set(id, (set = new Set()));
+      set.add(done);
+    }
+    void done.finally(() => {
+      for (const id of [input.aId, input.bId]) {
+        const set = this.pendingArena.get(id);
+        set?.delete(done);
+        if (set?.size === 0) this.pendingArena.delete(id);
+      }
+    });
+    return done;
+  }
+
+  /**
+   * Persists an arena result on the write chain with an until-known intent's patience (#26): the same idempotent
+   * write (by match id) is retried until the store answers. Past the cap, or during shutdown once the bounded
+   * schedule is spent, it is left to the store and logged loudly: null, and nothing is invented (whatever the store
+   * committed stays there and the next load reads it; checkpoints never write bits or `arenaWins`). A RangeError (a
+   * malformed result) is definitive.
+   */
+  private async recordArena(input: ArenaResultInput): Promise<ArenaSettlement | null> {
+    const started = Date.now();
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.serialized(() => this.store.recordArenaResult(input));
+      } catch (err) {
+        if (err instanceof RangeError) {
+          this.log.error({ match: input.matchId, err: err.message }, 'arena result refused by the store');
+          return null;
+        }
+        if (attempt < this.retryDelays.length || attempt % WARN_EVERY === 0) {
+          this.log.warn({ match: input.matchId, attempt, err: (err as Error).message }, 'arena result persist failed');
+        }
+        const delay = this.retryDelays[attempt];
+        if (attempt + 1 >= this.unknownRetryLimit || Date.now() - started >= this.unknownRetryMs || (this.stopping && delay === undefined)) {
+          this.log.error(
+            { match: input.matchId, a: input.aId, b: input.bId, attempts: attempt + 1, err: (err as Error).message },
+            'arena result still unknown after the retry cap: left to the store',
+          );
+          return null;
+        }
+        await sleep(delay ?? Math.min(MAX_RETRY_MS, this.retryDelays.at(-1) ?? MAX_RETRY_MS));
+      }
+    }
+  }
+
+  /**
+   * Mirrors a settled arena payout (win bits, `arenaWins`) in memory exactly once (#31), wherever the operator is now.
+   * Skipped when the state its session loaded already holds it: the ledger row's seq is at or below the load's
+   * watermark (the `arenaWins` bump committed in the same transaction). Parked when there is no session. A session
+   * that leaves while a result is pending makes its next load wait for that result (`leave`), so a session present
+   * when the result lands is the one whose memory lacks it, also for a win without a reward (no ledger row). Arena
+   * rows are sim reasons: resyncs never apply them again.
+   */
+  private creditArena(id: string, r: ArenaSideResult): void {
+    const live = this.live(id);
+    if (!live) {
+      if (r.ledgerSeq !== undefined) this.parkReward(id, r.ledgerSeq, (world, op) => this.applyArenaCredit(world, op, r));
+      return;
+    }
+    if (r.ledgerSeq !== undefined && r.ledgerSeq <= live.session.loadSeq) return;
+    this.applyArenaCredit(live.session.world, live.op, r);
+  }
+
+  private applyArenaCredit(world: World, op: Operator, r: ArenaSideResult): void {
+    if (r.reward > 0) {
+      op.bits += r.reward;
+      world.emitCarry({ e: 'bits', delta: r.reward, reason: 'arena', balance: op.bits }, { to: op.id });
+    }
+    for (const id of r.arenaWins) {
+      const d = world.daemons.get(id);
+      if (d?.ownerId === op.id) d.arenaWins++;
+    }
+  }
+
   /**
    * Writes an Incident record. A CLEARED record is retried until the store answers (capped like an unknown intent), so
    * the participants are on the row as early as possible; the others get the bounded retries only. Failures are logged:
@@ -1125,9 +1244,13 @@ export class Game {
       this.replyTo.delete(key);
       route.st.routes.delete(key);
     }
-    const done = this.writeCheckpoint([record], (err) => this.log.error({ sub: session.sub, err: err.message }, 'leave checkpoint failed')).finally(() =>
-      this.leaving.delete(session.sub),
-    );
+    // The next load also waits for the operator's arena results still being written (drop() just raised its own): it
+    // then reads them, and a result that lands meanwhile finds no session (`creditArena`).
+    const arenaResults = [...(this.pendingArena.get(session.operatorId) ?? [])];
+    const checkpoint = this.writeCheckpoint([record], (err) => this.log.error({ sub: session.sub, err: err.message }, 'leave checkpoint failed'));
+    const done = Promise.all([checkpoint, ...arenaResults])
+      .then(() => {})
+      .finally(() => this.leaving.delete(session.sub));
     this.leaving.set(session.sub, done);
     this.track(done);
     this.log.info({ sub: session.sub }, 'operator left');

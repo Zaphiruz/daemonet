@@ -1,22 +1,28 @@
 import { MemoryBus } from '@daemonet/bus';
-import { ARENA_LEVEL, ARENA_MAX_MATCHES, INCIDENT_MAX_OPERATORS, SANDBOX, getSubnet, msToTicks } from '@daemonet/rules';
+import { ARENA_DAILY_WINS, ARENA_LEVEL, ARENA_MAX_MATCHES, ARENA_WIN_BITS, INCIDENT_MAX_OPERATORS, SANDBOX, getSubnet, msToTicks, seasonIdOf } from '@daemonet/rules';
 import type { GameEvent, ServerMessage } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
 import { World, type OperatorRecord } from '../src/core/index.js';
 import { Out } from '../src/core/out.js';
 import { ArenaService } from '../src/runtime/arena.js';
 import { createDevVerifier } from '../src/runtime/auth.js';
-import { Game, type Conn } from '../src/runtime/game.js';
-import { MemoryStore } from '../src/runtime/store.js';
-import { TEST_SUBNET, input, makeWorld, operatorRecord, ownedRecord, self, step } from './helpers.js';
+import { Game, type Conn, type Logger } from '../src/runtime/game.js';
+import { gracefulShutdown } from '../src/runtime/shutdown.js';
+import { MemoryStore, type ArenaResultInput, type ArenaSettlement, type ArenaSideResult } from '../src/runtime/store.js';
+import { TEST_SUBNET, TEST_SUBNET_B, input, makeWorld, operatorRecord, ownedRecord, self, step } from './helpers.js';
 
 const COUNTDOWN = msToTicks(3000);
 const RETURN = msToTicks(3000);
 const GONE = msToTicks(8000);
 
-/** ArenaService over one real home world, with the runtime's part (sessions, snapshots) faked. */
+/** ArenaService over one real home world, with the runtime's part (sessions, snapshots, crediting) faked. */
 function harness(names: string[], ratings: Record<string, number> = {}) {
   const home = makeWorld('home');
+  /** Results are settled by a real MemoryStore that knows the operators and their RAM daemons. */
+  const store = new MemoryStore();
+  const recorded: ArenaResultInput[] = [];
+  const credited: Array<{ id: string; r: ArenaSideResult }> = [];
+  let storeDown = false;
   const where = new Map<string, World>();
   const events: Array<{ to: string; event: GameEvent }> = [];
   const sent: Array<{ to: string; msg: ServerMessage }> = [];
@@ -26,8 +32,11 @@ function harness(names: string[], ratings: Record<string, number> = {}) {
   let now = Date.parse('2026-10-02T12:00:00Z');
   let n = 0;
   for (const name of names) {
-    home.addOperator(operatorRecord(name));
+    const rec = operatorRecord(name);
+    home.addOperator(rec);
     where.set(name, home);
+    store.operators.set(name, { id: name, sub: name, name, starterClaimed: true, subnet: 'test', bits: 0, diskCapacity: 256, x: 0, y: 0, inventory: {} });
+    for (const d of rec.ram) store.daemons.set(d.id, { ...d, operatorId: name, location: 'RAM' });
   }
   const arena = new ArenaService({
     locate: (id) => {
@@ -47,6 +56,23 @@ function harness(names: string[], ratings: Record<string, number> = {}) {
     event: (to, event) => events.push({ to, event }),
     send: (to, msg) => sent.push({ to, msg }),
     rating: (id) => ratings[id] ?? 1500,
+    record: async (input) => {
+      recorded.push(input);
+      return storeDown ? null : store.recordArenaResult(input);
+    },
+    rated: (id, rating) => (ratings[id] = rating),
+    // the runtime's part: wherever the operator is now (the real one checks the ledger seq against the session's load)
+    credit: (id, r) => {
+      credited.push({ id, r });
+      const world = where.get(id);
+      const op = world?.operators.get(id);
+      if (!world || !op) return;
+      if (r.reward > 0) {
+        op.bits += r.reward;
+        events.push({ to: id, event: { e: 'bits', delta: r.reward, reason: 'arena', balance: op.bits } });
+      }
+      for (const d of r.arenaWins) if (world.daemons.get(d)?.ownerId === id) world.daemons.get(d)!.arenaWins++;
+    },
     now: () => now,
     newId: () => `${(++n).toString(16).padStart(8, '0')}${'0'.repeat(24)}`,
   });
@@ -57,6 +83,8 @@ function harness(names: string[], ratings: Record<string, number> = {}) {
       arena.tick();
     }
   };
+  /** Lets the (asynchronous) store settle and the service announce. */
+  const settled = () => new Promise<void>((r) => setImmediate(r));
   const challenge = (from: string, to: string, mode: 'ranked' | 'unranked' = 'unranked') => (arena.challenge(from, to, mode) as { challengeId: string }).challengeId;
   return {
     home,
@@ -68,6 +96,12 @@ function harness(names: string[], ratings: Record<string, number> = {}) {
     failTransfer,
     tick,
     challenge,
+    store,
+    recorded,
+    credited,
+    ratings,
+    settled,
+    failStore: () => (storeDown = true),
     advance: (ms: number) => (now += ms),
     of: (e: GameEvent['e'], to?: string) => events.filter((x) => x.event.e === e && (!to || x.to === to)).map((x) => x.event),
   };
@@ -106,7 +140,7 @@ describe('ArenaService', () => {
     expect(h.of('arenaQueued', 'alice')).toEqual([{ e: 'arenaQueued', mode: 'unranked' }, { e: 'arenaQueued', mode: null }]);
   });
 
-  it('pairs the unranked queue in order, runs the match and brings both home as they were', () => {
+  it('pairs the unranked queue in order, runs the match and brings both home as they were', async () => {
     const h = harness(['alice', 'bob', 'carol']);
     h.home.daemons.get('alice-d0')!.hp = 7;
     h.home.operators.get('alice')!.x = 9.5;
@@ -129,6 +163,9 @@ describe('ArenaService', () => {
     world!.operators.get('alice')!.bits += 50; // a sale on the Exchange lands mid-match
     expect(h.arena.forfeit('bob')).toEqual({ ok: true });
     h.tick();
+    expect(h.of('arenaResult')).toEqual([]); // announced once the store has settled it
+    await h.settled();
+    expect(h.recorded[0]).toMatchObject({ mode: 'unranked', aId: 'alice', bId: 'bob', winnerId: 'alice', reason: 'forfeit', live: true });
     expect(h.of('arenaResult', 'alice')[0]).toMatchObject({ outcome: 'win', reason: 'forfeit', counted: false, reward: 0 });
     expect(h.of('arenaResult', 'bob')[0]).toMatchObject({ outcome: 'loss', reason: 'forfeit' });
     expect(h.arena.inMatch('alice')).toBe(true);
@@ -226,13 +263,15 @@ describe('ArenaService', () => {
     expect(h.arena.accept('dave', pending)).toMatchObject({ message: 'no such challenge' });
   });
 
-  it('a controller gone for 8 s forfeits; an operator that leaves is sent home at once', () => {
+  it('a controller gone for 8 s forfeits; an operator that leaves is sent home at once', async () => {
     const h = harness(['alice', 'bob', 'carol', 'dave']);
     h.arena.accept('bob', h.challenge('alice', 'bob'));
     h.offline.add('alice');
     h.tick(GONE - 1);
+    await h.settled();
     expect(h.of('arenaResult')).toEqual([]);
     h.tick();
+    await h.settled();
     expect(h.of('arenaResult', 'bob')[0]).toMatchObject({ outcome: 'win', reason: 'disconnect' });
 
     h.arena.accept('dave', h.challenge('carol', 'dave'));
@@ -240,7 +279,10 @@ describe('ArenaService', () => {
     expect(h.where.get('carol')).toBe(h.home);
     expect(h.arena.inMatch('carol')).toBe(false);
     expect(h.arena.inMatch('dave')).toBe(true);
+    await h.settled();
     expect(h.of('arenaResult', 'dave')[0]).toMatchObject({ outcome: 'win', reason: 'disconnect' });
+    // carol left during the countdown: recorded, never counted
+    expect(h.recorded.at(-1)).toMatchObject({ aId: 'carol', bId: 'dave', winnerId: 'dave', reason: 'disconnect', live: false });
     h.tick(RETURN + 1);
     expect(h.where.get('dave')).toBe(h.home);
   });
@@ -256,12 +298,13 @@ describe('ArenaService', () => {
     expect(h.arena.worlds()[0]!.arena!.phase).toBe('live');
   });
 
-  it('both controllers gone is a draw; both leaving sends both home and closes the match', () => {
+  it('both controllers gone is a draw; both leaving sends both home and closes the match', async () => {
     const h = harness(['alice', 'bob', 'carol', 'dave']);
     h.arena.accept('bob', h.challenge('alice', 'bob'));
     h.offline.add('alice');
     h.offline.add('bob');
     h.tick(GONE);
+    await h.settled();
     expect(h.of('arenaResult').map((e) => (e as Extract<GameEvent, { e: 'arenaResult' }>).outcome)).toEqual(['draw', 'draw']);
 
     h.arena.accept('dave', h.challenge('carol', 'dave'));
@@ -270,11 +313,13 @@ describe('ArenaService', () => {
     expect(h.where.get('carol')).toBe(h.home);
     expect(h.where.get('dave')).toBe(h.home);
     h.tick(RETURN + 1);
+    await h.settled();
     expect(h.arena.worlds()).toEqual([]);
     expect(h.of('arenaResult', 'dave')).toHaveLength(1);
+    expect(h.recorded).toHaveLength(2); // one result per match
   });
 
-  it('a forfeit and the clock on the same tick: whichever lands first decides, once', () => {
+  it('a forfeit and the clock on the same tick: whichever lands first decides, once', async () => {
     const forfeitFirst = harness(['alice', 'bob']);
     forfeitFirst.arena.accept('bob', forfeitFirst.challenge('alice', 'bob'));
     const w1 = forfeitFirst.arena.worlds()[0]!;
@@ -283,6 +328,7 @@ describe('ArenaService', () => {
     w1.tick = w1.arena!.endsAtTick - 1;
     expect(forfeitFirst.arena.forfeit('bob')).toEqual({ ok: true });
     forfeitFirst.tick();
+    await forfeitFirst.settled();
     expect(forfeitFirst.of('arenaResult', 'alice')).toEqual([expect.objectContaining({ outcome: 'win', reason: 'forfeit' })]);
 
     const clockFirst = harness(['alice', 'bob']);
@@ -294,6 +340,7 @@ describe('ArenaService', () => {
     w2.step([]);
     expect(clockFirst.arena.forfeit('alice')).toMatchObject({ message: 'not in an arena match' });
     clockFirst.arena.tick();
+    await clockFirst.settled();
     expect(clockFirst.of('arenaResult', 'alice')).toEqual([expect.objectContaining({ outcome: 'win', reason: 'timeout' })]);
     expect(clockFirst.of('arenaResult', 'bob')).toEqual([expect.objectContaining({ outcome: 'loss', reason: 'timeout' })]);
   });
@@ -381,6 +428,92 @@ describe('ArenaService', () => {
     pair.arena.accept('bob', pair.challenge('alice', 'bob', 'ranked'));
     expect(pair.arena.worlds()[0]!.arena!.mode).toBe('ranked');
   });
+
+  it('settles ranked results: ratings, the win reward and arenaWins reach the store and the operators', async () => {
+    const h = harness(['alice', 'bob']);
+    const play = async (winner: string, loser: string) => {
+      h.arena.accept('bob', h.challenge('alice', 'bob', 'ranked'));
+      const [world] = h.arena.worlds();
+      world!.arena!.dealt.add(`${winner}-d0`).add(`${loser}-d1`);
+      h.tick(COUNTDOWN);
+      h.arena.forfeit(loser);
+      h.tick();
+      await h.settled();
+      return { winner: h.of('arenaResult', winner).at(-1)!, loser: h.of('arenaResult', loser).at(-1)!, world: world! };
+    };
+    const first = await play('alice', 'bob');
+    expect(h.recorded[0]).toMatchObject({ mode: 'ranked', winnerId: 'alice', live: true, dealt: { alice: ['alice-d0'], bob: ['bob-d1'] } });
+    expect(first.winner).toMatchObject({ outcome: 'win', counted: true, ratingBefore: 1500, reward: ARENA_WIN_BITS });
+    expect(first.loser).toMatchObject({ outcome: 'loss', counted: true, reward: 0 });
+    expect((first.winner as { ratingAfter: number }).ratingAfter).toBeGreaterThan(1600);
+    expect((first.loser as { ratingAfter: number }).ratingAfter).toBeLessThan(1400);
+    expect(h.of('bits', 'alice')).toEqual([{ e: 'bits', delta: ARENA_WIN_BITS, reason: 'arena', balance: ARENA_WIN_BITS }]);
+    // still in the match world: the reward lands on the operator there, the counter on the home record; both travel home
+    expect(first.world.operators.get('alice')!.bits).toBe(ARENA_WIN_BITS);
+    expect(h.credited.find((c) => c.id === 'alice')!.r).toMatchObject({ reward: ARENA_WIN_BITS, arenaWins: [] });
+    expect(h.arena.homeRecord('alice')!.ram.map((d) => d.arenaWins)).toEqual([1, 0]);
+    expect(first.world.daemons.get('alice-d0')!.arenaWins).toBe(0); // the copy is not the daemon
+    h.tick(RETURN + 1);
+    expect(h.home.operators.get('alice')!.bits).toBe(ARENA_WIN_BITS);
+    expect([h.home.daemons.get('alice-d0')!.arenaWins, h.home.daemons.get('alice-d1')!.arenaWins, h.home.daemons.get('bob-d1')!.arenaWins]).toEqual([1, 0, 0]);
+    expect(h.store.operators.get('alice')!.bits).toBe(ARENA_WIN_BITS);
+    expect(h.store.daemons.get('alice-d0')!.arenaWins).toBe(1);
+    expect(h.store.ledger).toMatchObject([{ operatorId: 'alice', delta: ARENA_WIN_BITS, reason: 'arena' }]);
+    // the next match starts from the new ratings
+    const settlement = h.store.arenaMatches.get(h.recorded[0]!.matchId)!.settlement;
+    expect(h.ratings).toEqual({ alice: settlement.a.after, bob: settlement.b.after });
+    const second = await play('bob', 'alice');
+    expect(second.world.arena!.ratings).toEqual({ alice: settlement.a.after, bob: settlement.b.after });
+    expect(second.winner).toMatchObject({ outcome: 'win', counted: true, reward: ARENA_WIN_BITS });
+    h.tick(RETURN + 1);
+    expect(h.home.daemons.get('bob-d0')!.arenaWins).toBe(1);
+
+    // the store stays unreachable: the match still ends and everyone goes home, nothing is counted or credited
+    h.failStore();
+    const ratings = { ...h.ratings };
+    const third = await play('alice', 'bob');
+    expect(third.winner).toMatchObject({ outcome: 'win', counted: false, reward: 0, ratingBefore: ratings.alice, ratingAfter: ratings.alice });
+    h.tick(RETURN + 1);
+    expect(h.home.operators.get('alice')!.bits).toBe(ARENA_WIN_BITS);
+    expect(h.home.daemons.get('alice-d0')!.arenaWins).toBe(1);
+    expect(h.ratings).toEqual(ratings);
+  });
+
+  it('a result the store settles after the return is credited to the home daemons by the runtime', async () => {
+    const h = harness(['alice', 'bob']);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const record = (h.arena as unknown as { deps: { record: (i: ArenaResultInput) => Promise<ArenaSettlement | null> } }).deps;
+    const settle = record.record;
+    record.record = async (i) => {
+      await gate;
+      return settle(i);
+    };
+    h.arena.accept('bob', h.challenge('alice', 'bob', 'ranked'));
+    h.arena.worlds()[0]!.arena!.dealt.add('alice-d0');
+    h.tick(COUNTDOWN);
+    h.arena.forfeit('bob');
+    h.tick(RETURN + 2);
+    expect(h.where.get('alice')).toBe(h.home);
+    release();
+    await h.settled();
+    expect(h.credited.find((c) => c.id === 'alice')!.r).toMatchObject({ reward: ARENA_WIN_BITS, arenaWins: ['alice-d0'] });
+    expect(h.home.daemons.get('alice-d0')!.arenaWins).toBe(1);
+    expect(h.home.operators.get('alice')!.bits).toBe(ARENA_WIN_BITS);
+    expect(h.of('arenaResult', 'alice')).toHaveLength(1);
+  });
+
+  it('a match that ends in its countdown is recorded as not live (never counted)', async () => {
+    const h = harness(['alice', 'bob']);
+    h.arena.accept('bob', h.challenge('alice', 'bob', 'ranked'));
+    h.tick(COUNTDOWN - 2);
+    h.arena.forfeit('bob');
+    h.tick();
+    await h.settled();
+    expect(h.recorded[0]).toMatchObject({ mode: 'ranked', winnerId: 'alice', reason: 'forfeit', live: false });
+    expect(h.of('arenaResult', 'alice')[0]).toMatchObject({ outcome: 'win', counted: false, reward: 0, ratingBefore: 1500, ratingAfter: 1500 });
+    expect(h.store.ledger).toEqual([]);
+  });
 });
 
 class FakeConn implements Conn {
@@ -401,10 +534,12 @@ class FakeConn implements Conn {
 }
 
 describe('arena matches in the runtime', () => {
-  async function setup(opts: { leaveAfterTicks?: number; checkpointEveryTicks?: number; worlds?: World[] } = {}) {
-    const store = new MemoryStore();
+  async function setup<S extends MemoryStore = MemoryStore>(
+    opts: { leaveAfterTicks?: number; checkpointEveryTicks?: number; worlds?: World[]; store?: S; retryDelaysMs?: number[]; unknownRetryLimit?: number; log?: Logger } = {},
+  ) {
+    const { worlds, store: given, ...rest } = opts;
+    const store = (given ?? new MemoryStore()) as S;
     const bus = new MemoryBus();
-    const { worlds, ...rest } = opts;
     const world = worlds?.[0] ?? new World({ subnet: TEST_SUBNET, seed: 'x', seedId: 'aaaa0001', spawner: false });
     const game = new Game({ worlds: worlds ?? [world], store, verify: createDevVerifier('daemonet-users'), bus, ...rest });
     let seq = 0;
@@ -426,17 +561,26 @@ describe('arena matches in the runtime', () => {
       // the store holds the same daemons (as if loaded)
       for (const d of w.checkpoint(id).ram) store.daemons.set(d.id, { ...d, operatorId: id, location: 'RAM' });
       const cmd = (command: object, via = conn) => game.message(via, JSON.stringify({ t: 'cmd', seq: ++seq, d: { reqId: `q${seq}`, ...command } }));
-      return { conn, id, cmd };
+      return { conn, id, cmd, name };
     };
     const ticks = (n: number) => {
       for (let i = 0; i < n; i++) game.tick();
     };
-    const duel = async (a: Awaited<ReturnType<typeof join>>, b: Awaited<ReturnType<typeof join>>) => {
-      await a.cmd({ cmd: 'arenaChallenge', actor: 'self', args: { operatorId: b.id, mode: 'unranked' } });
+    const duel = async (a: Awaited<ReturnType<typeof join>>, b: Awaited<ReturnType<typeof join>>, mode: 'ranked' | 'unranked' = 'unranked') => {
+      await a.cmd({ cmd: 'arenaChallenge', actor: 'self', args: { operatorId: b.id, mode } });
       await b.cmd({ cmd: 'arenaAccept', actor: 'self', args: { challengeId: b.conn.of('arenaChallenge').at(-1)!.d.challengeId } });
       return game.worldOf(a.id)!;
     };
-    return { game, world, store, bus, join, connect, ticks, duel };
+    /** `winner` beats `loser` in a ranked match (its first daemon dealt damage; the loser forfeits once it is live). */
+    const rankedWin = async (winner: Awaited<ReturnType<typeof join>>, loser: Awaited<ReturnType<typeof join>>) => {
+      const arena = await duel(winner, loser, 'ranked');
+      arena.arena!.dealt.add(`${winner.name}-d0`);
+      ticks(COUNTDOWN);
+      await loser.cmd({ cmd: 'arenaForfeit', actor: 'self', args: {} });
+      ticks(1);
+      return arena;
+    };
+    return { game, world, store, bus, join, connect, ticks, duel, rankedWin };
   }
 
   it('queues two operators into a sandbox world with fresh snapshots, and back', async () => {
@@ -468,7 +612,9 @@ describe('arena matches in the runtime', () => {
 
     await b.cmd({ cmd: 'arenaForfeit', actor: 'self', args: {} });
     ticks(2);
-    expect(a.conn.events('arenaResult')[0]).toMatchObject({ outcome: 'win', reason: 'forfeit' });
+    await game.flush();
+    ticks(1);
+    expect(a.conn.events('arenaResult')[0]).toMatchObject({ outcome: 'win', reason: 'forfeit', counted: false });
     expect(b.conn.events('arenaResult')[0]).toMatchObject({ outcome: 'loss' });
     ticks(RETURN + 1);
     expect(a.conn.of('snapshot').at(-1)!.d).toMatchObject({ subnet: 'test', self: { arena: null, running: [], ram: [{ id: 'alice-d0', level: 20 }, { id: 'alice-d1' }] } });
@@ -499,8 +645,11 @@ describe('arena matches in the runtime', () => {
     ticks(25);
     await game.flush();
     expect(game.worldOf(a.id)).toBeUndefined(); // gone from the server…
-    expect(b.conn.events('arenaResult')[0]).toMatchObject({ outcome: 'win', reason: 'disconnect' });
     expect(checkpoints.at(-1)).toMatchObject([{ id: a.id, subnet: 'test', ram: [{ level: 20 }, { level: 20 }] }]); // …with its real daemons
+    ticks(1);
+    expect(b.conn.events('arenaResult')[0]).toMatchObject({ outcome: 'win', reason: 'disconnect', counted: false });
+    // it ended in the countdown: recorded, never counted
+    expect([...store.arenaMatches.values()]).toMatchObject([{ input: { mode: 'ranked', winnerId: b.id, live: false }, settlement: { counted: false } }]);
     ticks(RETURN + 1);
     expect(game.worldOf(b.id)).toBe(world);
     expect(checkpoints.flat().every((r) => r.subnet === 'test')).toBe(true);
@@ -529,6 +678,8 @@ describe('arena matches in the runtime', () => {
     }
     arena.operators.get(a.id)!.inventory.sniff = 0;
     ticks(2); // wipe-out
+    await game.flush();
+    ticks(1);
     expect(b.conn.events('arenaResult')[0]).toMatchObject({ outcome: 'win', reason: 'wipeout' });
     ticks(8); // checkpoints while the beaten copies are still in the match world
     await game.flush();
@@ -662,4 +813,302 @@ describe('arena matches in the runtime', () => {
     expect(last.map((r) => [r.id, r.subnet]).sort()).toEqual([a.id, b.id].sort().map((id) => [id, 'test']));
     expect(last.find((r) => r.id === a.id)).toMatchObject({ x: 9.5, ram: [{ level: 20 }, { level: 20 }] });
   });
+
+  describe('results settle through the store', () => {
+    /** Polls (real time) until `cond` holds: for stores that keep failing, where `game.flush()` would wait for the cap. */
+    const until = async (cond: () => boolean) => {
+      for (let i = 0; i < 500 && !cond(); i++) await new Promise((r) => setTimeout(r, 2));
+      expect(cond()).toBe(true);
+    };
+    const later = () => new Promise<void>((r) => setTimeout(r, 10));
+    const arenaRows = (store: MemoryStore) => store.ledger.filter((l) => l.reason === 'arena');
+
+    it('a ranked win is credited once in the match world and comes home; checkpoints and resyncs never add to it', async () => {
+      const { game, world, store, join, ticks, duel, rankedWin } = await setup({ checkpointEveryTicks: 8 });
+      const a = await join('alice');
+      const b = await join('bob');
+      const arena = await rankedWin(a, b);
+      await game.flush();
+      ticks(1);
+      expect(a.conn.events('arenaResult')).toEqual([expect.objectContaining({ outcome: 'win', counted: true, ratingBefore: 1500, reward: ARENA_WIN_BITS })]);
+      expect(b.conn.events('arenaResult')).toEqual([expect.objectContaining({ outcome: 'loss', counted: true, reward: 0 })]);
+      expect(a.conn.events('bits')).toEqual([{ e: 'bits', delta: ARENA_WIN_BITS, reason: 'arena', balance: ARENA_WIN_BITS }]);
+      expect(arena.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+      expect(store.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      // a resync reads the arena row, a sim reason: never applied again
+      await (game as unknown as { resyncOperators(ids: string[]): Promise<void> }).resyncOperators([a.id]);
+      expect(arena.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+
+      ticks(RETURN + 1);
+      await game.flush();
+      expect(world.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+      expect([world.daemons.get('alice-d0')!.arenaWins, world.daemons.get('alice-d1')!.arenaWins, world.daemons.get('bob-d0')!.arenaWins]).toEqual([1, 0, 0]);
+      // checkpoints never write arenaWins (nor bits): the store keeps its own count
+      world.daemons.get('alice-d0')!.arenaWins = 9;
+      ticks(8);
+      await game.flush();
+      expect(store.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      expect(store.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+      expect(arenaRows(store)).toHaveLength(1);
+      expect(a.conn.events('bits')).toHaveLength(1);
+
+      // the rating cache: the next match starts from the settled ratings
+      const season = seasonIdOf(new Date());
+      const next = await duel(a, b, 'ranked');
+      expect(next.arena!.ratings).toEqual({ [a.id]: store.arenaRatings.get(`${a.id}:${season}`)!.rating, [b.id]: store.arenaRatings.get(`${b.id}:${season}`)!.rating });
+      expect(next.arena!.ratings[a.id]).toBeGreaterThan(1600);
+      await game.shutdown();
+    });
+
+    it('a reply lost after the commit is retried and credited once', async () => {
+      const store = new ArenaStore();
+      store.loseNextReply = true;
+      const { game, world, join, ticks, rankedWin } = await setup({ store, retryDelaysMs: [1, 1, 1] });
+      const a = await join('alice');
+      const b = await join('bob');
+      await rankedWin(a, b);
+      await game.flush();
+      ticks(RETURN + 1);
+      expect(store.calls).toBe(2);
+      expect(arenaRows(store)).toHaveLength(1);
+      expect(a.conn.events('bits')).toEqual([expect.objectContaining({ delta: ARENA_WIN_BITS, reason: 'arena' })]);
+      expect(a.conn.events('arenaResult')).toHaveLength(1);
+      expect(world.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+      expect(world.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      await game.shutdown();
+    });
+
+    it('settled after the winner came home and travelled on: credited in the world it is in now', async () => {
+      const store = new ArenaStore();
+      const home = new World({ subnet: TEST_SUBNET, seed: 'x', seedId: 'aaaa0001', spawner: false });
+      const other = new World({ subnet: TEST_SUBNET_B, seed: 'b', seedId: 'bbbb0002', spawner: false });
+      const { game, join, ticks, rankedWin } = await setup({ store, worlds: [home, other], retryDelaysMs: [1], unknownRetryLimit: 100_000 });
+      const a = await join('alice');
+      const b = await join('bob');
+      store.down = true;
+      await rankedWin(a, b);
+      ticks(RETURN + 1);
+      expect(game.worldOf(a.id)).toBe(home);
+      const op = home.operators.get(a.id)!;
+      op.x = TEST_SUBNET.gateways[0]!.at.x;
+      op.y = TEST_SUBNET.gateways[0]!.at.y;
+      await a.cmd({ cmd: 'travel', actor: 'self', args: { gatewayId: 'test-testb' } });
+      ticks(1);
+      await until(() => game.worldOf(a.id) === other);
+      expect(store.arenaMatches.size).toBe(0); // still unknown
+      expect(a.conn.events('arenaResult')).toEqual([]);
+      store.down = false;
+      await game.flush();
+      ticks(1);
+      expect(other.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+      expect(other.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      expect(a.conn.events('bits')).toEqual([expect.objectContaining({ delta: ARENA_WIN_BITS, reason: 'arena', balance: ARENA_WIN_BITS })]);
+      expect(a.conn.events('arenaResult')).toEqual([expect.objectContaining({ outcome: 'win', counted: true })]);
+      await game.shutdown();
+      expect(store.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+    });
+
+    it('settled while the winner is gone: its reconnect waits for the result and loads it, never credited twice', async () => {
+      const store = new ArenaStore();
+      const { game, join, ticks, rankedWin } = await setup({ store, leaveAfterTicks: 4 });
+      const a = await join('alice');
+      const b = await join('bob');
+      store.hold();
+      await rankedWin(a, b);
+      game.disconnect(a.conn);
+      ticks(6);
+      expect(game.worldOf(a.id)).toBeUndefined(); // left: the session is gone
+      const again = new FakeConn();
+      game.connect(again);
+      const authing = game.message(again, JSON.stringify({ t: 'auth', seq: 1, d: { token: 'dev:alice' } }));
+      await later();
+      expect(again.of('authOk')).toEqual([]); // mid-load: waits for the pending result
+      store.release();
+      await authing;
+      await game.flush();
+      ticks(1);
+      const w = game.worldOf(a.id)!;
+      expect(w.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS); // loaded, not credited on top
+      expect(w.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      expect(again.events('bits')).toEqual([]);
+      expect(store.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+      expect(b.conn.events('arenaResult')).toEqual([expect.objectContaining({ outcome: 'loss', counted: true })]);
+      await game.shutdown();
+    });
+
+    it('a win without a reward (daily cap) whose reply was lost: the reconnect waits for the retry, arenaWins counted once', async () => {
+      const store = new ArenaStore();
+      store.loseNextReply = true;
+      const { game, join, ticks, rankedWin } = await setup({ store, leaveAfterTicks: 4, retryDelaysMs: [50] });
+      const a = await join('alice');
+      const b = await join('bob');
+      const endedAt = new Date().toISOString();
+      for (let i = 0; i < ARENA_DAILY_WINS; i++) {
+        const side = { before: 1500, after: 1500, reward: 0, arenaWins: [] };
+        store.arenaMatches.set(`m${i}`, {
+          input: { matchId: `m${i}`, mode: 'ranked', aId: a.id, bId: `x${i}`, winnerId: a.id, reason: 'forfeit', durationMs: 0, endedAt, dealt: {} },
+          settlement: { counted: true, a: { ...side, reward: ARENA_WIN_BITS }, b: side },
+        });
+      }
+      await rankedWin(a, b);
+      // the first attempt commits and loses its reply; while the retry waits, the write chain is free
+      game.disconnect(a.conn);
+      ticks(6);
+      expect(game.worldOf(a.id)).toBeUndefined();
+      const again = new FakeConn();
+      game.connect(again);
+      const authing = game.message(again, JSON.stringify({ t: 'auth', seq: 1, d: { token: 'dev:alice' } }));
+      await later();
+      expect(again.of('authOk')).toEqual([]);
+      await authing;
+      await game.flush();
+      ticks(1);
+      expect(store.calls).toBe(2);
+      expect(store.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      expect(game.worldOf(a.id)!.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      expect(game.worldOf(a.id)!.operators.get(a.id)!.bits).toBe(0);
+      expect(b.conn.events('arenaResult')).toEqual([expect.objectContaining({ outcome: 'loss', counted: true })]);
+      await game.shutdown();
+    });
+
+    it('the exactly-once rule: a payout the loaded state holds is skipped; one without a session is parked for a load that predates it', async () => {
+      const store = new MemoryStore();
+      store.operators.set('zed', { id: 'zed', sub: 'dev-zed', name: 'zed', starterClaimed: true, subnet: 'test', bits: 5, diskCapacity: 256, x: 5.5, y: 5.5, inventory: {} });
+      store.daemons.set('zed-p0', { ...ownedRecord('pingling', 20, 2, 'zed-p0'), operatorId: 'zed', location: 'RAM' });
+      const { game, world, connect } = await setup({ store });
+      const credit = (id: string, r: ArenaSideResult) => (game as unknown as { creditArena(id: string, r: ArenaSideResult): void }).creditArena(id, r);
+      const paid = (ledgerSeq: number): ArenaSideResult => ({ before: 1500, after: 1600, reward: ARENA_WIN_BITS, arenaWins: ['zed-p0'], ledgerSeq });
+      // no session: parked; the session created next loaded nothing above seq 0, so it takes it, once
+      credit('zed', paid(7));
+      await connect('zed');
+      expect(world.operators.get('zed')!.bits).toBe(5 + ARENA_WIN_BITS);
+      expect(world.daemons.get('zed-p0')!.arenaWins).toBe(1);
+      // a session whose load already holds the row (seq at or below its watermark) is left alone
+      credit('zed', paid(0));
+      expect(world.operators.get('zed')!.bits).toBe(5 + ARENA_WIN_BITS);
+      expect(world.daemons.get('zed-p0')!.arenaWins).toBe(1);
+      await game.shutdown();
+    });
+
+    it('a winner whose controller is gone but whose session remains is credited in memory', async () => {
+      const store = new ArenaStore();
+      const { game, world, join, ticks, rankedWin } = await setup({ store, leaveAfterTicks: 1000 });
+      const a = await join('alice');
+      const b = await join('bob');
+      store.hold();
+      await rankedWin(a, b);
+      game.disconnect(a.conn);
+      ticks(RETURN + 1);
+      expect(game.worldOf(a.id)).toBe(world);
+      store.release();
+      await game.flush();
+      expect(world.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+      expect(world.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      await game.shutdown();
+    });
+
+    it('shutdown waits for a pending result before the store closes', async () => {
+      const store = new ArenaStore();
+      const { game, join, rankedWin } = await setup({ store });
+      const a = await join('alice');
+      const b = await join('bob');
+      store.hold();
+      await rankedWin(a, b);
+      const closed: string[] = [];
+      const done = gracefulShutdown({
+        server: { stopAccepting: () => {}, close: async () => {} },
+        game,
+        store: { close: async () => void closed.push('store') },
+        bus: { close: async () => {} },
+      });
+      await later();
+      expect(closed).toEqual([]);
+      expect(store.arenaMatches.size).toBe(0);
+      store.release();
+      await done;
+      expect(closed).toEqual(['store']);
+      expect(store.arenaMatches.size).toBe(1);
+      expect(store.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+    });
+
+    it('a store unreachable past the retry cap: logged loudly, nothing credited or invented, everyone goes home', async () => {
+      const store = new ArenaStore();
+      store.down = true;
+      const errors: string[] = [];
+      const log: Logger = { info() {}, warn() {}, error: (_o, msg) => void errors.push(msg ?? '') };
+      const { game, world, join, ticks, rankedWin } = await setup({ store, retryDelaysMs: [1, 1], unknownRetryLimit: 4, log });
+      const a = await join('alice');
+      const b = await join('bob');
+      await rankedWin(a, b);
+      await game.flush();
+      ticks(RETURN + 1);
+      expect(store.calls).toBe(4);
+      expect(errors).toContain('arena result still unknown after the retry cap: left to the store');
+      expect(a.conn.events('arenaResult')).toEqual([expect.objectContaining({ outcome: 'win', counted: false, reward: 0 })]);
+      expect(a.conn.events('bits')).toEqual([]);
+      expect(world.operators.get(a.id)!.bits).toBe(0);
+      expect(world.daemons.get('alice-d0')!.arenaWins).toBe(0);
+      await game.shutdown();
+    });
+
+    it('the rating cache is loaded with the session, refreshed on queueing, and feeds the matchmaking windows', async () => {
+      const store = new MemoryStore();
+      const season = seasonIdOf(new Date());
+      const rate = (id: string, rating: number) => store.arenaRatings.set(`${id}:${season}`, { rating, rd: 80, vol: 0.06, wins: 0, losses: 0, draws: 0 });
+      const names = ['ann', 'ben', 'cat', 'dan', 'eve'];
+      for (const name of names) {
+        store.operators.set(name, { id: name, sub: `dev-${name}`, name, starterClaimed: true, subnet: 'test', bits: 0, diskCapacity: 256, x: 5.5, y: 5.5, inventory: {} });
+      }
+      rate('ann', 1400);
+      rate('ben', 1700);
+      rate('cat', 1460);
+      rate('dan', 1900);
+      rate('eve', 2400);
+      const { game, join, ticks } = await setup({ store });
+      const ops = [];
+      for (const name of names) ops.push(await join(name));
+      await game.flush();
+      const [ann, ben, cat, dan, eve] = ops as [(typeof ops)[0], (typeof ops)[0], (typeof ops)[0], (typeof ops)[0], (typeof ops)[0]];
+      for (const o of [ann, ben, cat]) await o.cmd({ cmd: 'arenaQueue', actor: 'self', args: { mode: 'ranked' } });
+      await game.flush();
+      ticks(17);
+      expect(game.worldOf(ann.id)!.arena).toMatchObject({ mode: 'ranked', ratings: { ann: 1400, cat: 1460 } }); // 60 apart
+      expect(game.worldOf(ben.id)!.arena).toBeNull(); // 240 from both
+      // dan's rating changed in the store since his session loaded: queueing reads it again
+      rate('dan', 2360);
+      for (const o of [dan, eve]) await o.cmd({ cmd: 'arenaQueue', actor: 'self', args: { mode: 'ranked' } });
+      await game.flush();
+      ticks(16);
+      expect(game.worldOf(dan.id)!.arena).toMatchObject({ ratings: { dan: 2360, eve: 2400 } });
+      await game.shutdown();
+    });
+  });
 });
+
+/** MemoryStore whose arena results can be held, fail, or lose their reply after committing. */
+class ArenaStore extends MemoryStore {
+  calls = 0;
+  down = false;
+  loseNextReply = false;
+  private gate: { promise: Promise<void>; open: () => void } | null = null;
+  hold() {
+    let open!: () => void;
+    const promise = new Promise<void>((r) => (open = r));
+    this.gate = { promise, open };
+  }
+  release() {
+    this.gate?.open();
+    this.gate = null;
+  }
+  override async recordArenaResult(input: ArenaResultInput): Promise<ArenaSettlement> {
+    this.calls++;
+    if (this.gate) await this.gate.promise;
+    if (this.down) throw new Error('store unreachable');
+    const settlement = await super.recordArenaResult(input);
+    if (this.loseNextReply) {
+      this.loseNextReply = false;
+      throw new Error('connection reset');
+    }
+    return settlement;
+  }
+}

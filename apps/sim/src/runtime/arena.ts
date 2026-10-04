@@ -15,6 +15,7 @@ import {
 } from '@daemonet/rules';
 import type { ErrorCode, GameEvent, ServerMessage } from '@daemonet/shared';
 import { World, arenaRecord, concede, concedeBoth, type Operator, type OperatorRecord } from '../core/index.js';
+import type { ArenaResultInput, ArenaSettlement, ArenaSideResult } from './store.js';
 
 export interface ArenaError {
   code: ErrorCode;
@@ -40,7 +41,21 @@ export interface ArenaDeps {
   event(id: string, event: GameEvent): void;
   /** An out-of-tick message to every connection of the operator. */
   send(id: string, msg: ServerMessage): void;
+  /** The operator's cached rating (synchronous: matchmaking never waits for the store). */
   rating(id: string): number;
+  /**
+   * Persists a finished match (`Store.recordArenaResult`, retried until the store answers or a cap is reached);
+   * null when the outcome stayed unknown (nothing is invented: the store holds whatever it committed).
+   */
+  record(input: ArenaResultInput): Promise<ArenaSettlement | null>;
+  /** The operator's rating changed (a settled match). */
+  rated(id: string, rating: number): void;
+  /**
+   * The store paid `r.reward` (its ledger row is `r.ledgerSeq`) and bumped `arenaWins` on `r.arenaWins`: mirror them
+   * once on the operator wherever it is now (any world, or nowhere: a session that loads later reads the store).
+   * Never called with `arenaWins` for an operator still in its match (the service bumps its home record instead).
+   */
+  credit(id: string, r: ArenaSideResult): void;
   now(): number;
   /** 32 hex characters. */
   newId(): string;
@@ -62,6 +77,8 @@ interface Match {
   sides: Side[];
   reported: boolean;
   returnAtTick: number;
+  /** Wall clock (ms) when the match was set up. */
+  startedAt: number;
 }
 
 interface Waiting {
@@ -98,7 +115,7 @@ export class ArenaService {
   private readonly challenges = new Map<string, Challenge>();
   /** Challenger -> send times (ms) within the last minute. */
   private readonly sentChallenges = new Map<string, number[]>();
-  /** `<a>|<b>:<utc day>` → ranked matches started that day between the two (in memory; plan 2 reads ArenaMatch rows). */
+  /** `<a>|<b>:<utc day>` → ranked matches started that day between the two (in memory; the store re-counts committed rows). */
   private readonly pairCounts = new Map<string, number>();
   private ticks = 0;
 
@@ -221,7 +238,10 @@ export class ArenaService {
     this.closeIfEmpty(match);
   }
 
-  /** Shutdown: every match ends without a result and everyone in one goes home (the final checkpoint follows). */
+  /**
+   * Shutdown: every match still being played ends without a result and everyone in one goes home (the final
+   * checkpoint follows). A match already over was recorded when it ended; the runtime waits for that write.
+   */
   endAll(): void {
     for (const match of [...this.matches.values()]) {
       for (const side of match.sides) this.sendHome(match, side);
@@ -261,7 +281,7 @@ export class ArenaService {
 
     this.queue = this.queue.filter((w) => w.id !== aId && w.id !== bId);
     for (const c of [...this.challenges.values()]) if ([aId, bId].includes(c.from) || [aId, bId].includes(c.to)) this.challenges.delete(c.id);
-    const match: Match = { id, mode, world, sides: [], reported: false, returnAtTick: 0 };
+    const match: Match = { id, mode, world, sides: [], reported: false, returnAtTick: 0, startedAt: this.deps.now() };
     for (const [i, opId] of [aId, bId].entries()) {
       const loc = this.deps.locate(opId);
       const record = loc?.world.checkpoint(opId);
@@ -286,18 +306,68 @@ export class ArenaService {
     return match;
   }
 
-  /** Tells both operators how it ended and schedules the way home. Ratings and rewards arrive with SP6 plan 2. */
+  /**
+   * Schedules the way home and has the match recorded (at once, so nothing that follows can lose it: the return, a
+   * leave, shutdown); both operators hear the result once the store has settled it. A match that ended in its
+   * countdown is recorded as not live (never counted).
+   */
   private report(match: Match): void {
     const arena = match.world.arena!;
     const result = arena.result!;
     match.reported = true;
     match.returnAtTick = match.world.tick + msToTicks(ARENA_RETURN_MS);
-    for (const side of match.sides) {
-      if (side.returned) continue;
-      const rating = arena.ratings[side.id]!;
-      const outcome = result.winner === null ? 'draw' : result.winner === side.id ? 'win' : 'loss';
-      this.deps.event(side.id, { e: 'arenaResult', id: match.id, mode: match.mode, outcome, reason: result.reason, ratingBefore: rating, ratingAfter: rating, reward: 0, counted: false });
+    const [a, b] = match.sides as [Side, Side];
+    const now = this.deps.now();
+    const dealt: Record<string, string[]> = { [a.id]: [], [b.id]: [] };
+    for (const id of arena.dealt) {
+      const owner = match.sides.find((s) => s.record.ram.some((d) => d.id === id));
+      if (owner) dealt[owner.id]!.push(id);
     }
+    const input: ArenaResultInput = {
+      matchId: match.id,
+      mode: match.mode,
+      aId: a.id,
+      bId: b.id,
+      winnerId: result.winner,
+      reason: result.reason,
+      durationMs: Math.max(0, now - match.startedAt),
+      endedAt: new Date(now).toISOString(),
+      dealt,
+      live: result.atTick >= arena.liveAtTick,
+    };
+    void this.deps.record(input).then((settlement) => this.announce(match, settlement));
+  }
+
+  /** The settled (or, when the store stayed unreachable, uncounted) result to both operators, mirrored in memory. */
+  private announce(match: Match, settlement: ArenaSettlement | null): void {
+    const arena = match.world.arena!;
+    const result = arena.result!;
+    match.sides.forEach((side, i) => {
+      const before = arena.ratings[side.id]!;
+      const r: ArenaSideResult = settlement ? settlement[i === 0 ? 'a' : 'b'] : { before, after: before, reward: 0, arenaWins: [] };
+      const outcome = result.winner === null ? 'draw' : result.winner === side.id ? 'win' : 'loss';
+      if (settlement) {
+        this.deps.rated(side.id, r.after);
+        this.credit(side, r);
+      }
+      this.deps.event(side.id, { e: 'arenaResult', id: match.id, mode: match.mode, outcome, reason: result.reason, ratingBefore: r.before, ratingAfter: r.after, reward: r.reward, counted: settlement?.counted ?? false });
+    });
+  }
+
+  /**
+   * The store has already paid the win and bumped `arenaWins`; mirror both wherever the operator is by now. In a match
+   * (still this one, or already the next) its home daemons are the side's record, which `merged` carries home, and its
+   * bits land on the operator in the match world (the runtime). Anywhere else the runtime credits both.
+   */
+  private credit(side: Side, r: ArenaSideResult): void {
+    if (r.reward === 0 && r.arenaWins.length === 0) return;
+    const now = this.byOperator.get(side.id)?.sides.find((s) => s.id === side.id && !s.returned);
+    if (!now) return this.deps.credit(side.id, r);
+    for (const id of r.arenaWins) {
+      const original = now.record.ram.find((d) => d.id === id);
+      if (original) original.arenaWins++;
+    }
+    this.deps.credit(side.id, { ...r, arenaWins: [] });
   }
 
   /**
