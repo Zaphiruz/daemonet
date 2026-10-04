@@ -13,6 +13,7 @@ import {
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { badRequest, forbidden, notFound } from '../errors.js';
+import { publishSafely } from '../publish.js';
 
 const Channel = z.string().regex(/^(subnet|cluster|org|dm):[A-Za-z0-9_-]{1,64}$/);
 /**
@@ -75,10 +76,7 @@ export function registerChatRoutes(app: FastifyInstance, prisma: PrismaClient, b
    * the kind and error class only (never message text).
    */
   function publish(message: AdminMessage): void {
-    bus.publish('admin', message).catch((err: unknown) => {
-      const e = err as { name?: unknown; code?: unknown };
-      app.log.warn({ kind: message.kind, err: { name: String(e?.name ?? 'Error'), code: e?.code === undefined ? undefined : String(e.code) } }, 'bus publish failed');
-    });
+    publishSafely(bus, app.log, 'admin', message);
   }
 
   /**

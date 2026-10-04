@@ -667,26 +667,29 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(await prisma!.chatMessage.findUnique({ where: { id: 'p-out' } })).toBeNull();
   });
 
+
+  /** A dev-bypass operator (optionally with a bits balance set directly, without a ledger row) and its session cookies. */
+  async function devOperator(name: string, bits?: number) {
+    const r = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}` });
+    const cookies = { [COOKIE_NAME]: r.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const op = bits === undefined ? await prisma!.operator.findFirstOrThrow({ where: { sub: `dev-${name}` } }) : await prisma!.operator.update({ where: { sub: `dev-${name}` }, data: { bits: BigInt(bits) } });
+    return { cookies, id: op.id };
+  }
+  const postAs = (who: { cookies: Record<string, string> }, url: string, payload: object = {}) => app.inject({ method: 'POST', url, cookies: who.cookies, headers: csrf, payload });
+
   it('orgs: create for 8192 bits, invite / accept, ranks, kick, tag change, transfer, leave and disband; rename costs 2048', async () => {
-    const dev = async (name: string) => {
-      const r = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}` });
-      const cookies = { [COOKIE_NAME]: r.cookies.find((c) => c.name === COOKIE_NAME)!.value };
-      const op = await prisma!.operator.findFirstOrThrow({ where: { sub: `dev-${name}` } });
-      return { cookies, id: op.id };
-    };
-    const post = (who: { cookies: Record<string, string> }, url: string, payload: object = {}) => app.inject({ method: 'POST', url, cookies: who.cookies, headers: csrf, payload });
-    const owner = await dev('olga');
-    const pat = await dev('pat');
-    const quinn = await dev('quinn');
-    const broke = await post(owner, '/api/orgs', { name: 'Root Access', tag: 'ROOT' });
+    const owner = await devOperator('olga');
+    const pat = await devOperator('pat');
+    const quinn = await devOperator('quinn');
+    const broke = await postAs(owner, '/api/orgs', { name: 'Root Access', tag: 'ROOT' });
     expect(broke.statusCode).toBe(402);
     expect(broke.json()).toMatchObject({ error: 'insufficient_bits' });
     expect(await prisma!.bitsLedger.count()).toBe(0);
-    await post(owner, '/api/dev/bits', { amount: 20_000 });
+    await postAs(owner, '/api/dev/bits', { amount: 20_000 });
     bus.log.length = 0;
-    expect((await post(owner, '/api/orgs', { name: 'kys crew', tag: 'KYSX' })).statusCode).toBe(400);
-    expect((await post(owner, '/api/orgs', { name: 'Root Access', tag: 'root' })).statusCode).toBe(400);
-    const created = await post(owner, '/api/orgs', { name: 'Root Access', tag: 'ROOT' });
+    expect((await postAs(owner, '/api/orgs', { name: 'kys crew', tag: 'KYSX' })).statusCode).toBe(400);
+    expect((await postAs(owner, '/api/orgs', { name: 'Root Access', tag: 'root' })).statusCode).toBe(400);
+    const created = await postAs(owner, '/api/orgs', { name: 'Root Access', tag: 'ROOT' });
     expect(created.statusCode).toBe(200);
     const org = created.json();
     expect(org).toMatchObject({ name: 'Root Access', tag: 'ROOT', ownerId: owner.id, members: [{ operatorId: owner.id, rank: 'OWNER' }] });
@@ -698,28 +701,28 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
       message: { kind: 'bits', operatorId: owner.id, ledgerId: ledger[0]!.id, seq: Number(ledger[0]!.seq), delta: -8192, reason: 'org', balance: 20_000 - 8192, origin: 'api' },
     });
     expect(bus.log[1]).toEqual({ channel: 'org', message: { kind: 'membership', operatorId: owner.id, org: { id: org.id, name: 'Root Access', tag: 'ROOT', rank: 'OWNER' }, origin: 'api' } });
-    expect((await post(owner, '/api/orgs', { name: 'Second', tag: 'SECD' })).statusCode).toBe(400);
+    expect((await postAs(owner, '/api/orgs', { name: 'Second', tag: 'SECD' })).statusCode).toBe(400);
 
-    expect((await post(pat, '/api/orgs/invite', { operatorId: quinn.id })).statusCode).toBe(403);
-    expect((await post(owner, '/api/orgs/invite', { operatorId: pat.id })).json()).toEqual({ ok: true });
-    expect((await post(owner, '/api/orgs/invite', { operatorId: quinn.id })).json()).toEqual({ ok: true });
+    expect((await postAs(pat, '/api/orgs/invite', { operatorId: quinn.id })).statusCode).toBe(403);
+    expect((await postAs(owner, '/api/orgs/invite', { operatorId: pat.id })).json()).toEqual({ ok: true });
+    expect((await postAs(owner, '/api/orgs/invite', { operatorId: quinn.id })).json()).toEqual({ ok: true });
     const mine = (await app.inject({ method: 'GET', url: '/api/orgs/mine', cookies: pat.cookies })).json();
     expect(mine).toMatchObject({ org: null, invites: [{ orgId: org.id, tag: 'ROOT' }], prices: { create: 8192, tag: 4096, rename: 2048 } });
-    expect((await post(pat, `/api/orgs/${org.id}/accept`)).json().members).toHaveLength(2);
-    expect((await post(quinn, `/api/orgs/${org.id}/decline`)).json()).toEqual({ ok: true });
-    expect((await post(quinn, `/api/orgs/${org.id}/accept`)).statusCode).toBe(404);
-    await post(owner, '/api/orgs/invite', { operatorId: quinn.id });
-    await post(quinn, `/api/orgs/${org.id}/accept`);
+    expect((await postAs(pat, `/api/orgs/${org.id}/accept`)).json().members).toHaveLength(2);
+    expect((await postAs(quinn, `/api/orgs/${org.id}/decline`)).json()).toEqual({ ok: true });
+    expect((await postAs(quinn, `/api/orgs/${org.id}/accept`)).statusCode).toBe(404);
+    await postAs(owner, '/api/orgs/invite', { operatorId: quinn.id });
+    await postAs(quinn, `/api/orgs/${org.id}/accept`);
 
-    expect((await post(pat, '/api/orgs/kick', { operatorId: quinn.id })).statusCode).toBe(403);
-    expect((await post(owner, '/api/orgs/rank', { operatorId: pat.id, rank: 'OFFICER' })).json()).toEqual({ ok: true });
-    expect((await post(pat, '/api/orgs/kick', { operatorId: quinn.id })).json()).toEqual({ ok: true });
+    expect((await postAs(pat, '/api/orgs/kick', { operatorId: quinn.id })).statusCode).toBe(403);
+    expect((await postAs(owner, '/api/orgs/rank', { operatorId: pat.id, rank: 'OFFICER' })).json()).toEqual({ ok: true });
+    expect((await postAs(pat, '/api/orgs/kick', { operatorId: quinn.id })).json()).toEqual({ ok: true });
     expect(bus.log.at(-1)!.message).toEqual({ kind: 'membership', operatorId: quinn.id, org: null, origin: 'api' });
-    expect((await post(pat, '/api/orgs/kick', { operatorId: owner.id })).statusCode).toBe(403);
+    expect((await postAs(pat, '/api/orgs/kick', { operatorId: owner.id })).statusCode).toBe(403);
 
-    expect((await post(pat, '/api/orgs/tag', { tag: 'RUUT' })).statusCode).toBe(403);
+    expect((await postAs(pat, '/api/orgs/tag', { tag: 'RUUT' })).statusCode).toBe(403);
     bus.log.length = 0;
-    expect((await post(owner, '/api/orgs/tag', { tag: 'RUUT' })).json()).toEqual({ ok: true, tag: 'RUUT' });
+    expect((await postAs(owner, '/api/orgs/tag', { tag: 'RUUT' })).json()).toEqual({ ok: true, tag: 'RUUT' });
     expect((await prisma!.operator.findUniqueOrThrow({ where: { id: owner.id } })).bits).toBe(BigInt(20_000 - 8192 - 4096));
     // the tag change reaches every member, not only the owner who paid
     expect(bus.log.map((l) => l.message)).toEqual([
@@ -738,19 +741,19 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(board).toHaveLength(2);
     expect(board[0]).toMatchObject({ captures: 0, highestSignature: 0, evolutions: 0, ticketsDone: 0 });
 
-    expect((await post(owner, '/api/orgs/leave')).statusCode).toBe(400);
-    expect((await post(owner, '/api/orgs/transfer', { operatorId: pat.id })).json()).toEqual({ ok: true });
-    expect((await post(owner, '/api/orgs/leave')).json()).toEqual({ ok: true, disbanded: false });
+    expect((await postAs(owner, '/api/orgs/leave')).statusCode).toBe(400);
+    expect((await postAs(owner, '/api/orgs/transfer', { operatorId: pat.id })).json()).toEqual({ ok: true });
+    expect((await postAs(owner, '/api/orgs/leave')).json()).toEqual({ ok: true, disbanded: false });
     // leaving removes access to the org's history
     expect((await app.inject({ method: 'GET', url: `/api/chat/org:${org.id}`, cookies: owner.cookies })).statusCode).toBe(403);
-    expect((await post(pat, '/api/orgs/leave')).json()).toEqual({ ok: true, disbanded: true });
+    expect((await postAs(pat, '/api/orgs/leave')).json()).toEqual({ ok: true, disbanded: true });
     expect(await prisma!.org.count()).toBe(0);
     expect(await prisma!.orgMember.count()).toBe(0);
 
-    expect((await post(owner, '/api/me/rename', { name: 'olga2' })).statusCode).toBe(400); // no starter yet
+    expect((await postAs(owner, '/api/me/rename', { name: 'olga2' })).statusCode).toBe(400); // no starter yet
     await prisma!.operator.update({ where: { id: owner.id }, data: { starterClaimed: true, name: 'olga' } });
-    expect((await post(owner, '/api/me/rename', { name: 'shit-lord' })).statusCode).toBe(400);
-    const renamed = await post(owner, '/api/me/rename', { name: 'olga2' });
+    expect((await postAs(owner, '/api/me/rename', { name: 'shit-lord' })).statusCode).toBe(400);
+    const renamed = await postAs(owner, '/api/me/rename', { name: 'olga2' });
     expect(renamed.json()).toEqual({ ok: true, name: 'olga2', bits: 20_000 - 8192 - 4096 - 2048 });
     expect(bus.log.at(-2)!.message).toMatchObject({ kind: 'bits', operatorId: owner.id, delta: -2048, reason: 'rename', origin: 'api' });
     expect(bus.log.at(-1)!.message).toEqual({ kind: 'rename', operatorId: owner.id, name: 'olga2', origin: 'api' });
@@ -759,18 +762,11 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   });
 
   it('orgs under abuse: concurrent creates charge once, name / tag races roll the charge back, 402 writes nothing', async () => {
-    const dev = async (name: string, bits = 0) => {
-      const r = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}` });
-      const cookies = { [COOKIE_NAME]: r.cookies.find((c) => c.name === COOKIE_NAME)!.value };
-      const op = await prisma!.operator.update({ where: { sub: `dev-${name}` }, data: { bits: BigInt(bits) } });
-      return { cookies, id: op.id };
-    };
-    const post = (who: { cookies: Record<string, string> }, url: string, payload: object = {}) => app.inject({ method: 'POST', url, cookies: who.cookies, headers: csrf, payload });
     const balance = async (id: string) => Number((await prisma!.operator.findUniqueOrThrow({ where: { id } })).bits);
 
     // one operator, four simultaneous creates: one org, one charge
-    const a = await dev('ada', 40_000);
-    const tries = await Promise.all(['Alpha', 'Bravo', 'Charlie', 'Delta'].map((name, i) => post(a, '/api/orgs', { name, tag: `TAG${i}` })));
+    const a = await devOperator('ada', 40_000);
+    const tries = await Promise.all(['Alpha', 'Bravo', 'Charlie', 'Delta'].map((name, i) => postAs(a, '/api/orgs', { name, tag: `TAG${i}` })));
     expect(tries.map((r) => r.statusCode).sort()).toEqual([200, 400, 400, 400]);
     expect(tries.every((r) => r.statusCode < 500)).toBe(true);
     expect(await prisma!.org.count()).toBe(1);
@@ -778,35 +774,35 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(await balance(a.id)).toBe(40_000 - 8192);
 
     // two operators race for one name, then for one tag: the loser pays nothing
-    const b = await dev('bea', 10_000);
-    const c = await dev('cyd', 10_000);
-    const nameRace = await Promise.all([post(b, '/api/orgs', { name: 'Same Name', tag: 'BBBB' }), post(c, '/api/orgs', { name: 'Same Name', tag: 'CCCC' })]);
+    const b = await devOperator('bea', 10_000);
+    const c = await devOperator('cyd', 10_000);
+    const nameRace = await Promise.all([postAs(b, '/api/orgs', { name: 'Same Name', tag: 'BBBB' }), postAs(c, '/api/orgs', { name: 'Same Name', tag: 'CCCC' })]);
     expect(nameRace.map((r) => r.statusCode).sort()).toEqual([200, 400]);
     const loser = nameRace[0]!.statusCode === 200 ? c : b;
     expect(await balance(loser.id)).toBe(10_000);
     expect(await prisma!.bitsLedger.count({ where: { operatorId: loser.id, reason: 'org' } })).toBe(0);
     // the name is taken whatever its case; a tag already taken too
-    expect((await post(loser, '/api/orgs', { name: 'same name', tag: 'ZZZZ' })).json()).toMatchObject({ error: 'validation_error', message: 'that name is taken' });
-    expect((await post(loser, '/api/orgs', { name: 'Other', tag: 'TAG0' })).json()).toMatchObject({ error: 'validation_error', message: 'that tag is taken' });
+    expect((await postAs(loser, '/api/orgs', { name: 'same name', tag: 'ZZZZ' })).json()).toMatchObject({ error: 'validation_error', message: 'that name is taken' });
+    expect((await postAs(loser, '/api/orgs', { name: 'Other', tag: 'TAG0' })).json()).toMatchObject({ error: 'validation_error', message: 'that tag is taken' });
     expect(await balance(loser.id)).toBe(10_000);
     expect(await prisma!.bitsLedger.count({ where: { operatorId: loser.id } })).toBe(0);
     // ...and the loser's tag change race against the winner's org tag
-    await post(loser, '/api/orgs', { name: 'Loser Org', tag: 'LOSR' });
+    await postAs(loser, '/api/orgs', { name: 'Loser Org', tag: 'LOSR' });
     const winner = loser === b ? c : b;
     await prisma!.operator.update({ where: { id: winner.id }, data: { bits: 10_000n } });
     await prisma!.operator.update({ where: { id: loser.id }, data: { bits: 10_000n } });
-    const tagRace = await Promise.all([post(winner, '/api/orgs/tag', { tag: 'HOTT' }), post(loser, '/api/orgs/tag', { tag: 'HOTT' })]);
+    const tagRace = await Promise.all([postAs(winner, '/api/orgs/tag', { tag: 'HOTT' }), postAs(loser, '/api/orgs/tag', { tag: 'HOTT' })]);
     expect(tagRace.map((r) => r.statusCode).sort()).toEqual([200, 400]);
     const tagLoser = tagRace[0]!.statusCode === 200 ? loser : winner;
     expect(await balance(tagLoser.id)).toBe(10_000);
 
     // 402 never leaves a ledger row: create, tag, rename
-    const d = await dev('dot', 100);
+    const d = await devOperator('dot', 100);
     await prisma!.operator.update({ where: { id: d.id }, data: { starterClaimed: true, name: 'dot' } });
-    expect((await post(d, '/api/orgs', { name: 'Poor Org', tag: 'POOR' })).statusCode).toBe(402);
-    expect((await post(d, '/api/me/rename', { name: 'dotty' })).statusCode).toBe(402);
+    expect((await postAs(d, '/api/orgs', { name: 'Poor Org', tag: 'POOR' })).statusCode).toBe(402);
+    expect((await postAs(d, '/api/me/rename', { name: 'dotty' })).statusCode).toBe(402);
     await prisma!.org.create({ data: { id: 'dot-org', name: 'Dots', tag: 'DOTS', ownerId: d.id, members: { create: { operatorId: d.id, rank: 'OWNER' } } } });
-    expect((await post(d, '/api/orgs/tag', { tag: 'DOTT' })).statusCode).toBe(402);
+    expect((await postAs(d, '/api/orgs/tag', { tag: 'DOTT' })).statusCode).toBe(402);
     expect(await prisma!.bitsLedger.count({ where: { operatorId: d.id } })).toBe(0);
     expect(await balance(d.id)).toBe(100);
     expect((await prisma!.org.findUniqueOrThrow({ where: { id: 'dot-org' } })).tag).toBe('DOTS');
@@ -814,96 +810,118 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     // rename to a taken or filtered name charges nothing; admin filter terms apply to names and tags
     await prisma!.operator.update({ where: { id: d.id }, data: { bits: 5000n } });
     await prisma!.operator.update({ where: { id: a.id }, data: { starterClaimed: true, name: 'ada' } });
-    expect((await post(d, '/api/me/rename', { name: 'ada' })).json()).toMatchObject({ error: 'validation_error', message: 'that name is taken' });
+    expect((await postAs(d, '/api/me/rename', { name: 'ada' })).json()).toMatchObject({ error: 'validation_error', message: 'that name is taken' });
     await prisma!.chatFilterTerm.create({ data: { pattern: 'banana', kind: 'WORD', action: 'BLOCK', addedBy: a.id } });
-    expect((await post(d, '/api/me/rename', { name: 'banana_dot' })).statusCode).toBe(400);
-    expect((await post(a, '/api/orgs/tag', { tag: 'BNNA' })).statusCode).toBe(200);
+    expect((await postAs(d, '/api/me/rename', { name: 'banana_dot' })).statusCode).toBe(400);
+    expect((await postAs(a, '/api/orgs/tag', { tag: 'BNNA' })).statusCode).toBe(200);
     await prisma!.chatFilterTerm.create({ data: { pattern: 'zork', kind: 'WORD', action: 'BLOCK', addedBy: a.id } });
-    const e = await dev('eve', 10_000);
-    expect((await post(e, '/api/orgs', { name: 'banana crew', tag: 'BNAN' })).json()).toMatchObject({ message: 'that name or tag is not allowed' });
-    expect((await post(e, '/api/orgs', { name: 'Fine Crew', tag: 'ZORK' })).json()).toMatchObject({ message: 'that name or tag is not allowed' });
-    expect((await post(a, '/api/orgs/tag', { tag: 'ZORK' })).statusCode).toBe(400);
+    const e = await devOperator('eve', 10_000);
+    expect((await postAs(e, '/api/orgs', { name: 'banana crew', tag: 'BNAN' })).json()).toMatchObject({ message: 'that name or tag is not allowed' });
+    expect((await postAs(e, '/api/orgs', { name: 'Fine Crew', tag: 'ZORK' })).json()).toMatchObject({ message: 'that name or tag is not allowed' });
+    expect((await postAs(a, '/api/orgs/tag', { tag: 'ZORK' })).statusCode).toBe(400);
     expect(await prisma!.bitsLedger.count({ where: { operatorId: e.id } })).toBe(0);
     expect(await prisma!.bitsLedger.count({ where: { operatorId: d.id } })).toBe(0);
     expect(await balance(d.id)).toBe(5000);
   });
 
   it('org invites and membership races: no invites into an org, bounded invites, stale invites, kick / leave / transfer races', async () => {
-    const dev = async (name: string) => {
-      const r = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}` });
-      const cookies = { [COOKIE_NAME]: r.cookies.find((c) => c.name === COOKIE_NAME)!.value };
-      const op = await prisma!.operator.update({ where: { sub: `dev-${name}` }, data: { bits: 100_000n } });
-      return { cookies, id: op.id };
-    };
-    const post = (who: { cookies: Record<string, string> }, url: string, payload: object = {}) => app.inject({ method: 'POST', url, cookies: who.cookies, headers: csrf, payload });
-    const own = await dev('own');
-    const mem = await dev('mem');
-    const out = await dev('out');
-    const org = (await post(own, '/api/orgs', { name: 'Race Org', tag: 'RACE' })).json();
-    const other = (await post(out, '/api/orgs', { name: 'Other Org', tag: 'OTHR' })).json();
+    const own = await devOperator('own', 100_000);
+    const mem = await devOperator('mem', 100_000);
+    const out = await devOperator('out', 100_000);
+    const org = (await postAs(own, '/api/orgs', { name: 'Race Org', tag: 'RACE' })).json();
+    const other = (await postAs(out, '/api/orgs', { name: 'Other Org', tag: 'OTHR' })).json();
 
     // invites to an operator already in an org, to oneself, or to nobody are refused
-    expect((await post(own, '/api/orgs/invite', { operatorId: out.id })).statusCode).toBe(400);
-    expect((await post(own, '/api/orgs/invite', { operatorId: own.id })).statusCode).toBe(400);
-    expect((await post(own, '/api/orgs/invite', { operatorId: 'nobody' })).statusCode).toBe(404);
+    expect((await postAs(own, '/api/orgs/invite', { operatorId: out.id })).statusCode).toBe(400);
+    expect((await postAs(own, '/api/orgs/invite', { operatorId: own.id })).statusCode).toBe(400);
+    expect((await postAs(own, '/api/orgs/invite', { operatorId: 'nobody' })).statusCode).toBe(404);
     // repeating an invite keeps one row and announces it once
     bus.log.length = 0;
-    for (let i = 0; i < 5; i++) expect((await post(own, '/api/orgs/invite', { operatorId: mem.id })).statusCode).toBe(200);
+    for (let i = 0; i < 5; i++) expect((await postAs(own, '/api/orgs/invite', { operatorId: mem.id })).statusCode).toBe(200);
     expect(await prisma!.orgInvite.count({ where: { operatorId: mem.id } })).toBe(1);
     expect(bus.log.filter((l) => (l.message as { kind: string }).kind === 'invite')).toHaveLength(1);
     // pending invites per org are bounded
     await prisma!.operator.createMany({ data: Array.from({ length: ORG_MAX_INVITES }, (_, i) => ({ id: `spam-${i}`, sub: `spam-${i}`, x: 0, y: 0 })) });
     const spam = [];
-    for (let i = 0; i < ORG_MAX_INVITES; i++) spam.push((await post(own, '/api/orgs/invite', { operatorId: `spam-${i}` })).statusCode);
+    for (let i = 0; i < ORG_MAX_INVITES; i++) spam.push((await postAs(own, '/api/orgs/invite', { operatorId: `spam-${i}` })).statusCode);
     expect(spam.filter((s) => s === 200)).toHaveLength(ORG_MAX_INVITES - 1);
     expect(spam.at(-1)).toBe(400);
     await prisma!.orgInvite.deleteMany({ where: { operatorId: { startsWith: 'spam-' } } });
 
     // an invite to a disbanded org is gone
-    const lone = await dev('lone');
-    await post(out, '/api/orgs/invite', { operatorId: lone.id });
-    expect((await post(out, '/api/orgs/leave')).json()).toEqual({ ok: true, disbanded: true });
-    expect((await post(lone, `/api/orgs/${other.id}/accept`)).statusCode).toBe(404);
+    const lone = await devOperator('lone', 100_000);
+    await postAs(out, '/api/orgs/invite', { operatorId: lone.id });
+    expect((await postAs(out, '/api/orgs/leave')).json()).toEqual({ ok: true, disbanded: true });
+    expect((await postAs(lone, `/api/orgs/${other.id}/accept`)).statusCode).toBe(404);
     expect(await prisma!.orgMember.count({ where: { operatorId: lone.id } })).toBe(0);
 
     // an operator with invites from two orgs joins one; the other invite then fails cleanly
-    const two = (await post(out, '/api/orgs', { name: 'Third Org', tag: 'THRD' })).json();
-    await post(out, '/api/orgs/invite', { operatorId: mem.id });
-    const accepts = await Promise.all([post(mem, `/api/orgs/${org.id}/accept`), post(mem, `/api/orgs/${two.id}/accept`)]);
+    const two = (await postAs(out, '/api/orgs', { name: 'Third Org', tag: 'THRD' })).json();
+    await postAs(out, '/api/orgs/invite', { operatorId: mem.id });
+    const accepts = await Promise.all([postAs(mem, `/api/orgs/${org.id}/accept`), postAs(mem, `/api/orgs/${two.id}/accept`)]);
     expect(accepts.map((r) => r.statusCode).sort()).toEqual([200, 400]);
     expect(await prisma!.orgMember.count({ where: { operatorId: mem.id } })).toBe(1);
     const memOrg = (await prisma!.orgMember.findUniqueOrThrow({ where: { operatorId: mem.id } })).orgId;
     if (memOrg !== org.id) {
-      await post(mem, '/api/orgs/leave');
-      await post(own, '/api/orgs/invite', { operatorId: mem.id });
-      await post(mem, `/api/orgs/${org.id}/accept`);
+      await postAs(mem, '/api/orgs/leave');
+      await postAs(own, '/api/orgs/invite', { operatorId: mem.id });
+      await postAs(mem, `/api/orgs/${org.id}/accept`);
     }
 
     // kick vs leave: one wins, nothing 500s, the member is gone once
-    const kickLeave = await Promise.all([post(own, '/api/orgs/kick', { operatorId: mem.id }), post(mem, '/api/orgs/leave')]);
+    const kickLeave = await Promise.all([postAs(own, '/api/orgs/kick', { operatorId: mem.id }), postAs(mem, '/api/orgs/leave')]);
     expect(kickLeave.every((r) => r.statusCode < 500)).toBe(true);
     expect(kickLeave.filter((r) => r.statusCode === 200)).toHaveLength(1);
     expect(await prisma!.orgMember.count({ where: { orgId: org.id } })).toBe(1);
 
     // transfer vs leave by the new owner: the org always ends with exactly one owner, who is its ownerId
-    await post(own, '/api/orgs/invite', { operatorId: mem.id });
-    await post(mem, `/api/orgs/${org.id}/accept`);
-    const transferLeave = await Promise.all([post(own, '/api/orgs/transfer', { operatorId: mem.id }), post(mem, '/api/orgs/leave')]);
+    await postAs(own, '/api/orgs/invite', { operatorId: mem.id });
+    await postAs(mem, `/api/orgs/${org.id}/accept`);
+    const transferLeave = await Promise.all([postAs(own, '/api/orgs/transfer', { operatorId: mem.id }), postAs(mem, '/api/orgs/leave')]);
     expect(transferLeave.every((r) => r.statusCode < 500)).toBe(true);
     const owners = await prisma!.orgMember.findMany({ where: { orgId: org.id, rank: 'OWNER' } });
     expect(owners).toHaveLength(1);
     expect((await prisma!.org.findUniqueOrThrow({ where: { id: org.id } })).ownerId).toBe(owners[0]!.operatorId);
 
     // an officer cannot promote, transfer or kick an officer; the owner cannot demote themselves
-    const off = await dev('off');
+    const off = await devOperator('off', 100_000);
     const curOwner = owners[0]!.operatorId === own.id ? own : mem;
-    await post(curOwner, '/api/orgs/invite', { operatorId: off.id });
-    await post(off, `/api/orgs/${org.id}/accept`);
-    expect((await post(curOwner, '/api/orgs/rank', { operatorId: off.id, rank: 'OFFICER' })).statusCode).toBe(200);
-    expect((await post(off, '/api/orgs/rank', { operatorId: off.id, rank: 'MEMBER' })).statusCode).toBe(403);
-    expect((await post(off, '/api/orgs/transfer', { operatorId: off.id })).statusCode).toBe(403);
-    expect((await post(curOwner, '/api/orgs/rank', { operatorId: curOwner.id, rank: 'MEMBER' })).statusCode).toBe(400);
-    expect((await post(curOwner, '/api/orgs/rank', { operatorId: off.id, rank: 'OWNER' })).statusCode).toBe(400);
+    await postAs(curOwner, '/api/orgs/invite', { operatorId: off.id });
+    await postAs(off, `/api/orgs/${org.id}/accept`);
+    expect((await postAs(curOwner, '/api/orgs/rank', { operatorId: off.id, rank: 'OFFICER' })).statusCode).toBe(200);
+    expect((await postAs(off, '/api/orgs/rank', { operatorId: off.id, rank: 'MEMBER' })).statusCode).toBe(403);
+    expect((await postAs(off, '/api/orgs/transfer', { operatorId: off.id })).statusCode).toBe(403);
+    expect((await postAs(curOwner, '/api/orgs/rank', { operatorId: curOwner.id, rank: 'MEMBER' })).statusCode).toBe(400);
+    expect((await postAs(curOwner, '/api/orgs/rank', { operatorId: off.id, rank: 'OWNER' })).statusCode).toBe(400);
+  });
+
+  it('identical concurrent renames / tag changes charge once; case-variant org names race to one winner', async () => {
+    const balance = async (id: string) => Number((await prisma!.operator.findUniqueOrThrow({ where: { id } })).bits);
+    const ren = await devOperator('ren', 10_000);
+    await prisma!.operator.update({ where: { id: ren.id }, data: { starterClaimed: true, name: 'ren' } });
+    const renames = await Promise.all([postAs(ren, '/api/me/rename', { name: 'renny' }), postAs(ren, '/api/me/rename', { name: 'renny' })]);
+    expect(renames.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+    expect(renames.find((r) => r.statusCode === 400)!.json()).toMatchObject({ message: 'that is already your name' });
+    expect(await prisma!.bitsLedger.count({ where: { operatorId: ren.id, reason: 'rename' } })).toBe(1);
+    expect(await balance(ren.id)).toBe(10_000 - 2048);
+
+    const tagger = await devOperator('tagger', 20_000);
+    expect((await postAs(tagger, '/api/orgs', { name: 'Taggers', tag: 'TAGA' })).statusCode).toBe(200);
+    const tags = await Promise.all([postAs(tagger, '/api/orgs/tag', { tag: 'TAGB' }), postAs(tagger, '/api/orgs/tag', { tag: 'TAGB' })]);
+    expect(tags.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+    expect(tags.find((r) => r.statusCode === 400)!.json()).toMatchObject({ message: 'that is already your tag' });
+    expect(await prisma!.bitsLedger.count({ where: { operatorId: tagger.id, reason: 'org' } })).toBe(2); // create + one tag change
+    expect(await balance(tagger.id)).toBe(20_000 - 8192 - 4096);
+
+    const x = await devOperator('xavi', 10_000);
+    const y = await devOperator('yara', 10_000);
+    const race = await Promise.all([postAs(x, '/api/orgs', { name: 'Same Name', tag: 'XXXX' }), postAs(y, '/api/orgs', { name: 'same name', tag: 'YYYY' })]);
+    expect(race.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+    const loser = race[0]!.statusCode === 200 ? y : x;
+    expect(race.find((r) => r.statusCode === 400)!.json()).toMatchObject({ message: 'that name is taken' });
+    expect(await balance(loser.id)).toBe(10_000);
+    expect(await prisma!.bitsLedger.count({ where: { operatorId: loser.id } })).toBe(0);
+    expect(await prisma!.org.count({ where: { name: { equals: 'same name', mode: 'insensitive' } } })).toBe(1);
   });
 
   it('org leaderboard counts owned and decompiled daemons by original operator', async () => {
@@ -1100,6 +1118,40 @@ describe.skipIf(!url)('API chat with a failing bus', () => {
     const failures = lines.map((l) => JSON.parse(l) as { msg?: string; kind?: string }).filter((l) => l.msg === 'bus publish failed');
     expect(failures.map((l) => l.kind)).toEqual(['mute', 'delete', 'filter']);
     expect(lines.join('')).not.toContain('secret chat text');
+  });
+
+  it('a failing read after a committed purchase still answers 200 (the change stands) and logs the error class only', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator", "BitsLedger", "Org", "OrgMember", "OrgInvite", "ChatFilterTerm" CASCADE');
+    const lines: string[] = [];
+    const boom = async () => {
+      throw Object.assign(new Error('read failed: Flaky Org'), { name: 'PrismaClientKnownRequestError', code: 'P1001' });
+    };
+    // post-commit reads (announce: orgMember.findMany, view: org.findUnique) fail; everything else is the real client
+    const flaky = new Proxy(prisma!, {
+      get(target, prop, receiver) {
+        if (prop === 'orgMember') return new Proxy(target.orgMember, { get: (t, p) => (p === 'findMany' ? boom : Reflect.get(t, p)) });
+        if (prop === 'org') return new Proxy(target.org, { get: (t, p) => (p === 'findUnique' ? boom : Reflect.get(t, p)) });
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const bus = new MemoryBus();
+    const app = await buildApp({
+      prisma: flaky, bus, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: true, disableRateLimit: true,
+      logger: { ...loggerOptions('info'), stream: { write: (l: string) => void lines.push(l) } },
+    });
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=flaky' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    await prisma!.operator.update({ where: { sub: 'dev-flaky' }, data: { bits: 10_000n } });
+    const res = await app.inject({ method: 'POST', url: '/api/orgs', cookies, headers: csrf, payload: { name: 'Flaky Org', tag: 'FLKY' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ name: 'Flaky Org', tag: 'FLKY', members: [{ rank: 'OWNER' }] });
+    expect(await prisma!.org.count()).toBe(1);
+    expect(bus.log.map((l) => (l.message as { kind: string }).kind)).toEqual(['bits']);
+    await app.close();
+    const failures = lines.map((l) => JSON.parse(l) as { msg?: string; what?: string }).filter((l) => l.msg === 'post-commit read failed');
+    expect(failures.map((l) => l.what)).toEqual(['announce', 'view']);
+    expect(lines.join('')).not.toContain('Flaky Org');
   });
 
   it('commits org changes, dev grants and renames when the bus is down, and logs the failure without payloads', async () => {

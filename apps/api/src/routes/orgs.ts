@@ -101,13 +101,37 @@ export function registerOrgRoutes(app: FastifyInstance, prisma: PrismaClient, bu
 
   const membership = (operatorId: string) => prisma.orgMember.findUnique({ where: { operatorId }, include: { org: true } });
 
-  /** Publishes each operator's membership as the database has it now (after the change committed); null = no org. */
-  async function announce(operatorIds: readonly string[]): Promise<void> {
-    if (operatorIds.length === 0) return;
-    const rows = new Map((await prisma.orgMember.findMany({ where: { operatorId: { in: [...operatorIds] } }, include: { org: true } })).map((m) => [m.operatorId, m]));
-    for (const operatorId of operatorIds) {
-      const m = rows.get(operatorId);
-      publish('org', { kind: 'membership', operatorId, org: m ? { id: m.org.id, name: m.org.name, tag: m.org.tag, rank: m.rank } : null, origin: 'api' });
+  /** Post-commit work failed: the change stands (the sim re-reads it on resync), so log the error class only and carry on. */
+  function afterCommitFailed(what: string, err: unknown): void {
+    const e = err as { name?: unknown; code?: unknown };
+    app.log.warn({ what, err: { name: String(e?.name ?? 'Error'), code: e?.code === undefined ? undefined : String(e.code) } }, 'post-commit read failed');
+  }
+
+  /**
+   * Publishes each operator's membership as the database has it now (after the change committed); null = no org. Runs
+   * after commit, so a failed read never turns a committed change (or purchase) into a 500.
+   */
+  async function announce(operatorIds: readonly string[] | (() => Promise<string[]>)): Promise<void> {
+    try {
+      const ids = typeof operatorIds === 'function' ? await operatorIds() : operatorIds;
+      if (ids.length === 0) return;
+      const rows = new Map((await prisma.orgMember.findMany({ where: { operatorId: { in: [...ids] } }, include: { org: true } })).map((m) => [m.operatorId, m]));
+      for (const operatorId of ids) {
+        const m = rows.get(operatorId);
+        publish('org', { kind: 'membership', operatorId, org: m ? { id: m.org.id, name: m.org.name, tag: m.org.tag, rank: m.rank } : null, origin: 'api' });
+      }
+    } catch (err) {
+      afterCommitFailed('announce', err);
+    }
+  }
+
+  /** The org view after a committed change; if the read fails (or the org is already gone) the fallback is returned. */
+  async function viewAfterCommit<F extends object>(orgId: string, fallback: F) {
+    try {
+      return await view(orgId);
+    } catch (err) {
+      afterCommitFailed('view', err);
+      return fallback;
     }
   }
 
@@ -200,7 +224,7 @@ export function registerOrgRoutes(app: FastifyInstance, prisma: PrismaClient, bu
     }
     publish('admin', bits);
     await announce([me]);
-    return view(orgId);
+    return viewAfterCommit(orgId, { id: orgId, name: body.name, tag: body.tag, ownerId: me, members: [{ operatorId: me, rank: 'OWNER' as const }] });
   });
 
   app.post('/api/orgs/invite', auth, async (req) => {
@@ -243,7 +267,7 @@ export function registerOrgRoutes(app: FastifyInstance, prisma: PrismaClient, bu
       uniqueToBadRequest(err);
     }
     await announce([me]);
-    return view(orgId);
+    return viewAfterCommit(orgId, { id: orgId });
   });
 
   app.post<{ Params: { id: string } }>('/api/orgs/:id/decline', auth, async (req) => {
@@ -318,13 +342,15 @@ export function registerOrgRoutes(app: FastifyInstance, prisma: PrismaClient, bu
     const me = req.operator!.id;
     const { tag } = parse(TagBody, req.body);
     const m = await requireRank(me, 'OWNER');
-    if (tag === m.org.tag) throw badRequest('that is already your tag');
+    if (tag === m.org.tag) throw badRequest('that is already your tag'); // re-checked under the org lock
     if (!(await nameAllowed(prisma, tag))) throw badRequest('that tag is not allowed');
     let bits: BitsPushMessage;
     try {
       bits = await prisma.$transaction(async (tx) => {
         await debit(tx, me, ORG_TAG_PRICE);
         await actorIn(tx, m.orgId, me, 'OWNER');
+        // An identical request that committed while this one waited must not be charged again for a no-op.
+        if ((await tx.org.findUniqueOrThrow({ where: { id: m.orgId }, select: { tag: true } })).tag === tag) throw badRequest('that is already your tag');
         const push = await ledger(tx, me, ORG_TAG_PRICE, 'org', m.orgId);
         await tx.org.update({ where: { id: m.orgId }, data: { tag } });
         return push;
@@ -333,7 +359,7 @@ export function registerOrgRoutes(app: FastifyInstance, prisma: PrismaClient, bu
       uniqueToBadRequest(err);
     }
     publish('admin', bits);
-    await announce((await prisma.orgMember.findMany({ where: { orgId: m.orgId }, orderBy: [{ joinedAt: 'asc' }, { operatorId: 'asc' }], select: { operatorId: true } })).map((x) => x.operatorId));
+    await announce(async () => (await prisma.orgMember.findMany({ where: { orgId: m.orgId }, orderBy: [{ joinedAt: 'asc' }, { operatorId: 'asc' }], select: { operatorId: true } })).map((x) => x.operatorId));
     return { ok: true, tag };
   });
 
@@ -372,11 +398,13 @@ export function registerOrgRoutes(app: FastifyInstance, prisma: PrismaClient, bu
     if (!(await nameAllowed(prisma, name))) throw badRequest('that name is not allowed');
     const current = await prisma.operator.findUniqueOrThrow({ where: { id: me }, select: { starterClaimed: true, name: true } });
     if (!current.starterClaimed) throw badRequest('claim a starter first');
-    if (current.name === name) throw badRequest('that is already your name');
+    if (current.name === name) throw badRequest('that is already your name'); // re-checked under the operator lock
     let bits: BitsPushMessage;
     try {
       bits = await prisma.$transaction(async (tx) => {
         await debit(tx, me, RENAME_PRICE);
+        // Under the operator lock: an identical rename that committed meanwhile makes this one a no-op, not a second charge.
+        if ((await tx.operator.findUniqueOrThrow({ where: { id: me }, select: { name: true } })).name === name) throw badRequest('that is already your name');
         const push = await ledger(tx, me, RENAME_PRICE, 'rename', name);
         await tx.operator.update({ where: { id: me }, data: { name } });
         return push;
