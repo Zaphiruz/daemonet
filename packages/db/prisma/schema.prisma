@@ -503,3 +503,55 @@ model AppliedAction {
   kind      String
   createdAt DateTime @default(now())
 }
+
+/// Arena seasons are UTC months (SP6 spec §6); `closedAt` is set once payouts and the soft reset have run.
+model ArenaSeason {
+  id       String    @id
+  startsAt DateTime
+  endsAt   DateTime
+  closedAt DateTime?
+}
+
+/// Glicko-2 rating of one operator in one season; the record counts counted (ranked) matches only.
+model ArenaRating {
+  operatorId String
+  seasonId   String
+  rating     Float
+  rd         Float
+  vol        Float
+  wins       Int    @default(0)
+  losses     Int    @default(0)
+  draws      Int    @default(0)
+
+  @@id([operatorId, seasonId])
+  @@index([seasonId, rating])
+}
+
+/// Every finished match. `counted` = it moved ratings (ranked, under the pair-per-day cap).
+model ArenaMatch {
+  id         String   @id
+  seasonId   String
+  /// ranked | unranked
+  mode       String
+  aId        String
+  bId        String
+  winnerId   String?
+  /// wipeout | timeout | forfeit | disconnect
+  reason     String
+  aBefore    Float
+  aAfter     Float
+  bBefore    Float
+  bAfter     Float
+  aReward    Int      @default(0)
+  bReward    Int      @default(0)
+  /// Daemons whose `arenaWins` this match raised (so a replay of the match id reports the same settlement).
+  aWins      String[] @default([])
+  bWins      String[] @default([])
+  counted    Boolean
+  durationMs Int
+  endedAt    DateTime
+
+  @@index([aId, endedAt])
+  @@index([bId, endedAt])
+  @@index([endedAt])
+}
