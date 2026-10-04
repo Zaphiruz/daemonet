@@ -218,6 +218,18 @@ describe('chained challenges', () => {
     );
   });
 
+  it('generates each stage at min(size, 256)', () => {
+    const stageBytes = (size: number) => {
+      const chain = generateChallenge(['glitch', 'packet'], size, 0, createRng(size)).payload as ChainPayload;
+      return (chain.first.params as { bytes: number }).bytes;
+    };
+    expect(stageBytes(8)).toBe(8);
+    expect(stageBytes(64)).toBe(64);
+    expect(stageBytes(256)).toBe(256);
+    expect(stageBytes(257)).toBe(256);
+    expect(stageBytes(MAX_CHALLENGE_SIZE)).toBe(256);
+  });
+
   it('resists a known-prefix repeating-XOR attack on packet -> glitch chains', () => {
     for (let seed = 0; seed < 32; seed++) {
       const challenge = generateChallenge(['packet', 'glitch'], 96, 1, createRng(seed));
@@ -226,11 +238,11 @@ describe('chained challenges', () => {
 
       // Rebuild the real stage two from the same seed to know the plaintext and first answer.
       const rng = createRng(seed);
-      const first = getFamily('packet').generate(24, 1, rng);
-      const second = getFamily('glitch').generate(24, 1, rng);
+      const first = getFamily('packet').generate(96, 1, rng);
+      const second = getFamily('glitch').generate(96, 1, rng);
       expect(second.answer).toEqual(challenge.answer);
       const plaintext = JSON.stringify({ params: second.params, payload: second.payload });
-      const prefix = '{"params":{"encoding":"hamming74","bytes":24},"payload":{"blocks":[';
+      const prefix = '{"params":{"encoding":"hamming74","bytes":96},"payload":{"blocks":[';
       expect(plaintext.startsWith(prefix)).toBe(true);
 
       // A repeating-XOR attacker assumes the key period is the length of the canonical first answer.
