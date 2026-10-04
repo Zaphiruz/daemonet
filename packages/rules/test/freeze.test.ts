@@ -6,7 +6,7 @@ import { MOVES, getMove, type MoveDef } from '../src/content/moves.js';
 import { SPECIES, getSpecies } from '../src/content/species.js';
 import { ROLE_TRAITS, TRAITS } from '../src/content/traits.js';
 import { NATURES } from '../src/natures.js';
-import { TYPES } from '../src/types.js';
+import { BEATS, IMMUNE, RESISTED_BY, TYPES } from '../src/types.js';
 
 describe('content tables are deep-frozen', () => {
   it.each([
@@ -20,6 +20,9 @@ describe('content tables are deep-frozen', () => {
     ['STARTING_INVENTORY', STARTING_INVENTORY],
     ['NATURES', NATURES],
     ['TYPES', TYPES],
+    ['BEATS', BEATS],
+    ['RESISTED_BY', RESISTED_BY],
+    ['IMMUNE', IMMUNE],
     ['WORDS', WORDS],
   ])('%s is frozen', (_name, table) => {
     expect(Object.isFrozen(table)).toBe(true);
@@ -46,6 +49,8 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(BESTIARY.find((r) => r.requirement)!.requirement)).toBe(true);
     expect(Object.isFrozen(ROLE_TRAITS.tank)).toBe(true);
     expect(Object.isFrozen(EVOLUTION_ITEMS[0])).toBe(true);
+    expect(Object.isFrozen(BEATS.kernel)).toBe(true);
+    expect(Object.isFrozen(RESISTED_BY.kernel)).toBe(true);
   });
 
   it('assigning to a move throws (ESM is strict)', () => {

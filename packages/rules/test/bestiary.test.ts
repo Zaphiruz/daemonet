@@ -3,7 +3,7 @@ import { STAT_KEYS } from '../src/constants.js';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { EVOLUTION_ITEMS, getItem } from '../src/content/items.js';
 import { ROLE_TRAITS, TRAITS, getTrait } from '../src/content/traits.js';
-import { TYPES } from '../src/types.js';
+import { BEATS, IMMUNE, RESISTED_BY, TYPES, singleMultiplier, typeMultiplier } from '../src/types.js';
 
 describe('bestiary data', () => {
   it('has 50 lines, 256 species, 4 starters and 8 capstones', () => {
@@ -45,5 +45,28 @@ describe('traits and items', () => {
     expect(EVOLUTION_ITEMS).toHaveLength(16);
     expect(new Set(EVOLUTION_ITEMS.map((i) => i.type)).size).toBe(16);
     expect(getItem('heatsink')).toMatchObject({ kind: 'held', effect: 'cooldown', multiplier: 0.875 });
+  });
+});
+
+describe('type chart', () => {
+  it('gives every type exactly two strengths, is a strength of exactly two attackers, and two resisters', () => {
+    for (const t of TYPES) {
+      expect(BEATS[t]).toHaveLength(2);
+      expect(TYPES.filter((a) => BEATS[a].includes(t))).toHaveLength(2);
+      expect(RESISTED_BY[t]).toHaveLength(2);
+      expect(RESISTED_BY[t]).toContain(t);
+      for (const d of BEATS[t]) expect(RESISTED_BY[t]).not.toContain(d);
+    }
+    expect(Object.keys(IMMUNE)).toHaveLength(1);
+  });
+
+  it('preserves the SP1 corner', () => {
+    expect(singleMultiplier('packet', 'glitch')).toBe(2);
+    expect(singleMultiplier('crypto', 'packet')).toBe(2);
+    expect(singleMultiplier('glitch', 'crypto')).toBe(2);
+    expect(singleMultiplier('glitch', 'null')).toBe(0);
+    expect(singleMultiplier('packet', 'crypto')).toBe(0.5);
+    expect(singleMultiplier('null', 'glitch')).toBe(1);
+    expect(typeMultiplier('packet', ['glitch', 'crypto'])).toBe(1);
   });
 });
