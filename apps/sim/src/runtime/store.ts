@@ -10,13 +10,14 @@ import {
   fragmentId,
   getRecipe,
   getSpecies,
+  incidentPayouts,
   recipeFragments,
   ticketKey,
   type FilterTerm,
   type TicketKind,
   type TicketParams,
 } from '@daemonet/rules';
-import type { Intent, IntentResult, OpenTicket, OperatorRecord, OrgView, OwnedDaemonRecord, Point, ShopIntent } from '../core/index.js';
+import { incidentRewardId, type IncidentParticipant, type Intent, type IntentResult, type OpenTicket, type OperatorRecord, type OrgView, type OwnedDaemonRecord, type Point, type ShopIntent } from '../core/index.js';
 import { shopPrice } from '../core/systems/economy.js';
 import { boardTicket } from '../core/systems/tickets.js';
 
@@ -90,6 +91,19 @@ export interface Store extends ChatStore {
    * operators (tickets, rewards) must be intents applied through the world.
    */
   grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<LedgerWrite>;
+  /**
+   * Writes an Incident row (`IncidentRow`): created when missing; an OPEN row takes the record's outcome and
+   * participants; a closed row (CLEARED / EXPIRED) is final. The CLEARED row is also written by the first reward intent
+   * of the Incident, so a lost record never loses the participants.
+   */
+  recordIncident(row: IncidentRow): Promise<void>;
+  /**
+   * Boot recovery (call before accepting connections): OPEN rows left by an earlier process close as EXPIRED (its
+   * Incident died with it), and the reward intents of recently CLEARED rows whose participants have no `incident` ledger
+   * row are returned, with their usual ids, so the runtime can finish a payout a restart interrupted (exactly once:
+   * the ids and the ledger check make a second payment impossible).
+   */
+  recoverIncidents(): Promise<IncidentRewardIntent[]>;
   /** The operator's most recent `limit` ledger rows, oldest first. */
   ledgerFor(operatorId: string, limit?: number): Promise<LedgerRow[]>;
   ping(): Promise<void>;
@@ -113,6 +127,7 @@ export const SIM_INTENT_LEDGER_REASONS = Object.freeze({
   buy: Object.freeze(['shop', 'disk'] as const),
   craft: Object.freeze(['craft'] as const),
   completeTicket: Object.freeze(['ticket'] as const),
+  incidentReward: Object.freeze(['incident'] as const),
 } satisfies Partial<Record<Intent['kind'], readonly string[]>>);
 
 /** An intent kind that writes ledger rows. */
@@ -288,6 +303,71 @@ export function missingItem(inv: Readonly<Record<string, number>>, items: Readon
   return null;
 }
 
+export type IncidentRewardIntent = Extract<Intent, { kind: 'incidentReward' }>;
+
+/** An Incident row as the stores write it (SP4 spec §8). */
+export interface IncidentRow {
+  id: string;
+  n: number;
+  species: string;
+  /** ISO end of the window. */
+  endsAt: string;
+  outcome: 'OPEN' | 'CLEARED' | 'EXPIRED';
+  participants: IncidentParticipant[];
+}
+
+/** How far back boot recovery looks for unfinished payouts. */
+export const INCIDENT_RECOVERY_MS = 7 * 86_400_000;
+
+/** Participants read back from a JSON column (anything malformed is dropped). */
+export function participantsOf(raw: unknown): IncidentParticipant[] {
+  if (!Array.isArray(raw)) return [];
+  const out: IncidentParticipant[] = [];
+  for (const p of raw as Array<Record<string, unknown>>) {
+    if (!p || typeof p.operatorId !== 'string' || typeof p.damage !== 'number' || typeof p.reward !== 'number') continue;
+    out.push({ operatorId: p.operatorId, name: typeof p.name === 'string' ? p.name : null, damage: p.damage, share: typeof p.share === 'number' ? p.share : 0, reward: p.reward });
+  }
+  return out;
+}
+
+/** The same payout list: operators, damage and rewards, in order (names and float shares are informational). */
+export function samePayouts(a: readonly Pick<IncidentParticipant, 'operatorId' | 'damage' | 'reward'>[], b: readonly Pick<IncidentParticipant, 'operatorId' | 'damage' | 'reward'>[]): boolean {
+  return a.length === b.length && a.every((p, i) => p.operatorId === b[i]!.operatorId && p.damage === b[i]!.damage && p.reward === b[i]!.reward);
+}
+
+/**
+ * Domain check of an Incident payout shared by both stores: the payout list must be exactly what the rules derive from
+ * its damage (`incidentPayouts`), the intent must pay its own operator's entry, and its id must be the one id of that
+ * (Incident, operator) pair. Returns the failure reason, or null.
+ */
+export function incidentRewardProblem(intent: IncidentRewardIntent): string | null {
+  const ps = intent.participants;
+  if (!Array.isArray(ps) || ps.length === 0 || new Set(ps.map((p) => p.operatorId)).size !== ps.length) return 'invalid payout';
+  if (!ps.every((p) => Number.isSafeInteger(p.damage) && p.damage > 0 && Number.isSafeInteger(p.reward))) return 'invalid payout';
+  if (intent.id !== incidentRewardId(intent.incidentId, intent.operatorId) || Number.isNaN(Date.parse(intent.endsAt))) return 'invalid payout';
+  if (!samePayouts(incidentPayouts(new Map(ps.map((p) => [p.operatorId, p.damage]))), ps)) return 'payouts do not match the rules';
+  const mine = ps.find((p) => p.operatorId === intent.operatorId);
+  if (!mine || mine.reward !== intent.reward || mine.damage !== intent.damage) return 'payouts do not match the rules';
+  return null;
+}
+
+/** The reward intent of one participant of a cleared Incident row (boot recovery). */
+export function incidentRewardIntent(row: IncidentRow, p: IncidentParticipant): IncidentRewardIntent {
+  return {
+    id: incidentRewardId(row.id, p.operatorId),
+    kind: 'incidentReward',
+    operatorId: p.operatorId,
+    incidentId: row.id,
+    n: row.n,
+    species: row.species,
+    endsAt: row.endsAt,
+    reward: p.reward,
+    damage: p.damage,
+    share: p.share,
+    participants: row.participants.map((x) => ({ ...x })),
+  };
+}
+
 /** One UTC day earlier (`YYYY-MM-DD`). */
 function previousDay(day: string): string {
   return dayKey(new Date(Date.parse(`${day}T00:00:00.000Z`) - 86_400_000).toISOString());
@@ -418,6 +498,8 @@ export class MemoryStore implements Store {
   readonly mutes = new Map<string, string | null>();
   /** operatorId -> org membership (the api's OrgMember rows; tests set it). */
   readonly orgs = new Map<string, OrgView>();
+  /** Incident rows by id (mirrors the Incident table). */
+  readonly incidents = new Map<string, IncidentRow & { closedAt: string | null }>();
   /** BitsLedger ids and seqs, parallel to `ledger` (kept apart so `ledger` stays in the LedgerRow shape). */
   private readonly ledgerKeys: Array<{ id: string; seq: number }> = [];
   private lastLedgerSeq = 0;
@@ -568,6 +650,10 @@ export class MemoryStore implements Store {
       if (intent.kind === 'capture' || intent.kind === 'claimStarter') {
         return { ok: true, research: this.research.get(`${intent.operatorId}:${getSpecies(intent.daemon.species).line}`) ?? 0 };
       }
+      if (intent.kind === 'incidentReward') {
+        const seq = this.incidentLedgerSeq(intent.operatorId, intent.incidentId);
+        return seq === null ? { ok: true } : { ok: true, ledgerSeq: seq };
+      }
       return { ok: true };
     }
     const op = this.operators.get(intent.operatorId);
@@ -694,9 +780,55 @@ export class MemoryStore implements Store {
         this.addIntentLedger(intent.kind, { operatorId: op.id, delta: intent.reward, reason: 'ticket', ref: intent.ticketId, at: this.now() });
         break;
       }
+      case 'incidentReward': {
+        // Mirrors PrismaStore: rules check, then (under the operator lock there) the row and the ledger, all or nothing.
+        const problem = incidentRewardProblem(intent);
+        if (problem) return { ok: false, reason: problem };
+        const row = this.incidents.get(intent.incidentId);
+        if (row?.outcome === 'EXPIRED') return { ok: false, reason: 'the Incident expired' };
+        if (row?.outcome === 'CLEARED' && !samePayouts(row.participants, intent.participants)) return { ok: false, reason: 'payouts do not match the Incident' };
+        // One payout per (Incident, operator), whatever the intent id.
+        if (this.incidentLedgerSeq(op.id, intent.incidentId) !== null) return { ok: false, reason: 'already paid' };
+        const participants = intent.participants.map((p) => ({ ...p }));
+        if (!row) {
+          this.incidents.set(intent.incidentId, { id: intent.incidentId, n: intent.n, species: intent.species, endsAt: intent.endsAt, outcome: 'CLEARED', participants, closedAt: this.now() });
+        } else if (row.outcome === 'OPEN') {
+          Object.assign(row, { outcome: 'CLEARED', participants, closedAt: this.now() });
+        }
+        op.bits += intent.reward;
+        this.addIntentLedger(intent.kind, { operatorId: op.id, delta: intent.reward, reason: 'incident', ref: intent.incidentId, at: this.now() });
+        this.applied.add(intent.id);
+        return { ok: true, ledgerSeq: this.lastLedgerSeq };
+      }
     }
     this.applied.add(intent.id);
     return { ok: true };
+  }
+
+  /** Seq of the operator's `incident` ledger row for this Incident, or null when it was not paid. */
+  private incidentLedgerSeq(operatorId: string, incidentId: string): number | null {
+    const i = this.ledger.findIndex((l) => l.operatorId === operatorId && l.reason === 'incident' && l.ref === incidentId);
+    return i < 0 ? null : this.ledgerKeys[i]!.seq;
+  }
+
+  async recordIncident(row: IncidentRow): Promise<void> {
+    const cur = this.incidents.get(row.id);
+    const closedAt = row.outcome === 'OPEN' ? null : this.now();
+    const fields = { n: row.n, species: row.species, endsAt: row.endsAt, outcome: row.outcome, participants: row.participants.map((p) => ({ ...p })), closedAt };
+    if (!cur) this.incidents.set(row.id, { id: row.id, ...fields });
+    else if (cur.outcome === 'OPEN') Object.assign(cur, fields);
+  }
+
+  async recoverIncidents(): Promise<IncidentRewardIntent[]> {
+    const since = Date.parse(this.now()) - INCIDENT_RECOVERY_MS;
+    const out: IncidentRewardIntent[] = [];
+    for (const row of this.incidents.values()) {
+      if (row.outcome === 'OPEN') Object.assign(row, { outcome: 'EXPIRED', closedAt: this.now() });
+      else if (row.outcome === 'CLEARED' && row.closedAt !== null && Date.parse(row.closedAt) >= since) {
+        for (const p of row.participants) if (this.incidentLedgerSeq(p.operatorId, row.id) === null) out.push(incidentRewardIntent(row, p));
+      }
+    }
+    return out;
   }
 
   private ticketRows(operatorId: string): TicketRow[] {

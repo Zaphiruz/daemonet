@@ -1,7 +1,7 @@
 import { createPrisma, type PrismaClient } from '@daemonet/db';
-import { TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, ticketBoard } from '@daemonet/rules';
+import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, incidentPayouts, ticketBoard } from '@daemonet/rules';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import type { Intent, OwnedDaemonRecord } from '../src/core/index.js';
+import { incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
 import { MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type LiveOperatorState, type Store } from '../src/runtime/store.js';
 import { ownedRecord } from './helpers.js';
@@ -35,6 +35,17 @@ function evolve(id: string, operatorId: string, daemonId: string): Intent {
 function acceptLo(operatorId: string, index: number, id = `i-acc-${index}`, ticketId = `abcd1234-t${index}`, day = dayKey(new Date().toISOString())): Extract<Intent, { kind: 'acceptTicket' }> {
   const def = ticketBoard('lo', day)[index]!;
   return { id, kind: 'acceptTicket', operatorId, reqId: 'r', ticketId, day, subnet: 'lo', index, ticketKind: def.kind, params: def.params, target: def.target, reward: def.reward };
+}
+
+type RewardIntent = Extract<Intent, { kind: 'incidentReward' }>;
+
+/** The payout intents of a cleared Incident with this damage per operator, as the world raises them. */
+function incidentRewards(incidentId: string, damage: Record<string, number>): RewardIntent[] {
+  const participants = incidentPayouts(new Map(Object.entries(damage))).map((p) => ({ operatorId: p.operatorId, name: null, damage: p.damage, share: p.share, reward: p.reward }));
+  return participants.map((p) => ({
+    id: incidentRewardId(incidentId, p.operatorId), kind: 'incidentReward', operatorId: p.operatorId, incidentId, n: 7, species: KERNEL_DAEMONS[0]!,
+    endsAt: '2026-10-01T04:20:00.000Z', reward: p.reward, damage: p.damage, share: p.share, participants: participants.map((x) => ({ ...x })),
+  }));
 }
 
 function contract(name: string, make: () => Promise<Store>, reset: () => Promise<void>) {
@@ -283,10 +294,61 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       const t = acceptLo(a.id, 0, 'i-rs-acc', 'abcd1234-rs-t0');
       await run(t);
       await run({ id: 'i-rs-done', kind: 'completeTicket', operatorId: a.id, ticketId: t.ticketId, reward: t.reward });
+      await run(incidentRewards('abcd1234-inc-rs', { [a.id]: 100 })[0]!);
       const writers = Object.fromEntries([...seen].filter(([, r]) => r.size > 0).map(([kind, r]) => [kind, [...r].sort()]));
       // Every kind listed in the map was exercised here (a new kind must add a scenario), and wrote only its listed reasons.
       expect(writers).toEqual(Object.fromEntries(Object.entries(SIM_INTENT_LEDGER_REASONS).map(([kind, r]) => [kind, [...r].sort()])));
       for (const reasons of Object.values(writers)) for (const r of reasons) expect(SIM_LEDGER_REASONS.has(r)).toBe(true);
+    });
+
+    it('pays each Incident contributor exactly once, re-derived from the rules, and records the CLEARED row with its participants', async () => {
+      const a = await store.loadOrCreateOperator('sub-inc-a', 'lo', SPAWN);
+      const b = await store.loadOrCreateOperator('sub-inc-b', 'lo', SPAWN);
+      const ctx = { seedId: 'abcd1234' };
+      await store.recordIncident({ id: 'abcd1234-inc1', n: 7, species: KERNEL_DAEMONS[0]!, endsAt: '2026-10-01T04:20:00.000Z', outcome: 'OPEN', participants: [] });
+      const [ra, rb] = incidentRewards('abcd1234-inc1', { [a.id]: 7500, [b.id]: 2500 });
+      expect(ra).toMatchObject({ operatorId: a.id, reward: 6144 });
+      // a forged amount, someone else's entry, or a list the rules do not derive are refused before anything is written
+      expect(await store.applyIntent({ ...ra!, reward: 8192 }, ctx)).toEqual({ ok: false, reason: 'payouts do not match the rules' });
+      expect(await store.applyIntent({ ...ra!, participants: ra!.participants.map((p) => ({ ...p, reward: p.reward * 2 })) }, ctx)).toEqual({ ok: false, reason: 'payouts do not match the rules' });
+      expect(await store.applyIntent({ ...ra!, operatorId: b.id }, ctx)).toEqual({ ok: false, reason: 'invalid payout' });
+      expect(await store.applyIntent({ ...ra!, id: 'another-id' }, ctx)).toEqual({ ok: false, reason: 'invalid payout' });
+      const paid = await store.applyIntent(ra!, ctx);
+      expect(paid).toEqual({ ok: true, ledgerSeq: expect.any(Number) });
+      // a replay (retry, reconnect, restart) answers from the marker with the same row and pays nothing more
+      expect(await store.applyIntent(ra!, ctx)).toEqual(paid);
+      expect(await store.applyIntent(rb!, ctx)).toMatchObject({ ok: true });
+      expect((await store.loadOrCreateOperator('sub-inc-a', 'lo', SPAWN)).bits).toBe(6144);
+      expect((await store.loadOrCreateOperator('sub-inc-b', 'lo', SPAWN)).bits).toBe(2048);
+      expect((await store.ledgerFor(a.id)).map((l) => [l.delta, l.reason, l.ref])).toEqual([[6144, 'incident', 'abcd1234-inc1']]);
+      // the row is CLEARED with its participants; a late OPEN / EXPIRED record never reopens or overwrites it
+      await store.recordIncident({ id: 'abcd1234-inc1', n: 7, species: KERNEL_DAEMONS[0]!, endsAt: '2026-10-01T04:20:00.000Z', outcome: 'EXPIRED', participants: [] });
+      // another payout list for the same Incident (a world bug) cannot pay a third operator
+      const c = await store.loadOrCreateOperator('sub-inc-c', 'lo', SPAWN);
+      const [rc2] = incidentRewards('abcd1234-inc1', { [c.id]: 5000 });
+      expect(await store.applyIntent(rc2!, ctx)).toEqual({ ok: false, reason: 'payouts do not match the Incident' });
+      // an expired Incident pays nobody
+      await store.recordIncident({ id: 'abcd1234-inc2', n: 8, species: KERNEL_DAEMONS[1]!, endsAt: '2026-10-01T08:20:00.000Z', outcome: 'EXPIRED', participants: [] });
+      expect(await store.applyIntent(incidentRewards('abcd1234-inc2', { [c.id]: 10 })[0]!, ctx)).toEqual({ ok: false, reason: 'the Incident expired' });
+      expect((await store.loadOrCreateOperator('sub-inc-c', 'lo', SPAWN)).bits).toBe(0);
+    });
+
+    it('boot recovery closes Incidents left OPEN and returns only the payouts a restart interrupted', async () => {
+      const a = await store.loadOrCreateOperator('sub-rec-a', 'lo', SPAWN);
+      const b = await store.loadOrCreateOperator('sub-rec-b', 'lo', SPAWN);
+      const ctx = { seedId: 'abcd1234' };
+      await store.recordIncident({ id: 'abcd1234-incA', n: 1, species: KERNEL_DAEMONS[0]!, endsAt: '2026-10-01T04:20:00.000Z', outcome: 'OPEN', participants: [] });
+      const [ra, rb] = incidentRewards('abcd1234-incB', { [a.id]: 600, [b.id]: 400 });
+      // the CLEARED record lands, then only a's payout before the "crash"
+      await store.recordIncident({ id: 'abcd1234-incB', n: ra!.n, species: ra!.species, endsAt: ra!.endsAt, outcome: 'CLEARED', participants: ra!.participants });
+      expect(await store.applyIntent(ra!, ctx)).toMatchObject({ ok: true });
+      const resumed = await store.recoverIncidents();
+      expect(resumed).toEqual([rb]);
+      expect(await store.applyIntent(resumed[0]!, ctx)).toMatchObject({ ok: true });
+      expect(await store.recoverIncidents()).toEqual([]);
+      expect((await store.loadOrCreateOperator('sub-rec-b', 'lo', SPAWN)).bits).toBe(rb!.reward);
+      // the orphaned OPEN row is closed (expired) and pays nobody
+      expect(await store.applyIntent(incidentRewards('abcd1234-incA', { [a.id]: 1 })[0]!, ctx)).toEqual({ ok: false, reason: 'the Incident expired' });
     });
 
     it('the load carries the org (none) and the ledger watermark of its balance; liveState lists rows written outside the sim above it', async () => {
@@ -679,12 +741,12 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     'PrismaStore',
     async () => new PrismaStore(prisma!),
     async () => {
-      await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+      await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     },
   );
 
   it('treats a concurrent duplicate of the same claim as applied, not as a name clash', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race', 'lo', SPAWN);
     const d = ownedRecord('pingling', 5, 0, 'abcd1234-d8');
@@ -700,7 +762,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent first evolutions into one form: both apply, exactly one is the discoverer', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-ra', 'lo', SPAWN);
     const b = await store.loadOrCreateOperator('sub-rb', 'lo', SPAWN);
@@ -717,7 +779,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('a concurrent duplicate of one evolve intent applies it once', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-rc', 'lo', SPAWN);
     await store.applyIntent(claim(a.id, 'ric', ownedRecord('echolet', 16, 0, 'abcd1234-e3')), { seedId: 'abcd1234' });
@@ -728,7 +790,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent purchases cannot overdraw: the operator row lock serializes the balance check', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-buy', 'lo', SPAWN);
     await store.grantBits(a.id, 2048 * 3, 'admin');
@@ -743,7 +805,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('a concurrent duplicate of one buy applies it (and its ledger row) once', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-dup', 'lo', SPAWN);
     await store.grantBits(a.id, 1000, 'admin');
@@ -755,7 +817,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('two decompiles of one daemon: one archives it, the other finds nothing (no duplicate fragments)', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-dec', 'lo', SPAWN);
     await store.applyIntent(claim(a.id, 'rdec', { ...ownedRecord('pingling', 5, 0, 'abcd1234-e5'), heldItem: 'jumboframe' }), { seedId: 'abcd1234' });
@@ -773,7 +835,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent payouts of one ticket (different intents): exactly one moves it to DONE and writes the one ledger row', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-tk', 'lo', SPAWN);
     const t = acceptLo(a.id, 0);
@@ -789,7 +851,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent accepts cannot pass the open cap, and a concurrent duplicate board entry is "already accepted"', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-acc', 'lo', SPAWN);
     const results = await Promise.all([0, 1, 2, 3, 4].map((i) => store.applyIntent(acceptLo(a.id, i), { seedId: 'abcd1234' })));
@@ -803,7 +865,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('the unique (operator, day, subnet, index) violation is a domain answer only for an accept; a duplicate ticket id rethrows', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-tk-pk', 'lo', SPAWN);
     const b = await store.loadOrCreateOperator('sub-tk-pk2', 'lo', SPAWN);
@@ -813,7 +875,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent captures of one line add one research point each (no Research_pkey conflict)', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-research', 'lo', SPAWN);
     const cap = (i: number): Intent => ({
@@ -827,7 +889,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('simultaneous first logins for one sub all get the same operator', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const recs = await Promise.all(Array.from({ length: 8 }, () => store.loadOrCreateOperator('sub-first', 'lo', SPAWN)));
     expect(new Set(recs.map((r) => r.id)).size).toBe(1);
@@ -835,7 +897,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('seq order is commit order: concurrent grants, in-flight buys and liveState reads always see a gap-free prefix of the ledger', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-seq', 'lo', SPAWN);
     const loaded = await store.loadOrCreateOperator('sub-seq', 'lo', SPAWN);
@@ -869,7 +931,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('loads and resyncs the org from OrgMember; an api spend committed between loads moves balance and watermark together', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Org", "OrgMember", "OrgInvite" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "Org", "OrgMember", "OrgInvite" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-org', 'lo', SPAWN);
     await prisma!.org.create({ data: { id: 'o1', name: 'Root Access', tag: 'ROOT', ownerId: a.id, members: { create: { operatorId: a.id, rank: 'OWNER' } } } });

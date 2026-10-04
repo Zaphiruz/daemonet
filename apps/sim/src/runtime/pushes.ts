@@ -58,6 +58,12 @@ export const BitsPush = z.object({
 /** `admin` channel: the operator was renamed in the api (the api checks the name against the live chat filter). */
 export const RenamePush = z.object({ kind: z.literal('rename'), operatorId: Id, name: OperatorName, origin: Origin });
 
+/**
+ * `admin` channel: start an Incident now (SP4 spec §8). A one-shot command, not state: pub/sub is at-most-once, so a
+ * start published while the bus is down is simply lost (the admin presses the button again); nothing is resynced.
+ */
+export const IncidentStartPush = z.object({ kind: z.literal('incident:start'), origin: Origin });
+
 export type OrgMembershipPush = z.infer<typeof OrgMembershipPush>;
 export type BitsPush = z.infer<typeof BitsPush>;
 export type RenamePush = z.infer<typeof RenamePush>;

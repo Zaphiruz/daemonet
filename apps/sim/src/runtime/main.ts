@@ -38,6 +38,8 @@ const bus = createBus(config.redisUrl, log);
 if (!config.redisUrl) log.warn({}, 'REDIS_URL not set: using the in-process bus (admin chat actions from the api will not reach the sim)');
 const game = new Game({ worlds, store, verify, bus, log });
 await game.loadChatTerms();
+// Before anyone can connect: close Incident rows a previous process left open and finish interrupted payouts.
+await game.recoverIncidents();
 const server = await startServer({ game, store, port: config.port, trustProxyHops: config.trustProxyHops, maxConnectionsPerIp: config.maxConnectionsPerIp, log });
 const stopLoop = startLoop(() => game.tick());
 const statsTimer = setInterval(() => log.info({ tick: game.world.tick, ...game.stats() }, 'tick stats'), 64_000);

@@ -8,9 +8,14 @@ import {
   decompileProblem,
   decompileStoreGain,
   economyIntentProblem,
+  INCIDENT_RECOVERY_MS,
+  incidentRewardIntent,
+  incidentRewardProblem,
   ledgerReason,
+  participantsOf,
   missingItem,
   randomHex,
+  samePayouts,
   SIM_LEDGER_REASONS,
   stateFields as memStateFields,
   ticketAcceptProblem,
@@ -18,6 +23,8 @@ import {
   ticketState,
   withItems,
   type ChatRow,
+  type IncidentRewardIntent,
+  type IncidentRow,
   type IntentContext,
   type LedgerRow,
   type LedgerWrite,
@@ -98,6 +105,13 @@ class DomainFailure extends Error {}
 type Tx = Prisma.TransactionClient;
 
 const jsonParams = (p: TicketParams): Prisma.InputJsonValue => p as unknown as Prisma.InputJsonValue;
+const jsonParticipants = (p: IncidentRow['participants']): Prisma.InputJsonValue => p as unknown as Prisma.InputJsonValue;
+
+/** Seq of the operator's `incident` ledger row for this Incident, or null when it was not paid. */
+async function incidentLedgerSeq(db: Pick<PrismaClient, 'bitsLedger'>, operatorId: string, incidentId: string): Promise<number | null> {
+  const row = await db.bitsLedger.findFirst({ where: { operatorId, reason: 'incident', ref: incidentId }, select: { seq: true } });
+  return row ? Number(row.seq) : null;
+}
 
 /**
  * One Codex research point for the daemon's line, as INSERT ... ON CONFLICT DO UPDATE (never a Research_pkey P2002, even
@@ -442,6 +456,8 @@ export class PrismaStore implements Store {
             await intentLedgerRow(tx, intent.kind, intent.operatorId, intent.reward, 'ticket', intent.ticketId);
             return { ok: true } as const;
           }
+          case 'incidentReward':
+            return await this.incidentReward(tx, intent, now);
         }
       });
     } catch (err) {
@@ -469,10 +485,72 @@ export class PrismaStore implements Store {
     }
   }
 
+  /**
+   * One Incident payout (economy contract): the operator row is locked first, the payout list is re-derived from the
+   * rules, the Incident row is written CLEARED with its participants (created when missing; an EXPIRED row or a
+   * different list refuses), and the operator is credited with one `incident` ledger row (ref = Incident id) unless one
+   * exists already: exactly once per (Incident, operator), whatever the intent id.
+   */
+  private async incidentReward(tx: Tx, intent: IncidentRewardIntent, now: Date): Promise<IntentResult> {
+    await lockOperator(tx, intent.operatorId);
+    const problem = incidentRewardProblem(intent);
+    if (problem) throw new DomainFailure(problem);
+    const participants = jsonParticipants(intent.participants);
+    // ON CONFLICT DO NOTHING (no Incident_pkey P2002 when two payouts create the row at once), then lock it.
+    await tx.incident.createMany({
+      data: [{ id: intent.incidentId, n: intent.n, species: intent.species, endsAt: new Date(intent.endsAt), outcome: 'CLEARED', participants, closedAt: now }],
+      skipDuplicates: true,
+    });
+    const rows = await tx.$queryRaw<Array<{ outcome: string; participants: unknown }>>`
+      SELECT "outcome"::text AS "outcome", "participants" FROM "Incident" WHERE "id" = ${intent.incidentId} FOR UPDATE`;
+    const row = rows[0];
+    if (!row) throw new Error(`incident ${intent.incidentId} vanished`);
+    if (row.outcome === 'EXPIRED') throw new DomainFailure('the Incident expired');
+    if (row.outcome === 'OPEN') {
+      await tx.incident.update({ where: { id: intent.incidentId }, data: { outcome: 'CLEARED', participants, closedAt: now } });
+    } else if (!samePayouts(participantsOf(row.participants), intent.participants)) {
+      throw new DomainFailure('payouts do not match the Incident');
+    }
+    if ((await incidentLedgerSeq(tx, intent.operatorId, intent.incidentId)) !== null) throw new DomainFailure('already paid');
+    await tx.operator.update({ where: { id: intent.operatorId }, data: { bits: { increment: BigInt(intent.reward) } } });
+    await intentLedgerRow(tx, intent.kind, intent.operatorId, intent.reward, 'incident', intent.incidentId);
+    const seq = await incidentLedgerSeq(tx, intent.operatorId, intent.incidentId);
+    return seq === null ? { ok: true } : { ok: true, ledgerSeq: seq };
+  }
+
+  async recordIncident(row: IncidentRow): Promise<void> {
+    const closed = row.outcome !== 'OPEN';
+    const data = { n: row.n, species: row.species, endsAt: new Date(row.endsAt), outcome: row.outcome, participants: jsonParticipants(row.participants), closedAt: closed ? new Date() : null };
+    await this.prisma.$transaction(async (tx) => {
+      await tx.incident.createMany({ data: [{ id: row.id, ...data }], skipDuplicates: true });
+      // a closed row is final: only an OPEN one takes the outcome
+      if (closed) await tx.incident.updateMany({ where: { id: row.id, outcome: 'OPEN' }, data });
+    });
+  }
+
+  async recoverIncidents(): Promise<IncidentRewardIntent[]> {
+    const now = new Date();
+    await this.prisma.incident.updateMany({ where: { outcome: 'OPEN' }, data: { outcome: 'EXPIRED', closedAt: now } });
+    const cleared = await this.prisma.incident.findMany({ where: { outcome: 'CLEARED', closedAt: { gte: new Date(now.getTime() - INCIDENT_RECOVERY_MS) } }, orderBy: { openedAt: 'asc' } });
+    if (cleared.length === 0) return [];
+    const paid = await this.prisma.bitsLedger.findMany({ where: { reason: 'incident', ref: { in: cleared.map((r) => r.id) } }, select: { operatorId: true, ref: true } });
+    const done = new Set(paid.map((l) => `${l.ref}:${l.operatorId}`));
+    const out: IncidentRewardIntent[] = [];
+    for (const r of cleared) {
+      const row: IncidentRow = { id: r.id, n: r.n, species: r.species, endsAt: r.endsAt.toISOString(), outcome: 'CLEARED', participants: participantsOf(r.participants) };
+      for (const p of row.participants) if (!done.has(`${row.id}:${p.operatorId}`)) out.push(incidentRewardIntent(row, p));
+    }
+    return out;
+  }
+
   /** The stored result when this intent was already applied, else null. */
-  private async replayed(db: Pick<PrismaClient, 'appliedAction' | 'daemon' | 'research'>, intent: Intent): Promise<IntentResult | null> {
+  private async replayed(db: Pick<PrismaClient, 'appliedAction' | 'daemon' | 'research' | 'bitsLedger'>, intent: Intent): Promise<IntentResult | null> {
     const done = await db.appliedAction.findUnique({ where: { key: intent.id } });
     if (!done) return null;
+    if (intent.kind === 'incidentReward') {
+      const seq = await incidentLedgerSeq(db, intent.operatorId, intent.incidentId);
+      return seq === null ? { ok: true } : { ok: true, ledgerSeq: seq };
+    }
     if (intent.kind === 'capture' || intent.kind === 'claimStarter') {
       const r = await db.research.findUnique({ where: { operatorId_line: { operatorId: intent.operatorId, line: getSpecies(intent.daemon.species).line } } });
       return { ok: true, research: r?.points ?? 0 };

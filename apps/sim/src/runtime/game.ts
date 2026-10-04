@@ -1,8 +1,9 @@
 import { randomInt, timingSafeEqual } from 'node:crypto';
 import type { Bus } from '@daemonet/bus';
-import { ticketKey } from '@daemonet/rules';
-import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Command, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
+import { INCIDENT_MAX_OPERATORS, INCIDENT_SUBNET, ticketKey } from '@daemonet/rules';
+import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Command, type Entity, type ErrorCode, type GameEvent, type ServerMessage } from '@daemonet/shared';
 import {
+  EVICT_TO,
   INTEREST_RADIUS,
   distance,
   entitiesNear,
@@ -20,8 +21,8 @@ import type { TokenVerifier } from './auth.js';
 import { ChatService } from './chat.js';
 import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
 import { diffEntities } from './interest.js';
-import { BitsPush, OrgMembershipPush, RenamePush } from './pushes.js';
-import { randomHex, type Store } from './store.js';
+import { BitsPush, IncidentStartPush, OrgMembershipPush, RenamePush } from './pushes.js';
+import { randomHex, type IncidentRow, type Store } from './store.js';
 
 /** Transport-independent connection. */
 export interface Conn {
@@ -118,6 +119,11 @@ interface Session {
    * `ledgerSeq`, advanced by resyncs). Rows written outside the sim above it are applied once, as deltas.
    */
   ledgerSeq: number;
+  /**
+   * The load's watermark, never advanced: the loaded balance holds exactly the ledger rows up to it (an Incident payout
+   * committed above it is credited when it completes; one at or below it was already loaded).
+   */
+  loadSeq: number;
   /** Rows above the watermark already applied from a bus push (id -> seq), pruned when the watermark passes them. */
   ledgerApplied: Map<string, number>;
   /** Bumped by every org / rename push: a resync whose store read raced one does not overwrite it. */
@@ -146,7 +152,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const sameOrg = (a: OrgView | null, b: OrgView | null) => a === b || (a !== null && b !== null && a.id === b.id && a.name === b.name && a.tag === b.tag && a.rank === b.rank);
 
 /** Bus message kinds this class handles on the `admin` channel (the chat service handles the others). */
-const ADMIN_KINDS: ReadonlySet<unknown> = new Set(['bits', 'rename']);
+const ADMIN_KINDS: ReadonlySet<unknown> = new Set(['bits', 'rename', 'incident:start']);
 
 /** Constant-time string comparison; different lengths never match. */
 function sameSecret(a: string, b: string): boolean {
@@ -204,7 +210,10 @@ export class Game {
     if (worlds.length === 0) throw new Error('Game needs at least one world');
     this.worlds = new Map(worlds.map((w) => [w.subnet.id, w]));
     if (this.worlds.size !== worlds.length) throw new Error('Game worlds must host distinct subnets');
-    for (const w of worlds) w.hosted = (subnet) => this.worlds.has(subnet);
+    for (const w of worlds) {
+      w.hosted = (subnet) => this.worlds.has(subnet);
+      w.incidentRoom = (subnet) => this.incidentRoom(subnet);
+    }
     this.defaultWorld = worlds[0]!;
     this.world = this.defaultWorld;
     this.store = opts.store;
@@ -284,10 +293,20 @@ export class Game {
     live.op.org = m.org ? { ...m.org } : null;
   }
 
-  /** `admin` channel: bits spent or granted in the api, and renames (mutes, deletions and filters go to the chat). */
+  /**
+   * `admin` channel: bits spent or granted in the api, renames, and Incident starts (mutes, deletions and filters go to
+   * the chat).
+   */
   private onAdminPush(raw: unknown): void {
     const kind = (raw as { kind?: unknown } | null)?.kind;
     if (!ADMIN_KINDS.has(kind)) return;
+    if (kind === 'incident:start') {
+      const start = IncidentStartPush.safeParse(raw);
+      if (!start.success) return this.log.warn({ kind }, 'dropped a malformed admin message');
+      if (start.data.origin === 'sim') return;
+      if (!this.startIncident()) this.log.info({}, 'incident start ignored: one is already running (or kernelspace is not hosted)');
+      return;
+    }
     const parsed = (kind === 'bits' ? BitsPush : RenamePush).safeParse(raw);
     if (!parsed.success) return this.log.warn({ kind }, 'dropped a malformed admin message');
     const m = parsed.data as BitsPush | RenamePush;
@@ -447,6 +466,11 @@ export class Game {
       if (!session) {
         // An operator whose subnet this process does not host starts over at the default world's spawn.
         let world = this.worlds.get(rec.subnet);
+        // kernelspace is capped while an Incident runs (the gateway closes at 16): an operator whose record names it
+        // returns to backbone's spawn instead when it is full (with no Incident running, eviction sends it there).
+        if (world?.subnet.id === INCIDENT_SUBNET && world.incident && !world.operators.has(rec.id) && !this.incidentRoom(INCIDENT_SUBNET)) {
+          world = this.worlds.get(EVICT_TO);
+        }
         if (!world) {
           world = this.defaultWorld;
           rec.subnet = world.subnet.id;
@@ -457,7 +481,7 @@ export class Game {
         session = {
           operatorId: rec.id, sub: claims.sub, world, controller: null, spectators: new Set(), resumeToken: randomHex(16), buffer: [], baseTick: world.tick,
           savedKnown: null, savedSelf: null, commandsThisTick: 0, violations: [], leaveAtTick: null, reloadRequired: false,
-          ledgerSeq: rec.ledgerSeq, ledgerApplied: new Map(), orgGen: 0, nameGen: 0,
+          ledgerSeq: rec.ledgerSeq, loadSeq: rec.ledgerSeq, ledgerApplied: new Map(), orgGen: 0, nameGen: 0,
         };
         this.sessions.set(rec.id, session);
         this.chat.loadMute(rec.id, rec.mutedUntil);
@@ -680,6 +704,7 @@ export class Game {
     this.inputs = [];
     for (const s of this.sessions.values()) s.commandsThisTick = 0;
 
+    this.gateIncidentGateways();
     for (const world of this.worlds.values()) this.stepWorld(world, inputsByWorld.get(world) ?? []);
 
     if (this.ticks % this.checkpointEvery === 0) this.checkpointAll();
@@ -708,6 +733,8 @@ export class Game {
 
   private stepWorld(world: World, inputs: Input[]): void {
     const result = world.step(inputs);
+    // before the intents are persisted: the Incident record is queued ahead of its payouts
+    if (world.subnet.id === INCIDENT_SUBNET) this.onIncidentEvents(world, result.events);
 
     for (const r of result.replies) {
       const route = this.replyTo.get(r.reqId);
@@ -752,9 +779,113 @@ export class Game {
     return session.world.operators.get(session.operatorId)?.travelling === true;
   }
 
-  /** Any economy intent or starter claim of the operator still pending (`World.economyInFlight`). */
+  /**
+   * Any economy intent or starter claim of the operator still pending (`World.economyInFlight`), in any world: an
+   * Incident payout stays pending in kernelspace after its operator has travelled on.
+   */
   private economyInFlight(session: Session): boolean {
-    return session.world.economyInFlight(session.operatorId);
+    for (const w of this.worlds.values()) if (w.economyInFlight(session.operatorId)) return true;
+    return false;
+  }
+
+  // ---- Incidents (SP4 spec section 8) ----
+
+  /**
+   * Whether an Incident gateway into `subnet` admits one more operator now: an Incident runs there and the operators in
+   * it plus those already travelling in stay under the cap (so two travels in one tick cannot both take the last place).
+   */
+  private incidentRoom(subnet: string): boolean {
+    const dest = this.worlds.get(subnet);
+    if (!dest?.incident) return false;
+    let inbound = 0;
+    for (const w of this.worlds.values()) inbound += w.pendingTravelsTo(subnet);
+    return dest.operators.size + inbound < INCIDENT_MAX_OPERATORS;
+  }
+
+  /** Incident gateways open only while an Incident runs in the destination and it has room (also shown to clients). */
+  private gateIncidentGateways(): void {
+    for (const world of this.worlds.values()) {
+      for (const g of world.subnet.gateways) {
+        if (!g.incidentOnly) continue;
+        if (this.incidentRoom(g.to)) world.closedGateways.delete(g.id);
+        else world.closedGateways.add(g.id);
+      }
+    }
+  }
+
+  /**
+   * Incident announcements are server-wide (every other world gets them on its next step); the record is kept for the
+   * api. A failed record is only logged: every payout intent writes the CLEARED row with its participants itself, and
+   * boot recovery closes rows an earlier process left OPEN.
+   */
+  private onIncidentEvents(world: World, events: readonly { event: GameEvent }[]): void {
+    for (const { event } of events) {
+      if (event.e !== 'incident') continue;
+      for (const other of this.worlds.values()) if (other !== world) other.emitCarry(event, { at: null });
+      if (event.phase !== 'open' && event.phase !== 'cleared' && event.phase !== 'expired') continue;
+      const row: IncidentRow = {
+        id: event.id,
+        n: event.n,
+        species: event.species,
+        endsAt: event.endsAt,
+        outcome: event.phase === 'open' ? 'OPEN' : event.phase === 'cleared' ? 'CLEARED' : 'EXPIRED',
+        participants: (event.participants ?? []).map((p) => ({ ...p })),
+      };
+      this.track(this.store.recordIncident(row).catch((err: Error) => this.log.warn({ incident: row.id, outcome: row.outcome, err: err.message }, 'incident record failed')));
+    }
+  }
+
+  /**
+   * Admin trigger (bus `admin { kind: 'incident:start' }`, or tests): opens one on kernelspace's next step. Refused
+   * (false) while one is running or already requested, or when kernelspace is not hosted here. Does not move the
+   * schedule.
+   */
+  startIncident(): boolean {
+    const world = this.worlds.get(INCIDENT_SUBNET);
+    if (!world || world.incident || world.incidentRequested) return false;
+    world.incidentRequested = true;
+    return true;
+  }
+
+  /**
+   * Boot recovery, before connections are accepted: closes Incident rows an earlier process left OPEN and finishes
+   * the payouts a restart interrupted (same intent ids; the store pays each (Incident, operator) once). Nobody is
+   * connected yet, so the next load reads the credited balance. Failures are logged and retried at the next boot.
+   */
+  async recoverIncidents(): Promise<void> {
+    let intents;
+    try {
+      intents = await this.store.recoverIncidents();
+    } catch (err) {
+      this.log.error({ err: (err as Error).message }, 'incident recovery failed');
+      return;
+    }
+    for (const intent of intents) {
+      try {
+        const result = await this.serialized(() => this.store.applyIntent(intent, { seedId: this.defaultWorld.seedId }));
+        if (result.ok) this.log.info({ intent: intent.id, operator: intent.operatorId, reward: intent.reward }, 'resumed an interrupted incident payout');
+        else this.log.warn({ intent: intent.id, operator: intent.operatorId, reason: result.reason }, 'incident payout refused');
+      } catch (err) {
+        this.log.error({ intent: intent.id, operator: intent.operatorId, err: (err as Error).message }, 'resuming an incident payout failed');
+      }
+    }
+  }
+
+  /**
+   * A settled Incident payout. The world it was raised in credited it if the operator was there all along; otherwise
+   * (it had left kernelspace before the clear, or since) it is credited once wherever the operator is now, unless the
+   * balance that session loaded already contains the row (its seq is at or below the load's watermark).
+   */
+  private onIncidentReward(intent: Extract<Intent, { kind: 'incidentReward' }>, result: IntentResult, elsewhere: boolean): void {
+    if (!result.ok) {
+      this.log.warn({ intent: intent.id, operator: intent.operatorId, incident: intent.incidentId, reason: result.reason }, 'incident payout refused');
+      return;
+    }
+    if (!elsewhere) return;
+    const live = this.live(intent.operatorId);
+    if (!live) return;
+    if (result.ledgerSeq !== undefined && result.ledgerSeq <= live.session.loadSeq) return;
+    live.session.world.creditIncidentReward(live.op, intent);
   }
 
   private leave(session: Session): void {
@@ -891,7 +1022,9 @@ export class Game {
         }
       }
       if (intent.kind === 'completeTicket' && !result.ok) this.logRefusedPayout(world, intent, result.reason);
+      const elsewhere = intent.kind === 'incidentReward' && world.isRewardElsewhere(intent.id);
       world.completeIntent(intent.id, result);
+      if (intent.kind === 'incidentReward') this.onIncidentReward(intent, result, elsewhere);
       if (intent.kind === 'evolve' && result.ok) this.shareDiscovery(world, intent, result.discovered === true);
       // the operator's name is set when the claim commits: members' cluster views show it
       if (intent.kind === 'claimStarter' && result.ok) this.clusters.reattach(intent.operatorId);
