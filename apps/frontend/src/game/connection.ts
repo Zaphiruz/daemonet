@@ -4,6 +4,7 @@ import { api, fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
 import { store } from '../store.ts';
 import { capture as appCapture, type CaptureStore } from './capture.ts';
 import { chatStore, setMe, type ChatStore } from './chat.ts';
+import { clusterStore, type ClusterStore } from './clusters.ts';
 import { getControls, setControls } from './controls.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
@@ -38,6 +39,8 @@ export interface ConnectionDeps {
   stopSandbox(): void;
   /** Holds chat lines and the mute state (they arrive before any panel mounts). Optional: tests may omit it. */
   chat?: ChatStore;
+  /** Holds pending cluster invites (they arrive before any panel mounts). Optional: tests may omit it. */
+  clusters?: ClusterStore;
   /** Drops the cached Codex so an open panel refetches (a live discovery reveals a hidden requirement). */
   invalidateCodex(): void;
   /** Drops the cached ticket board and history (a ticket finished or moved). Optional: tests may omit it. */
@@ -116,6 +119,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.stopSandbox();
     deps.capture.clear();
     deps.chat?.clear();
+    deps.clusters?.clear();
     client.close();
     set({ status, kickReason: reason, client: null });
   };
@@ -162,6 +166,11 @@ export function createConnection(deps: ConnectionDeps) {
     on('muted', (d) => {
       deps.chat?.setMuted(d.until);
       deps.log.push('system', d.until ? `you are muted until ${new Date(d.until).toLocaleString()}` : 'your mute was lifted');
+    });
+    // invites are captured here, not in a panel effect: they arrive whether or not the Chat tab is open
+    on('clusterInvite', (inv) => {
+      deps.clusters?.push(inv);
+      deps.log.push('event', `${inv.name ?? 'an operator'} invites you to a cluster (chat tab)`);
     });
     on('disconnect', () => {
       deps.capture.clear();
@@ -245,6 +254,7 @@ export function createConnection(deps: ConnectionDeps) {
     cancelPending();
     deps.stopSandbox();
     deps.capture.clear();
+    deps.clusters?.clear();
     state.client?.close();
     set({ status: 'connecting', role, client: null, kickReason: null });
     let unauthorized = 0;
@@ -276,6 +286,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.stopSandbox();
     deps.capture.clear();
     deps.chat?.clear();
+    deps.clusters?.clear();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
   }
@@ -302,6 +313,7 @@ const connection = createConnection({
   log: appLog,
   capture: appCapture,
   chat: chatStore,
+  clusters: clusterStore,
   stopSandbox,
   invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
   invalidateTickets: () => store.dispatch(api.util.invalidateTags(['Tickets'])),

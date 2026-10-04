@@ -95,6 +95,9 @@ function fakeClient(over: { subnet?: string; role?: 'controller' | 'spectator'; 
     operatorId: 'me',
     role: over.role ?? 'controller',
     subnet: over.subnet ?? 'lo',
+    self: { cluster: null },
+    world: { operators: { all: () => [] } },
+    cluster: {},
     chat: {
       send,
       get channels() {

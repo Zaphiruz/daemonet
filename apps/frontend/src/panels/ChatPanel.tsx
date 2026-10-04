@@ -2,9 +2,11 @@ import { CHAT_INTERVAL_MS, CHAT_MAX_CHARS } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useEffect, useRef, useState } from 'react';
 import { describeApiError, useAdminDeleteMessageMutation, useAdminMuteMutation, useLazyChatHistoryQuery, useReportMutation } from '../api.ts';
+import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { run } from '../components/WorldCanvas.tsx';
 import { chatStore, useChat, type ChatLine } from '../game/chat.ts';
 import { log } from '../game/log.ts';
+import { ClusterPanel } from './ClusterPanel.tsx';
 
 const REASONS = ['SPAM', 'HARASSMENT', 'CHEATING', 'NAME', 'OTHER'] as const;
 /** What the API accepts as the id part of a DM channel. */
@@ -62,7 +64,8 @@ export function ChatPanel({ client, isAdmin }: { client: GameClient; isAdmin: bo
   const subnetChannel = `subnet:${client.subnet}`;
   const [picked, setPicked] = useState<string | null>(null);
   // the subnet channel follows the current world (travel); other subnets' lines stay in the store but are not shown
-  const channels = [...new Set([...client.chat.channels, ...[...chat.lines.keys()].filter((c) => !c.startsWith('subnet:')), ...(picked?.startsWith('dm:') ? [picked] : [])])];
+  // a cluster channel exists only while you are a member (lines of a cluster you left stay in the store, hidden)
+  const channels = [...new Set([...client.chat.channels, ...[...chat.lines.keys()].filter((c) => !c.startsWith('subnet:') && !c.startsWith('cluster:')), ...(picked?.startsWith('dm:') ? [picked] : [])])];
   const active = picked !== null && channels.includes(picked) ? picked : subnetChannel;
   const [text, setText] = useState('');
   const [dm, setDm] = useState('');
@@ -132,6 +135,9 @@ export function ChatPanel({ client, isAdmin }: { client: GameClient; isAdmin: bo
 
   return (
     <div className="flex h-full flex-col text-xs">
+      <ErrorBoundary label="cluster panel">
+        <ClusterPanel client={client} />
+      </ErrorBoundary>
       <div className="flex flex-wrap items-center gap-1 border-b border-neutral-800 p-1">
         {channels.map((c) => (
           <button key={c} className={`rounded px-1.5 py-0.5 ${active === c ? 'bg-neutral-800 text-sky-300' : 'text-neutral-400 hover:text-neutral-200'}`} onClick={() => setPicked(c)} data-testid={`channel-${c}`}>

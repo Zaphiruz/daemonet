@@ -164,6 +164,19 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await pb.getByTestId('report-send').click();
   await pb.getByTestId('tab-log').click();
   await expect(pb.getByTestId('log')).toContainText('report received', { timeout: 10_000 });
+
+  // clusters: A opens one, B joins by code, both see two members, then B leaves
+  await pa.getByTestId('tab-chat').click();
+  await pa.getByTestId('cluster-create').click();
+  await expect(pa.getByTestId('cluster-code')).toHaveText(/^[A-Z2-9]{6}$/, { timeout: 10_000 });
+  const code = (await pa.getByTestId('cluster-code').textContent())!.trim();
+  await pb.getByTestId('tab-chat').click();
+  await pb.getByTestId('cluster-code-input').fill(code);
+  await pb.getByTestId('cluster-join').click();
+  await expect(pa.getByTestId('cluster-members').locator('li')).toHaveCount(2, { timeout: 10_000 });
+  await expect(pb.getByTestId('cluster-members')).toContainText(`${name}ca`);
+  await pb.getByTestId('cluster-leave').click();
+  await expect(pa.getByTestId('cluster-members').locator('li')).toHaveCount(1, { timeout: 10_000 });
   await a.close();
   await b.close();
 });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../src/api.ts';
+import { clusterStore } from '../src/game/clusters.ts';
 import { configureStore } from '@reduxjs/toolkit';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -27,8 +28,11 @@ describe('session change', () => {
     logoutOk = false;
     await store.dispatch(api.endpoints.logout.initiate());
     expect(api.endpoints.codex.select()(store.getState()).data).toBeDefined();
+    clusterStore.push({ clusterId: 'c1', from: 'bob', name: null, expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    expect(clusterStore.get().invites).toHaveLength(1); // a failed logout keeps them
     logoutOk = true;
     await store.dispatch(api.endpoints.logout.initiate());
+    expect(clusterStore.get().invites).toEqual([]); // pending invites belong to the operator who just left
     expect(api.endpoints.codex.select()(store.getState()).data).toBeUndefined();
     expect(api.endpoints.ticketHistory.select()(store.getState()).data).toBeUndefined();
   });

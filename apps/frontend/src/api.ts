@@ -1,5 +1,6 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import { chatStore } from './game/chat.ts';
+import { clusterStore } from './game/clusters.ts';
 import type { CodexBestiaryRow, ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
 
 export interface Me {
@@ -215,6 +216,7 @@ export const api = createApi({
           dispatch(api.util.resetApiState());
           // the chat lines and mute state belong to the operator who just left too
           chatStore.clear();
+          clusterStore.clear();
         } catch {
           // a failed logout keeps the session and its caches
         }

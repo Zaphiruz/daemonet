@@ -19,10 +19,14 @@ declare module '@daemonet/sdk' {
   }
   export interface TicketDef { index: number; kind: 'clear' | 'capture' | 'deliver' | 'evolve'; params: unknown; target: number; reward: number; title: string }
   export interface OpenTicket { id: string; day: string; subnet: string; index: number; kind: 'clear' | 'capture' | 'deliver' | 'evolve'; params: unknown; target: number; reward: number; progress: number; title: string }
+  export interface ClusterMember { id: string; name: string | null; subnet: string | null; away: boolean }
+  export interface ClusterView { id: string; code: string; leaderId: string; members: ClusterMember[] }
   export interface OperatorSelf extends Positioned {
     id: string; name: string | null; starterClaimed: boolean; bits: number; diskCapacity: number; ram: RamDaemon[]; running: string[];
     tickets: OpenTicket[]; ticketsToday: number; ticketsDay?: string; research: Record<string, number>;
     inventory: Record<string, number>; swapReadyTick: number; capture: { captureId: string; targetId: string; deadlineTick: number } | null;
+    /** The cluster you are in (join code, leader, members; away = not in your subnet), or null. */
+    cluster: ClusterView | null;
   }
   export class Query<T extends Positioned> {
     readonly length: number;
@@ -59,8 +63,20 @@ declare module '@daemonet/sdk' {
     send(channel: string, text: string): Promise<unknown>;
     dm(operatorId: string, text: string): Promise<unknown>;
   }
+  /** Clusters: up to 4 operators sharing tags and XP. Rejections carry E_STATE / E_RANGE / E_INVALID / E_RATE. */
+  export class ClusterApi {
+    /** Creates a cluster of one (if needed); share its join code (client.self.cluster.code). */
+    create(): Promise<unknown>;
+    /** Invite an operator within 32 tiles in your subnet. */
+    invite(operatorId: string): Promise<unknown>;
+    accept(clusterId: string): Promise<unknown>;
+    join(code: string): Promise<unknown>;
+    leave(): Promise<unknown>;
+    /** Leader only; the join code changes so the member cannot come back with the old one. */
+    kick(operatorId: string): Promise<unknown>;
+  }
   export class GameClient {
-    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, Entity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi; readonly chat: ChatApi;
+    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, Entity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi; readonly chat: ChatApi; readonly cluster: ClusterApi;
     on(name: 'captureStart', handler: (ev: CaptureStartEvent) => void): () => void;
     on(name: 'captureResult', handler: (ev: { captureId: string; ok: boolean; reason?: string }) => void): () => void;
     on(name: 'tick', handler: (tick: number) => void): () => void;
@@ -75,6 +91,8 @@ declare module '@daemonet/sdk' {
     on(name: 'chatDeleted', handler: (ev: { id: string; channel: string }) => void): () => void;
     /** Your mute state changed: until is the end of the mute (ISO time), or null when it was lifted. */
     on(name: 'muted', handler: (ev: { until: string | null }) => void): () => void;
+    /** Someone invites you to a cluster: accept with client.cluster.accept(clusterId) before expiresAt (ISO time). */
+    on(name: 'clusterInvite', handler: (ev: { clusterId: string; from: string; name: string | null; expiresAt: string }) => void): () => void;
     on(name: string, handler: (value: any) => void): () => void;
   }
 }
