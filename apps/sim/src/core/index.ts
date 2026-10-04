@@ -6,4 +6,4 @@ export { HOST_RADIUS, LEASH_TILES, RESTORE_CHANNEL_MS, STARTER_LEVEL } from './s
 export { OPERATOR_SPEED, daemonSpeed } from './systems/movement.js';
 export { PARTY_RADIUS } from './systems/progress.js';
 export { EVICT_TO, incidentParticipants } from './systems/incident.js';
-export { ARENA_COMMANDS, arenaCopy, arenaRecord, arenaSelf, concede, hpFraction, stepArena } from './systems/arena.js';
+export { ARENA_COMMANDS, arenaCopy, arenaRecord, arenaSelf, concede, concedeBoth, hpFraction, stepArena } from './systems/arena.js';

@@ -72,11 +72,21 @@ function finish(world: World, arena: ArenaState, winner: string | null, reason: 
   }
 }
 
-/** The operator gives up (or its controller has been gone too long): the other side wins. No-op once the match is over. */
+/**
+ * The operator gives up (or its controller has been gone too long): the other side wins. No-op once the match is over,
+ * and for an operator that is not one of the two sides.
+ */
 export function concede(world: World, loserId: string, reason: 'forfeit' | 'disconnect'): void {
   const arena = world.arena;
-  if (!arena || arena.phase === 'over') return;
+  if (!arena || arena.phase === 'over' || (loserId !== arena.a && loserId !== arena.b)) return;
   finish(world, arena, loserId === arena.a ? arena.b : arena.a, reason);
+}
+
+/** Both controllers have been gone too long on the same tick: a draw. No-op once the match is over. */
+export function concedeBoth(world: World): void {
+  const arena = world.arena;
+  if (!arena || arena.phase === 'over') return;
+  finish(world, arena, null, 'disconnect');
 }
 
 /** Countdown → live → over. Runs after defeats are resolved, so a wipe-out ends the match on the tick it happens. */

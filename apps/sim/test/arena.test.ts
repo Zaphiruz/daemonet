@@ -1,7 +1,7 @@
 import { ARENA_LEVEL, SANDBOX, getSpecies, movesAtLevel, msToTicks } from '@daemonet/rules';
 import type { Command } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
-import { World, arenaCopy, arenaRecord, concede, toSelf, type ArenaState } from '../src/core/index.js';
+import { World, arenaCopy, arenaRecord, concede, concedeBoth, toSelf, type ArenaState } from '../src/core/index.js';
 import { idle, input, operatorRecord, ownedRecord, self, step } from './helpers.js';
 
 const COUNTDOWN = msToTicks(3000);
@@ -109,5 +109,16 @@ describe('arena match rules', () => {
     expect(quit.arena).toMatchObject({ phase: 'over', result: { winner: 'bob', reason: 'forfeit' } });
     concede(quit, 'bob', 'forfeit'); // already over
     expect(quit.arena!.result!.winner).toBe('bob');
+  });
+
+  it('ignores a concession by an operator that is not in the match; both sides gone is a draw', () => {
+    const world = duel();
+    concede(world, 'mallory', 'forfeit');
+    expect(world.arena).toMatchObject({ phase: 'live', result: null });
+
+    concedeBoth(world);
+    expect(world.arena).toMatchObject({ phase: 'over', result: { winner: null, reason: 'disconnect' } });
+    concede(world, 'alice', 'forfeit'); // already over
+    expect(world.arena!.result!.winner).toBeNull();
   });
 });
