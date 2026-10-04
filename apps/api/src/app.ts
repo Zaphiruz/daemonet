@@ -8,6 +8,7 @@ import type { OidcClient } from './auth/oidc.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import { createSessionStore } from './auth/session.js';
 import { AppError } from './errors.js';
+import { registerEconomyRoutes } from './routes/economy.js';
 import { registerMiscRoutes } from './routes/misc.js';
 import { registerScriptRoutes } from './routes/scripts.js';
 
@@ -58,5 +59,6 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
   if (o.devBypass) registerDevBypass(app, { prisma: o.prisma, sessionStore, frontendOrigin: o.frontendOrigin, requiredGroup: o.requiredGroup, ...common });
   registerScriptRoutes(app, o.prisma);
   registerMiscRoutes(app, o.prisma);
+  registerEconomyRoutes(app, o.prisma);
   return app;
 }

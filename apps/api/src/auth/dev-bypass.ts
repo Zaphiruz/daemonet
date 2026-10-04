@@ -1,11 +1,12 @@
 import type { PrismaClient } from '@daemonet/db';
-import { DISK_SLOTS, LO, computeStats, createRng, emptyMoveTypeUses, getSpecies, movesAtLevel, rollSpawn, statBlockToArray, xpForLevel } from '@daemonet/rules';
+import { LO, computeStats, createRng, emptyMoveTypeUses, getSpecies, movesAtLevel, rollSpawn, statBlockToArray, xpForLevel } from '@daemonet/rules';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { badRequest } from '../errors.js';
 import { ensureOperator } from './routes.js';
 import type { SessionStore } from './session.js';
 
+const BitsBody = z.object({ amount: z.number().int().min(1).max(1_000_000) });
 const SeedBody = z.object({ species: z.string().min(1).max(32), level: z.number().int().min(1).max(64) });
 
 /**
@@ -13,6 +14,8 @@ const SeedBody = z.object({ species: z.string().min(1).max(32), level: z.number(
  * creates a session for sub `dev-alice` â€” the same sub the sim's dev verifier uses, so the
  * browser and a `dev:alice` bot share one operator. POST /api/dev/daemon { species, level } puts a
  * daemon of that species on the caller's Disk (tests load it into RAM at the host, e.g. to evolve it).
+ * POST /api/dev/bits { amount } credits bits (ledger reason `admin`, ref `dev`); the sim reads the new
+ * balance when the operator next connects, so reconnect (or travel) to see it in a running session.
  */
 export function registerDevBypass(
   app: FastifyInstance,
@@ -30,6 +33,21 @@ export function registerDevBypass(
     return reply.redirect(`${deps.frontendOrigin}/`);
   });
 
+  app.post('/api/dev/bits', { preHandler: app.requireAuth }, async (req) => {
+    const parsed = BitsBody.safeParse(req.body);
+    if (!parsed.success) throw badRequest('body must be { amount: integer 1-1000000 }');
+    const operatorId = req.operator!.id;
+    const amount = BigInt(parsed.data.amount);
+    // Same invariants as the sim's grantBits: balance change and ledger row commit together, the UPDATE row-locks the operator.
+    const bits = await deps.prisma.$transaction(async (tx) => {
+      const res = await tx.operator.updateMany({ where: { id: operatorId }, data: { bits: { increment: amount } } });
+      if (res.count !== 1) throw badRequest('unknown operator');
+      await tx.bitsLedger.create({ data: { operatorId, delta: amount, reason: 'admin', ref: 'dev' } });
+      return (await tx.operator.findUniqueOrThrow({ where: { id: operatorId }, select: { bits: true } })).bits;
+    });
+    return { bits: Number(bits), note: 'a running sim session sees the new balance on the operator’s next connection' };
+  });
+
   app.post('/api/dev/daemon', { preHandler: app.requireAuth }, async (req) => {
     const parsed = SeedBody.safeParse(req.body);
     if (!parsed.success) throw badRequest('body must be { species, level 1-64 }');
@@ -40,10 +58,11 @@ export function registerDevBypass(
       throw badRequest('unknown species');
     }
     const operatorId = req.operator!.id;
+    const { diskCapacity } = await deps.prisma.operator.findUniqueOrThrow({ where: { id: operatorId }, select: { diskCapacity: true } });
     const used = new Set((await deps.prisma.daemon.findMany({ where: { operatorId, location: 'DISK' }, select: { slot: true } })).map((r) => r.slot));
     let slot = 0;
-    while (used.has(slot) && slot < DISK_SLOTS) slot++;
-    if (slot >= DISK_SLOTS) throw badRequest('Disk is full');
+    while (used.has(slot) && slot < diskCapacity) slot++;
+    if (slot >= diskCapacity) throw badRequest('Disk is full');
     const id = `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const roll = rollSpawn(createRng(id), { clean: 0, signatureStep: 0 });
     const level = parsed.data.level;

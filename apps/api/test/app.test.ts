@@ -69,7 +69,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   });
   beforeEach(async () => {
     oidc = fakeOidc();
-    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "DaemonArchive", "BitsLedger" CASCADE');
   });
 
   /** Runs the full login: /login sets the PKCE cookie, /callback exchanges and sets the session cookie. */
@@ -239,6 +239,66 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(after.discoveries).toMatchObject([{ formId: 'anycastrel', operatorName: 'alice' }]);
   });
 
+  it('serves the shop, recipes and the caller’s ledger; the admin economy view sums the ledger', async () => {
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=fay&admin=true' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const shop = (await app.inject({ method: 'GET', url: '/api/shop', cookies })).json();
+    expect(shop.prices.sniff).toBe(32);
+    expect(shop).toMatchObject({ diskCapacity: 256, diskExpansionPrice: 8192, bits: 0 });
+    const recipes = (await app.inject({ method: 'GET', url: '/api/recipes', cookies })).json();
+    expect(recipes).toHaveLength(25);
+    expect(recipes.find((r: { id: string }) => r.id === 'tap')).toMatchObject({ bits: 64, fragments: { packet: 4, socket: 4 }, output: { item: 'tap', qty: 1 } });
+    const granted = await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: csrf, payload: { amount: 500 } });
+    expect(granted.json()).toMatchObject({ bits: 500 });
+    const ledger = (await app.inject({ method: 'GET', url: '/api/ledger', cookies })).json();
+    expect(ledger).toMatchObject([{ delta: 500, reason: 'admin', ref: 'dev' }]);
+    const economy = (await app.inject({ method: 'GET', url: '/api/admin/economy', cookies })).json();
+    expect(economy).toMatchObject({ supply: 500, operators: 1 });
+    expect(economy.days[0]).toMatchObject({ created: 500, destroyed: 0, byReason: { admin: 500 } });
+    const plain = await app.inject({ method: 'GET', url: '/api/auth/dev?name=gus' });
+    const plainCookies = { [COOKIE_NAME]: plain.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', cookies: plainCookies })).statusCode).toBe(403);
+  });
+
+  it('lists the ledger newest first by sequence, capped at 64, and reads admin rights from the operator row', async () => {
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=hal&admin=true' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const op = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-hal' } });
+    const at = new Date('2026-01-01T00:00:00Z');
+    // Same timestamp for every row: only `seq` can order them.
+    await prisma!.bitsLedger.createMany({ data: Array.from({ length: 70 }, (_, i) => ({ operatorId: op.id, delta: BigInt(i + 1), reason: 'admin', ref: `r${i}`, at })) });
+    const ledger = (await app.inject({ method: 'GET', url: '/api/ledger', cookies })).json();
+    expect(ledger).toHaveLength(64);
+    expect(ledger[0].ref).toBe('r69');
+    expect(ledger[63].ref).toBe('r6');
+    await prisma!.operator.update({ where: { id: op.id }, data: { isAdmin: false } });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', cookies })).statusCode).toBe(403);
+  });
+
+  it('dev bits validates its body, needs CSRF, refuses overdraw-shaped input and keeps balance equal to the ledger sum', async () => {
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=ivy' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    expect((await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, payload: { amount: 5 } })).statusCode).toBe(403);
+    for (const amount of [0, -5, 1.5, 1_000_001, '5']) {
+      expect((await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: csrf, payload: { amount } })).statusCode).toBe(400);
+    }
+    const results = await Promise.all([3, 4, 5].map((amount) => app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: csrf, payload: { amount } })));
+    expect(results.every((r) => r.statusCode === 200)).toBe(true);
+    const op = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-ivy' } });
+    const sum = await prisma!.bitsLedger.aggregate({ where: { operatorId: op.id }, _sum: { delta: true } });
+    expect(op.bits).toBe(12n);
+    expect(sum._sum.delta).toBe(12n);
+  });
+
+  it('dev daemon seeding honours the operator’s Disk capacity', async () => {
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=jo' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    await prisma!.operator.updateMany({ where: { sub: 'dev-jo' }, data: { diskCapacity: 1 } });
+    const seed = () => app.inject({ method: 'POST', url: '/api/dev/daemon', cookies, headers: csrf, payload: { species: 'pingling', level: 2 } });
+    expect((await seed()).statusCode).toBe(200);
+    expect((await seed()).statusCode).toBe(400);
+  });
+
   it('dev route seeds a daemon on Disk for the session operator', async () => {
     const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=eve' });
     const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
@@ -376,6 +436,7 @@ describe.skipIf(!url)('API without the dev bypass', () => {
     });
     expect((await app.inject({ method: 'GET', url: '/api/auth/dev?name=alice' })).statusCode).toBe(404);
     expect((await app.inject({ method: 'POST', url: '/api/dev/daemon', headers: csrf, payload: { species: 'pingling', level: 8 } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/api/dev/bits', headers: csrf, payload: { amount: 5 } })).statusCode).toBe(404);
     await app.close();
   });
 });
