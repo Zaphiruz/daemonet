@@ -21,6 +21,8 @@ model Operator {
   name           String?  @unique
   starterClaimed Boolean  @default(false)
   bits           BigInt   @default(0)
+  /// Disk slots owned (256 + 32 per expansion, max 512)
+  diskCapacity   Int      @default(256)
   subnet         String   @default("lo")
   x              Float
   y              Float
@@ -128,6 +130,55 @@ model SubnetSeed {
   subnet    String
   seed      String
   startedAt DateTime @default(now())
+}
+
+/// Every bits change (SP3b spec §5): the balance on Operator is the sum of an operator's deltas.
+model BitsLedger {
+  id         String   @id @default(uuid())
+  /// Insertion order (rows written within the same millisecond keep their order)
+  seq        BigInt   @default(autoincrement())
+  operatorId String
+  delta      BigInt
+  /// ticket | shop | disk | craft | admin
+  reason     String
+  ref        String?
+  at         DateTime @default(now())
+
+  @@index([operatorId, at])
+  @@index([at])
+}
+
+/// Decompiled daemons keep their capture log here (never loadable again).
+model DaemonArchive {
+  id                 String   @id
+  operatorId         String
+  species            String
+  level              Int
+  xp                 Int
+  nature             Int
+  traitSlot          Int
+  ivs                Int[]
+  bonus              Int[]
+  clean              Boolean
+  signature          Int
+  moves              String[]
+  heldItem           String?
+  patched            Boolean
+  moveTypeUses       Int[]
+  crashes            Int
+  arenaWins          Int
+  history            Json
+  originalOperatorId String
+  capturedAt         DateTime
+  captureSubnet      String
+  captureTool        String
+  spawnSeedId        String
+  spawnIndex         Int?
+  archivedAt         DateTime @default(now())
+  /// decompiled
+  reason             String
+
+  @@index([operatorId])
 }
 
 /// First operator to meet a hidden evolution requirement (reveals it in the Codex).
