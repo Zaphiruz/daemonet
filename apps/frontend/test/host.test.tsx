@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { DISK_MAX, getRecipe, getSubnet } from '@daemonet/rules';
+import { BUY_MAX_QTY, CRAFT_MAX_QTY, DISK_MAX, getRecipe, getSubnet } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -180,6 +180,69 @@ describe('HostPanel craft', () => {
     settle();
     await flush();
     expect(btn('craft-tap').disabled).toBe(false);
+  });
+});
+
+describe('HostPanel limits and feedback', () => {
+  it('clamps qty to the buy cap and disables crafts above the craft cap, with a reason', async () => {
+    const { client, buy, craft } = fakeClient({ bits: 10_000_000, inventory: { 'frag:packet': 9999, 'frag:socket': 9999 } });
+    render(<HostPanel client={client} />);
+    fireEvent.change(screen.getByTestId('qty'), { target: { value: '500' } });
+    expect((screen.getByTestId('qty') as HTMLInputElement).value).toBe(String(BUY_MAX_QTY));
+    fireEvent.click(btn('buy-sniff'));
+    expect(buy).toHaveBeenCalledWith('sniff', BUY_MAX_QTY);
+    await flush();
+    fireEvent.click(screen.getByTestId('host-craft'));
+    fireEvent.change(screen.getByTestId('qty'), { target: { value: String(CRAFT_MAX_QTY) } });
+    expect(btn('craft-tap').disabled).toBe(false);
+    fireEvent.change(screen.getByTestId('qty'), { target: { value: String(CRAFT_MAX_QTY + 1) } });
+    expect(btn('craft-tap').disabled).toBe(true);
+    expect(btn('craft-tap').title).toContain(String(CRAFT_MAX_QTY));
+    fireEvent.click(btn('craft-tap'));
+    expect(craft).not.toHaveBeenCalled();
+  });
+
+  it('shows the reason on a disabled button and the error of a rejected buy', async () => {
+    const { client, buy } = fakeClient({ bits: 10 });
+    buy.mockImplementation(() => Promise.reject(new Error('not enough bits')));
+    const { unmount } = render(<HostPanel client={client} />);
+    expect(btn('buy-tap').title).toBe('not enough bits');
+    unmount();
+    const rich = fakeClient({ bits: 1000 });
+    rich.buy.mockImplementation(() => Promise.reject(new Error('host is busy')));
+    render(<HostPanel client={rich.client} />);
+    fireEvent.click(btn('buy-sniff'));
+    await flush();
+    expect(screen.getByTestId('host-error').textContent).toContain('host is busy');
+    fireEvent.click(btn('buy-sniff'));
+    expect(screen.queryByTestId('host-error')).toBeNull();
+    const away = fakeClient({}, { x: host.x + 20 });
+    cleanup();
+    render(<HostPanel client={away.client} />);
+    expect(btn('buy-sniff').title).toContain('host');
+  });
+
+  it('forgets a chosen fragment type once it is no longer held', () => {
+    const { client, craft } = fakeClient({ bits: 100, inventory: { 'frag:glitch': 2 } });
+    const { rerender } = render(<HostPanel client={client} />);
+    fireEvent.click(screen.getByTestId('host-craft'));
+    fireEvent.change(screen.getByTestId('using'), { target: { value: 'glitch' } });
+    expect(btn('craft-restore').disabled).toBe(false);
+    (client.self as { inventory: Record<string, number> }).inventory = {};
+    rerender(<HostPanel client={client} />);
+    expect((screen.getByTestId('using') as HTMLSelectElement).value).toBe('');
+    expect(btn('craft-restore').disabled).toBe(true);
+    expect(craft).not.toHaveBeenCalled();
+  });
+});
+
+describe('craftCheck aggregation', () => {
+  it('sums an any slot that resolves to an already-named type', () => {
+    const r = { id: 'x', output: { item: 'tap' as const }, bits: 1, fragments: { packet: 2, any: 3 } } as unknown as Parameters<typeof craftCheck>[0];
+    const c = craftCheck(r, 2, { 'frag:packet': 10 }, 5, 'packet');
+    expect(c.needs).toEqual([{ item: 'frag:packet', have: 10, need: 10 }]);
+    expect(c.ok).toBe(true);
+    expect(craftCheck(r, 2, { 'frag:packet': 9 }, 5, 'packet').ok).toBe(false);
   });
 });
 

@@ -1,4 +1,4 @@
-import { DISK_MAX, DISK_STEP, RECIPES, SHOP, diskExpansionPrice, getItem, type TypeId } from '@daemonet/rules';
+import { BUY_MAX_QTY, CRAFT_MAX_QTY, DISK_MAX, DISK_STEP, RECIPES, SHOP, diskExpansionPrice, getItem, type TypeId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useRef, useState } from 'react';
 import { useLedgerQuery } from '../api.ts';
@@ -19,22 +19,32 @@ export function HostPanel({ client }: { client: GameClient }) {
   const [using, setUsing] = useState<TypeId | ''>('');
   // one buy/craft at a time: the buttons stay disabled until the request settles (the ref also covers the gap before the re-render)
   const [inFlight, setInFlight] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const ledger = useLedgerQuery(undefined, { skip: view !== 'ledger', refetchOnMountOrArgChange: true });
   const diskPrice = diskExpansionPrice(me.diskCapacity);
   const can = manual && atHost && !inFlight;
+  // a chosen type that is no longer held (spent in a craft, say) counts as unchosen
+  const held = fragmentTypes(me.inventory);
+  const usingType = using && held.includes(using) ? using : undefined;
+  const why = (...reasons: Array<[boolean, string]>) => (!manual ? 'spectators cannot trade' : !atHost ? 'walk to the host node first' : inFlight ? 'waiting for the previous request' : reasons.find(([bad]) => bad)?.[1]);
 
   const submit = (request: () => Promise<unknown>, label: string) => {
     if (busy.current) return;
     busy.current = true;
     setInFlight(true);
+    setError(null);
     const p = request();
     run(p, label);
     const done = () => {
       busy.current = false;
       setInFlight(false);
     };
-    void p.then(done, done);
+    const fail = (err: unknown) => {
+      setError(`${label} failed: ${err instanceof Error ? err.message : String(err)}`);
+      done();
+    };
+    void p.then(done, fail);
   };
 
   return (
@@ -50,9 +60,15 @@ export function HostPanel({ client }: { client: GameClient }) {
         ))}
         <label className="ml-auto text-neutral-500">
           qty
-          <input className="ml-1 w-12 rounded bg-neutral-800 px-1" type="number" min={1} max={64} value={qty} onChange={(e) => setQty(Math.max(1, Math.min(64, Number(e.target.value) || 1)))} data-testid="qty" />
+          <input className="ml-1 w-12 rounded bg-neutral-800 px-1" type="number" min={1} max={BUY_MAX_QTY} value={qty} onChange={(e) => setQty(Math.max(1, Math.min(BUY_MAX_QTY, Number(e.target.value) || 1)))} data-testid="qty" />
         </label>
       </nav>
+
+      {error && (
+        <p className="text-xs text-red-400" data-testid="host-error">
+          {error}
+        </p>
+      )}
 
       {view === 'shop' && (
         <section className="space-y-1" data-testid="shop">
@@ -64,6 +80,7 @@ export function HostPanel({ client }: { client: GameClient }) {
               <button
                 className="rounded bg-sky-800 px-2 py-0.5 hover:bg-sky-700 disabled:opacity-40"
                 disabled={!can || me.bits < price * qty}
+                title={why([me.bits < price * qty, 'not enough bits'])}
                 onClick={() => submit(() => client.operator.buy(id, qty), 'buy')}
                 data-testid={`buy-${id}`}
               >
@@ -78,6 +95,7 @@ export function HostPanel({ client }: { client: GameClient }) {
             <button
               className="rounded bg-sky-800 px-2 py-0.5 hover:bg-sky-700 disabled:opacity-40"
               disabled={!can || diskPrice === null || me.bits < diskPrice}
+              title={why([diskPrice === null, 'Disk is at its maximum'], [diskPrice !== null && me.bits < diskPrice, 'not enough bits'])}
               onClick={() => submit(() => client.operator.buy('diskExpansion', 1), 'buy')}
               data-testid="buy-diskExpansion"
             >
@@ -91,9 +109,9 @@ export function HostPanel({ client }: { client: GameClient }) {
         <section className="space-y-1" data-testid="craft">
           <label className="text-xs text-neutral-500">
             fragment type for “any” recipes
-            <select className="ml-1 rounded bg-neutral-800 px-1" value={using} onChange={(e) => setUsing(e.target.value as TypeId | '')} data-testid="using">
+            <select className="ml-1 rounded bg-neutral-800 px-1" value={usingType ?? ''} onChange={(e) => setUsing(e.target.value as TypeId | '')} data-testid="using">
               <option value="">—</option>
-              {fragmentTypes(me.inventory).map((t) => (
+              {held.map((t) => (
                 <option key={t} value={t}>
                   {t} ×{me.inventory[`frag:${t}`]}
                 </option>
@@ -101,7 +119,7 @@ export function HostPanel({ client }: { client: GameClient }) {
             </select>
           </label>
           {RECIPES.map((r) => {
-            const check = craftCheck(r, qty, me.inventory, me.bits, using || undefined);
+            const check = craftCheck(r, qty, me.inventory, me.bits, usingType);
             return (
               <div key={r.id} className="rounded border border-neutral-800 px-2 py-1" data-testid={`recipe-${r.id}`}>
                 <div className="flex items-center justify-between">
@@ -111,8 +129,9 @@ export function HostPanel({ client }: { client: GameClient }) {
                   </span>
                   <button
                     className="rounded bg-emerald-800 px-2 py-0.5 hover:bg-emerald-700 disabled:opacity-40"
-                    disabled={!can || !check.ok}
-                    onClick={() => submit(() => client.operator.craft(r.id, qty, using || undefined), 'craft')}
+                    disabled={!can || !check.ok || qty > CRAFT_MAX_QTY}
+                    title={why([qty > CRAFT_MAX_QTY, `craft at most ${CRAFT_MAX_QTY} at a time`], [check.needsType, 'pick a fragment type'], [me.bits < check.bits, 'not enough bits'], [check.needs.some((n) => n.have < n.need), 'missing fragments'])}
+                    onClick={() => submit(() => client.operator.craft(r.id, qty, usingType), 'craft')}
                     data-testid={`craft-${r.id}`}
                   >
                     craft for {check.bits}

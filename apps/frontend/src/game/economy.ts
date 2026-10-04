@@ -10,7 +10,8 @@ export interface CraftCheck {
 }
 
 export function craftCheck(recipe: RecipeDef, qty: number, inventory: Record<string, number>, bits: number, using?: TypeId): CraftCheck {
-  const needs: CraftCheck['needs'] = [];
+  // aggregate per item: an `any` slot resolving to an already-named type is summed (as recipeFragments does)
+  const totals = new Map<string, number>();
   let needsType = false;
   for (const [key, n] of Object.entries(recipe.fragments) as Array<[TypeId | 'any', number]>) {
     const type = key === 'any' ? using : key;
@@ -19,8 +20,9 @@ export function craftCheck(recipe: RecipeDef, qty: number, inventory: Record<str
       continue;
     }
     const item = fragmentId(type);
-    needs.push({ item, have: inventory[item] ?? 0, need: n * qty });
+    totals.set(item, (totals.get(item) ?? 0) + n * qty);
   }
+  const needs: CraftCheck['needs'] = [...totals].map(([item, need]) => ({ item, have: inventory[item] ?? 0, need }));
   const cost = recipe.bits * qty;
   const ok = !needsType && bits >= cost && needs.every((x) => x.have >= x.need);
   return { ok, bits: cost, needs, needsType };
