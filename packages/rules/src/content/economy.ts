@@ -25,6 +25,10 @@ export const MAX_PRICE = 1_048_576;
 export const MAX_QTY = 1024;
 export const FEE_DIVISOR = 16;
 
+/** Daemon listings (SP5 spec §3, §6): at most this many active per seller, each open for seven days. */
+export const MAX_ACTIVE_LISTINGS = 16;
+export const LISTING_TTL_MS = 7 * 86_400_000;
+
 /** The fee on a fill worth `bits`: 1/16, floored. The seller pays it out of the proceeds; it is destroyed. */
 export const feeOn = (bits: number): number => Math.floor(bits / FEE_DIVISOR);
 

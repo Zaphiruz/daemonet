@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-import { FEE_DIVISOR, MAX_OPEN_ORDERS, MAX_PRICE, MAX_QTY } from '@daemonet/rules';
+import { FEE_DIVISOR, LISTING_TTL_MS, MAX_ACTIVE_LISTINGS, MAX_OPEN_ORDERS, MAX_PRICE, MAX_QTY } from '@daemonet/rules';
 import type { ConnectOptions, GameClient } from '@daemonet/sdk';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MyOrder } from '../src/api.ts';
+import { describeListingError, type DiskDaemon, type Listing, type MyListing, type MyOrder } from '../src/api.ts';
 import { createCaptureStore } from '../src/game/capture.ts';
 import { createConnection, type ConnectionDeps } from '../src/game/connection.ts';
-import { createExchangeStore, excludeOwn, feeOn, fillEstimate, orderPreview, simulateOrder, spread, type OwnOrder } from '../src/game/exchange.ts';
+import { createExchangeStore, createListingStore, excludeOwn, feeOn, fillEstimate, ivTotal, listingNet, orderPreview, simulateOrder, spread, type OwnOrder } from '../src/game/exchange.ts';
 import { createLog } from '../src/game/log.ts';
 
 const book = { bids: [{ price: 40, qty: 5 }, { price: 38, qty: 2 }], asks: [{ price: 50, qty: 4 }, { price: 60, qty: 2 }] };
@@ -22,6 +22,24 @@ describe('exchange maths', () => {
   it('uses the rules constants the api uses', () => {
     expect(FEE_DIVISOR).toBe(16);
     expect(feeOn(MAX_PRICE * MAX_QTY)).toBe(2 ** 26); // the api's overflow test
+    expect(MAX_ACTIVE_LISTINGS).toBe(16);
+    expect(LISTING_TTL_MS).toBe(7 * 86_400_000);
+  });
+
+  it('a daemon listing brings its seller the price less the 1/16 fee; IVs add up', () => {
+    expect(listingNet(160)).toBe(150);
+    expect(listingNet(15)).toBe(15);
+    expect(ivTotal([1, 2, 3, 4, 5, 6, 7, 8])).toBe(36);
+  });
+
+  it('describes listing failures: a lost Disk slot says nothing was charged and to retry; a short balance says so', () => {
+    const e = (status: number, error: string, message: string) => ({ status, data: { error, message } });
+    expect(describeListingError(e(409, 'conflict', 'a daemon just arrived in that Disk slot; try again'))).toContain('try again');
+    expect(describeListingError(e(409, 'conflict', 'a daemon just arrived in that Disk slot; try again'))).toContain('nothing was charged');
+    expect(describeListingError(e(402, 'insufficient_bits', 'need 64 bits'))).toBe('not enough bits: need 64 bits');
+    expect(describeListingError(e(400, 'bad_request', 'your Disk is full'))).toBe('your Disk is full');
+    expect(describeListingError({ status: 'FETCH_ERROR' })).toContain('network error');
+    expect(describeListingError(e(500, 'internal_error', 'secret'))).not.toContain('secret');
   });
 
   it('reads the spread and estimates immediate fills at resting prices', () => {
@@ -75,6 +93,22 @@ describe('simulateOrder (the engine`s own cases from the api tests)', () => {
     expect(ex.asks).toEqual([{ price: 50, qty: 3 }]);
     expect(ex.bids).toEqual([]);
     expect(simulateOrder({ bids: [], asks: [{ price: 50, qty: 4 }] }, [own('SELL', 50, 3)], 'BUY', 50, 4)).toMatchObject({ filled: 1, resting: 3, selfSkipped: 3 });
+  });
+});
+
+describe('listing store', () => {
+  it('keeps the newest sales, is cleared on demand and notifies; emit() pokes subscribers', () => {
+    const s = createListingStore();
+    const seen = vi.fn();
+    s.subscribe(seen);
+    for (let i = 0; i < 20; i++) s.push({ listingId: `l${i}`, species: 'pingling', price: i + 1, fee: 0, role: 'seller' });
+    expect(s.get().sales).toHaveLength(16);
+    expect(s.get().sales[0]).toMatchObject({ listingId: 'l19' });
+    const before = seen.mock.calls.length;
+    s.emit();
+    expect(seen.mock.calls.length).toBe(before + 1);
+    s.clear();
+    expect(s.get().sales).toEqual([]);
   });
 });
 
@@ -156,6 +190,51 @@ describe('exchange events', () => {
   });
 });
 
+describe('listingSold events', () => {
+  const setup = async () => {
+    const clients: FakeClient[] = [];
+    const log = createLog(100);
+    const listings = createListingStore();
+    const invalidateListings = vi.fn();
+    const deps: ConnectionDeps = {
+      fetchTicket: async () => 'ticket:t',
+      createClient: (opts) => (clients.push(new FakeClient(opts)), clients.at(-1) as unknown as GameClient),
+      url: () => 'ws://test/ws',
+      log,
+      capture: createCaptureStore(),
+      stopSandbox: vi.fn(),
+      invalidateCodex: vi.fn(),
+      listings,
+      invalidateListings,
+    };
+    const conn = createConnection(deps);
+    await conn.open('controller');
+    return { conn, c: clients[0]!, log, listings, invalidateListings };
+  };
+
+  it('are captured in the store wired in the connection: the seller is told, the buyer is not (their purchase logged itself), both refetch listings, Disk and ledger', async () => {
+    const { conn, c, log, listings, invalidateListings } = await setup();
+    c.emit('exchange', { e: 'exchange', kind: 'listingSold', detail: { listingId: 'l1', daemonId: 'd1', species: 'pingling', price: 64, side: 'sell', fee: 4 } });
+    expect(log.get().map((e) => e.text)).toContain('Exchange: your pingling sold for 64 bits (60 after the fee)');
+    expect(listings.get().sales).toEqual([{ listingId: 'l1', species: 'pingling', price: 64, fee: 4, role: 'seller' }]);
+    expect(invalidateListings).toHaveBeenCalledTimes(1);
+    c.emit('exchange', { e: 'exchange', kind: 'listingSold', detail: { listingId: 'l2', daemonId: 'd2', species: 'pingling', price: 32, side: 'buy' } });
+    expect(log.get().filter((e) => e.text.includes('sold for'))).toHaveLength(1);
+    expect(listings.get().sales[0]).toEqual({ listingId: 'l2', species: 'pingling', price: 32, fee: 0, role: 'buyer' });
+    expect(invalidateListings).toHaveBeenCalledTimes(2);
+    // a malformed detail is a log line and a refetch, never a crash or a sale
+    c.emit('exchange', { e: 'exchange', kind: 'listingSold', detail: { species: 5, price: 'x' } });
+    c.emit('exchange', { e: 'exchange', kind: 'listingSold', detail: { listingId: 'l3', species: 'pingling', price: 8, side: 'sell' } }); // a seller's view always carries the fee
+    expect(log.get().map((e) => e.text)).toContain('Exchange: listingSold');
+    expect(listings.get().sales).toHaveLength(2);
+    expect(invalidateListings).toHaveBeenCalledTimes(4);
+    c.emit('reconnect');
+    expect(invalidateListings).toHaveBeenCalledTimes(5);
+    conn.close();
+    expect(listings.get().sales).toEqual([]);
+  });
+});
+
 // ---- the panel ----
 
 const q = vi.hoisted(() => ({
@@ -167,6 +246,13 @@ const q = vi.hoisted(() => ({
   cancel: vi.fn(),
   bookArgs: [] as unknown[],
   polls: {} as Record<string, number | undefined>,
+  listings: { data: undefined as unknown, error: undefined as unknown },
+  listingArgs: [] as unknown[],
+  mine: { data: undefined as unknown },
+  buy: vi.fn(),
+  unlist: vi.fn(),
+  list: vi.fn(),
+  disk: { data: [] as unknown[], refetch: vi.fn() },
 }));
 type Poll = { pollingInterval?: number } | undefined;
 vi.mock('../src/api.ts', async (importOriginal) => ({
@@ -177,11 +263,20 @@ vi.mock('../src/api.ts', async (importOriginal) => ({
   useVaultQuery: (_: unknown, o: Poll) => ((q.polls.vault = o?.pollingInterval), q.vault),
   usePlaceOrderMutation: () => [q.place],
   useCancelOrderMutation: () => [q.cancel],
+  useListingsQuery: (arg: unknown, o: Poll) => (q.listingArgs.push(arg), (q.polls.listings = o?.pollingInterval), q.listings),
+  useMyListingsQuery: (_: unknown, o: Poll) => ((q.polls.mine = o?.pollingInterval), q.mine),
+  useBuyListingMutation: () => [q.buy],
+  useUnlistMutation: () => [q.unlist],
+  useListDaemonMutation: () => [q.list],
+  useDiskQuery: () => q.disk,
 }));
+vi.mock('../src/render/draw.ts', () => ({ spriteCanvas: () => document.createElement('canvas') }));
 const { ExchangePanel } = await import('../src/panels/ExchangePanel.tsx');
 const { exchangeStore } = await import('../src/game/exchange.ts');
+const { DiskPanel } = await import('../src/panels/DiskPanel.tsx');
+const { log: appLog } = await import('../src/game/log.ts');
 
-const client = (bits: number) => ({ self: { bits }, role: 'controller' }) as unknown as GameClient;
+const client = (bits: number) => ({ self: { bits, ram: [], diskCapacity: 256 }, role: 'controller', operatorId: 'me', subnet: 'lo' }) as unknown as GameClient;
 const order = (over: Partial<MyOrder> = {}): MyOrder => ({ id: 'o1', item: 'frag:packet', side: 'SELL', price: 20, qty: 3, remaining: 3, status: 'OPEN', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(), ...over });
 const deferred = <T,>() => {
   let resolve!: (v: T) => void;
@@ -200,7 +295,17 @@ beforeEach(() => {
   q.place.mockReset();
   q.cancel.mockReset();
   q.bookArgs = [];
+  q.listings.data = { page: 0, more: false, listings: [] };
+  q.listings.error = undefined;
+  q.listingArgs = [];
+  q.mine.data = [];
+  q.buy.mockReset();
+  q.unlist.mockReset();
+  q.list.mockReset();
+  q.disk.data = [];
   exchangeStore.clear();
+  appLog.clear();
+  HTMLCanvasElement.prototype.getContext = (() => ({ imageSmoothingEnabled: false, clearRect() {}, drawImage() {} })) as never;
 });
 afterEach(cleanup);
 
@@ -359,5 +464,262 @@ describe('ExchangePanel', () => {
     q.book.data = undefined;
     fireEvent.change(screen.getByTestId('exchange-item'), { target: { value: 'frag:packet' } });
     expect(screen.getByTestId('book-error').textContent).toContain('server error');
+  });
+});
+
+// ---- daemon listings ----
+
+const listing = (id: string, over: Partial<Listing> = {}, daemon: Partial<Listing['daemon']> = {}): Listing => ({
+  id: `L-${id}`,
+  price: 64,
+  sellerId: 'seller',
+  sellerName: 'Bob',
+  createdAt: '2026-10-01T00:00:00.000Z',
+  expiresAt: '2026-10-08T00:00:00.000Z',
+  daemon: {
+    id,
+    species: 'pingling',
+    level: 8,
+    nature: 0,
+    traitSlot: 0,
+    ivs: [1, 2, 3, 4, 5, 6, 7, 8],
+    clean: false,
+    signature: 0,
+    moves: ['ping'],
+    heldItem: null,
+    patched: false,
+    crashes: 0,
+    arenaWins: 0,
+    history: [{ at: '2026-10-02T00:00:00.000Z', kind: 'traded', detail: 'sold on the Exchange for 40 bits' }],
+    log: { originalOperatorId: 'x', capturedAt: '2026-10-01T00:00:00Z', subnet: 'lo', tool: 'sniff', spawnIndex: null },
+    ...daemon,
+  },
+  ...over,
+});
+const mineRow = (id: string, over: Partial<MyListing> = {}): MyListing => ({ id, price: 64, status: 'ACTIVE', species: 'pingling', level: 8, createdAt: '2026-10-01T00:00:00.000Z', expiresAt: new Date(Date.now() + 86_400_000).toISOString(), soldAt: null, ...over });
+const open = () => fireEvent.click(screen.getByTestId('exchange-daemons'));
+const btn = (id: string) => screen.getByTestId(id) as HTMLButtonElement;
+
+describe('ExchangePanel views', () => {
+  it('switches between the item market and the daemon listings', () => {
+    render(<ExchangePanel client={client(1000)} />);
+    expect(screen.getByTestId('book')).toBeTruthy();
+    expect(screen.queryByTestId('listings')).toBeNull();
+    open();
+    expect(screen.getByTestId('listings')).toBeTruthy();
+    expect(screen.queryByTestId('book')).toBeNull();
+    fireEvent.click(screen.getByTestId('exchange-items'));
+    expect(screen.getByTestId('book')).toBeTruthy();
+  });
+});
+
+describe('ListingsPanel', () => {
+  it('lists daemons as text only with the seller, price and details (capture log, history incl. traded); polls slowly', () => {
+    q.listings.data = { page: 0, more: false, listings: [listing('d1', { sellerName: '<img src=x onerror=alert(1)>' }), listing('d2', { sellerId: 'me', sellerName: 'Me' })] };
+    render(<ExchangePanel client={client(1000)} />);
+    open();
+    const row = screen.getByTestId('listing-d1');
+    expect(row.textContent).toContain('64 bits');
+    expect(row.textContent).toContain('ivs 36');
+    expect(row.textContent).toContain('<img src=x onerror=alert(1)>');
+    expect(row.querySelector('img')).toBeNull();
+    expect(screen.getByTestId('listing-d2').textContent).toContain('yours');
+    expect(screen.queryByTestId('buy-d2')).toBeNull();
+    fireEvent.click(screen.getByTestId('details-d1'));
+    expect(screen.getByTestId('listing-d1').textContent).toContain('traded: sold on the Exchange for 40 bits');
+    expect(screen.getByTestId('listing-d1').textContent).toContain('sniff');
+    expect(q.polls.listings).toBe(8000);
+    expect(q.polls.mine).toBe(8000);
+    expect(document.body.innerHTML).not.toMatch(/github\.com/i);
+  });
+
+  it('buying asks for confirmation, then buys once (in-flight guard), logs it and shows the result', async () => {
+    const d = deferred<unknown>();
+    q.buy.mockReturnValue({ unwrap: () => d.promise });
+    q.listings.data = { page: 0, more: false, listings: [listing('d1')] };
+    render(<ExchangePanel client={client(1000)} />);
+    open();
+    fireEvent.click(btn('buy-d1'));
+    expect(q.buy).not.toHaveBeenCalled(); // spends bits: confirm first
+    fireEvent.click(btn('buy-confirm-d1'));
+    fireEvent.click(btn('buy-confirm-d1'));
+    expect(q.buy).toHaveBeenCalledTimes(1);
+    expect(q.buy).toHaveBeenCalledWith('L-d1');
+    expect(btn('buy-confirm-d1').disabled).toBe(true);
+    await act(async () => d.resolve({ daemonId: 'd1', slot: 3, price: 64, fee: 4 }));
+    expect(screen.getByTestId('listings-result').textContent).toContain('bought Pingling for 64 bits');
+    expect(appLog.get().map((e) => e.text)).toContain('bought Pingling for 64 bits (Disk slot 3)');
+    expect(screen.queryByTestId('buy-confirm-d1')).toBeNull();
+  });
+
+  it('a lost Disk slot (409) says nothing was charged and to try again; a closed listing shows inline', async () => {
+    q.listings.data = { page: 0, more: false, listings: [listing('d1')] };
+    render(<ExchangePanel client={client(1000)} />);
+    open();
+    q.buy.mockReturnValue({ unwrap: () => Promise.reject({ status: 409, data: { error: 'conflict', message: 'a daemon just arrived in that Disk slot; try again' } }) });
+    fireEvent.click(btn('buy-d1'));
+    fireEvent.click(btn('buy-confirm-d1'));
+    await act(async () => {});
+    expect(screen.getByTestId('listings-error').textContent).toContain('try again');
+    expect(screen.getByTestId('listings-error').textContent).toContain('nothing was charged');
+    expect(btn('buy-d1').disabled).toBe(false); // retryable
+    q.buy.mockReturnValue({ unwrap: () => Promise.reject({ status: 400, data: { error: 'bad_request', message: 'that listing is no longer available' } }) });
+    fireEvent.click(btn('buy-d1'));
+    fireEvent.click(btn('buy-confirm-d1'));
+    await act(async () => {});
+    expect(screen.getByTestId('listings-error').textContent).toBe('that listing is no longer available');
+  });
+
+  it('says why buying is disabled when the balance is short', () => {
+    q.listings.data = { page: 0, more: false, listings: [listing('d1', { price: 500 })] };
+    render(<ExchangePanel client={client(100)} />);
+    open();
+    expect(btn('buy-d1').disabled).toBe(true);
+    expect(btn('buy-d1').title).toContain('400');
+    expect(screen.getByTestId('listing-d1').textContent).toContain('need 400 more bits');
+  });
+
+  it('filters are applied together after a short pause and return to page 0; pages move with next / previous', () => {
+    vi.useFakeTimers();
+    try {
+      q.listings.data = { page: 0, more: true, listings: [listing('d1')] };
+      render(<ExchangePanel client={client(1000)} />);
+      open();
+      expect(q.listingArgs.at(-1)).toEqual({ sort: 'price', page: 0 });
+      fireEvent.change(screen.getByTestId('listing-species'), { target: { value: ' Pingling ' } });
+      fireEvent.change(screen.getByTestId('listing-max'), { target: { value: '100' } });
+      fireEvent.click(screen.getByTestId('listing-clean'));
+      fireEvent.change(screen.getByTestId('listing-sig'), { target: { value: '3' } });
+      fireEvent.change(screen.getByTestId('listing-type'), { target: { value: 'glitch' } });
+      fireEvent.change(screen.getByTestId('listing-sort'), { target: { value: 'new' } });
+      const calls = q.listingArgs.length;
+      act(() => void vi.advanceTimersByTime(100));
+      expect(q.listingArgs.slice(calls).every((a) => JSON.stringify(a) === JSON.stringify({ sort: 'price', page: 0 }))).toBe(true); // nothing fired mid-typing
+      act(() => void vi.advanceTimersByTime(500));
+      expect(q.listingArgs.at(-1)).toEqual({ sort: 'new', page: 0, species: 'pingling', maxPrice: 100, clean: true, minSignature: 3, type: 'glitch' });
+      fireEvent.click(screen.getByTestId('listing-next'));
+      act(() => void vi.advanceTimersByTime(500));
+      expect(q.listingArgs.at(-1)).toMatchObject({ page: 1 });
+      q.listings.data = { page: 1, more: false, listings: [] };
+      fireEvent.click(screen.getByTestId('listing-prev'));
+      act(() => void vi.advanceTimersByTime(500));
+      expect(q.listingArgs.at(-1)).toMatchObject({ page: 0 });
+      fireEvent.change(screen.getByTestId('listing-sig'), { target: { value: '99' } });
+      expect((screen.getByTestId('listing-sig') as HTMLInputElement).value).toBe('15');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows an empty result and a load error instead of stale listings', () => {
+    q.listings.data = { page: 0, more: false, listings: [] };
+    render(<ExchangePanel client={client(1000)} />);
+    open();
+    expect(screen.getByTestId('listings').textContent).toContain('no listings match');
+    q.listings.error = { status: 500 };
+    q.listings.data = undefined;
+    cleanup();
+    render(<ExchangePanel client={client(1000)} />);
+    open();
+    expect(screen.getByTestId('listings-load-error').textContent).toContain('server error');
+  });
+
+  it('my listings show the price after the fee and the status; an active one can be unlisted once, a failure shows inline', async () => {
+    const d = deferred<unknown>();
+    q.unlist.mockReturnValue({ unwrap: () => d.promise });
+    q.mine.data = [mineRow('a'), mineRow('b', { status: 'SOLD', soldAt: '2026-10-03T00:00:00.000Z' })];
+    render(<ExchangePanel client={client(1000)} />);
+    open();
+    const mine = screen.getByTestId('my-listings');
+    expect(mine.textContent).toContain('64 bits (60 after the fee)');
+    expect(mine.textContent).toContain('sold');
+    expect(screen.getAllByRole('button', { name: 'unlist' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'unlist' }));
+    fireEvent.click(screen.getByRole('button', { name: 'unlist' }));
+    expect(q.unlist).toHaveBeenCalledTimes(1);
+    expect(q.unlist).toHaveBeenCalledWith('a');
+    await act(async () => d.reject({ status: 400, data: { error: 'bad_request', message: 'listing is sold' } }));
+    expect(screen.getByTestId('listings-error').textContent).toBe('listing is sold');
+    expect((screen.getByRole('button', { name: 'unlist' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe('DiskPanel and the Exchange', () => {
+  const row = (id: string, lockedBy: string | null, over: Partial<DiskDaemon> = {}): DiskDaemon => ({
+    id, species: 'pingling', level: 8, clean: false, signature: 0, slot: 1, hp: 10, moves: ['ping'], ivs: [1], heldItem: null, patched: false, moveTypeUses: [], crashes: 0, history: [], lockedBy,
+    log: { originalOperatorId: 'x', capturedAt: '2026-10-01T00:00:00Z', subnet: 'lo', spawnIndex: null, tool: 'sniff' },
+    ...over,
+  });
+
+  it('offers list for an unlocked daemon and unlist for one locked by a listing (not for an order lock)', async () => {
+    q.disk.data = [row('free', null), row('listed', 'listing:L-9'), row('ordered', 'order:o1')];
+    q.unlist.mockReturnValue({ unwrap: () => Promise.resolve({ ok: true }) });
+    render(<DiskPanel client={client(1000)} />);
+    expect(screen.getByTestId('list-free').textContent).toBe('list');
+    expect(screen.queryByTestId('unlist-free')).toBeNull();
+    expect(screen.queryByTestId('list-listed')).toBeNull();
+    expect(screen.getByTestId('unlist-listed').textContent).toBe('unlist');
+    expect(screen.queryByTestId('list-ordered')).toBeNull();
+    expect(screen.queryByTestId('unlist-ordered')).toBeNull();
+    fireEvent.click(screen.getByTestId('unlist-listed'));
+    fireEvent.click(screen.getByTestId('unlist-listed'));
+    expect(q.unlist).toHaveBeenCalledTimes(1);
+    expect(q.unlist).toHaveBeenCalledWith('L-9');
+    await act(async () => {});
+  });
+
+  it('lists at a price after a confirm step that shows the fee and the lock, once; a refusal shows inline', async () => {
+    const d = deferred<unknown>();
+    q.list.mockReturnValue({ unwrap: () => d.promise });
+    q.disk.data = [row('free', null)];
+    render(<DiskPanel client={client(1000)} />);
+    fireEvent.click(screen.getByTestId('list-free'));
+    expect(q.list).not.toHaveBeenCalled();
+    setInput('list-price', '64');
+    expect(screen.getByTestId('list-preview').textContent).toContain('you get 60');
+    expect(screen.getByTestId('list-preview').textContent).toContain('7 days');
+    expect(screen.getByTestId('list-preview').textContent).toContain('locked');
+    fireEvent.click(screen.getByTestId('list-confirm'));
+    fireEvent.click(screen.getByTestId('list-confirm'));
+    expect(q.list).toHaveBeenCalledTimes(1);
+    expect(q.list).toHaveBeenCalledWith({ daemonId: 'free', price: 64 });
+    expect(btn('list-confirm').disabled).toBe(true);
+    await act(async () => d.reject({ status: 400, data: { error: 'bad_request', message: 'at most 16 active listings' } }));
+    expect(screen.getByTestId('list-error').textContent).toBe('at most 16 active listings');
+    expect(btn('list-confirm').disabled).toBe(false);
+    q.list.mockReturnValue({ unwrap: () => Promise.resolve({ id: 'x', price: 64, expiresAt: 'z' }) });
+    fireEvent.click(screen.getByTestId('list-confirm'));
+    await act(async () => {});
+    expect(screen.queryByTestId('list-price')).toBeNull();
+    expect(appLog.get().map((e) => e.text)).toContain('listed Pingling for 64 bits');
+  });
+
+  it('refuses prices outside 1..max and says why; listing is disabled at the active-listing cap', () => {
+    q.disk.data = [row('free', null)];
+    render(<DiskPanel client={client(1000)} />);
+    fireEvent.click(screen.getByTestId('list-free'));
+    setInput('list-price', '0');
+    expect(btn('list-confirm').disabled).toBe(true);
+    expect(screen.getByTestId('list-why').textContent).toContain(String(MAX_PRICE));
+    setInput('list-price', String(MAX_PRICE + 1));
+    expect(btn('list-confirm').disabled).toBe(true);
+    setInput('list-price', '');
+    expect(btn('list-confirm').disabled).toBe(true);
+    setInput('list-price', String(MAX_PRICE));
+    expect(btn('list-confirm').disabled).toBe(false);
+    cleanup();
+    q.mine.data = Array.from({ length: MAX_ACTIVE_LISTINGS }, (_, i) => mineRow(`m${i}`));
+    render(<DiskPanel client={client(1000)} />);
+    expect(btn('list-free').disabled).toBe(true);
+    expect(btn('list-free').title).toContain(`${MAX_ACTIVE_LISTINGS} active listings`);
+  });
+
+  it('shows the daemon history, including traded entries, as text', () => {
+    q.disk.data = [row('free', null, { history: [{ at: '2026-10-02T00:00:00.000Z', kind: 'traded', detail: 'sold on the Exchange for 40 bits <b>x</b>' }] })];
+    render(<DiskPanel client={client(1000)} />);
+    fireEvent.click(screen.getByTestId('history-toggle-free'));
+    const h = screen.getByTestId('history-free');
+    expect(h.textContent).toContain('traded: sold on the Exchange for 40 bits <b>x</b>');
+    expect(h.querySelector('b')).toBeNull();
   });
 });

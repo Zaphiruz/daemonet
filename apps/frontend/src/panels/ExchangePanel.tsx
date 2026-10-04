@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { describeApiError, useBookQuery, useCancelOrderMutation, useExchangeItemsQuery, useMyOrdersQuery, usePlaceOrderMutation, useVaultQuery } from '../api.ts';
 import { describeFill, orderPreview, simulateOrder, spread, useExchangeFills } from '../game/exchange.ts';
 import { log } from '../game/log.ts';
+import { ListingsPanel } from './ListingsPanel.tsx';
 
 /**
  * Background refresh only: a fill reaches the player as a sim `exchange` event (the connection invalidates the orders,
@@ -14,11 +15,28 @@ const POLL_MS = 16_000;
 const ITEMS_POLL_MS = 60_000;
 const clamp = (raw: string, max: number) => Math.max(1, Math.min(max, Math.trunc(Number(raw)) || 1));
 
+/** The Exchange (SP5): the item market and the daemon listings. */
+export function ExchangePanel({ client }: { client: GameClient }) {
+  const [view, setView] = useState<'items' | 'daemons'>('items');
+  return (
+    <div className="space-y-3 p-3 text-sm" data-testid="exchange">
+      <div className="flex gap-1 text-xs">
+        {(['items', 'daemons'] as const).map((v) => (
+          <button key={v} className={`rounded px-2 py-0.5 ${view === v ? 'bg-neutral-700' : 'bg-neutral-900 text-neutral-400'}`} onClick={() => setView(v)} data-testid={`exchange-${v}`}>
+            {v}
+          </button>
+        ))}
+      </div>
+      {view === 'items' ? <ItemMarket client={client} /> : <ListingsPanel client={client} />}
+    </div>
+  );
+}
+
 /**
- * The Exchange (SP5): order book per item, an order form, and the operator's own orders. Trades from the vault (Host tab).
+ * Order book per item, an order form, and the operator's own orders. Trades from the vault (Host tab).
  * Everything shown before placing is a preview of what the api's engine will do; the api is authoritative.
  */
-export function ExchangePanel({ client }: { client: GameClient }) {
+function ItemMarket({ client }: { client: GameClient }) {
   const items = useExchangeItemsQuery(undefined, { pollingInterval: ITEMS_POLL_MS });
   const [item, setItem] = useState('frag:packet');
   const book = useBookQuery(item, { pollingInterval: POLL_MS });
@@ -107,7 +125,7 @@ export function ExchangePanel({ client }: { client: GameClient }) {
   };
 
   return (
-    <div className="space-y-3 p-3 text-sm" data-testid="exchange">
+    <div className="space-y-3 text-sm">
       <div className="flex items-center gap-2 text-xs">
         <select className="min-w-0 flex-1 rounded bg-neutral-800 px-1 py-0.5" value={item} onChange={(e) => pick(e.target.value)} data-testid="exchange-item">
           {(items.data ?? [{ id: item, name: item, bid: null, ask: null }]).map((i) => (

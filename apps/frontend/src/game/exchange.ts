@@ -28,6 +28,15 @@ export function orderPreview(side: Side, price: number, qty: number): { total: n
   return { total, fee, net: total - fee };
 }
 
+/** What a daemon listing brings its seller after the fee. */
+export function listingNet(price: number): number {
+  return price - feeOn(price);
+}
+
+export function ivTotal(ivs: readonly number[]): number {
+  return ivs.reduce((a, b) => a + b, 0);
+}
+
 export function spread(book: Levels): { bid: number | null; ask: number | null; spread: number | null } {
   const bid = book.bids[0]?.price ?? null;
   const ask = book.asks[0]?.price ?? null;
@@ -190,6 +199,72 @@ export function parseFill(detail: unknown): FillNote | null {
   const { item, price, qty, side, fee } = d;
   if (typeof item !== 'string' || !Number.isSafeInteger(price) || !Number.isSafeInteger(qty) || (side !== 'buy' && side !== 'sell')) return null;
   return { item, price: price as number, qty: qty as number, side, ...(side === 'sell' && Number.isSafeInteger(fee) ? { fee: fee as number } : {}) };
+}
+
+/** One of this operator's daemons that changed hands on the Exchange, as the sim reports it (`listingSold`). */
+export interface SaleNote {
+  listingId: string;
+  species: string;
+  price: number;
+  fee: number;
+  /** Which side of the sale this operator was. */
+  role: 'buyer' | 'seller';
+}
+
+export const LISTING_SALES_KEPT = 16;
+
+/**
+ * The operator's latest daemon sales and purchases, newest first. `listingSold` arrives whether or not the Exchange
+ * or Disk tab is open, so the connection feeds this store; `emit()` tells subscribers to refetch without a new sale.
+ */
+export function createListingStore() {
+  let sales: SaleNote[] = [];
+  const listeners = new Set<() => void>();
+  let snapshot = { sales };
+  const notify = () => {
+    snapshot = { sales };
+    listeners.forEach((l) => l());
+  };
+  return {
+    push(s: SaleNote) {
+      sales = [s, ...sales].slice(0, LISTING_SALES_KEPT);
+      notify();
+    },
+    emit: notify,
+    clear() {
+      if (sales.length === 0) return;
+      sales = [];
+      notify();
+    },
+    get: () => snapshot,
+    subscribe(l: () => void) {
+      listeners.add(l);
+      return () => void listeners.delete(l);
+    },
+  };
+}
+
+export type ListingStore = ReturnType<typeof createListingStore>;
+export const listingStore = createListingStore();
+/** Fired when one of this operator's daemons changed hands on the Exchange, so open panels can refetch. */
+export const listingSold = listingStore;
+
+export function useListingSales(): SaleNote[] {
+  return useSyncExternalStore(listingStore.subscribe, listingStore.get, listingStore.get).sales;
+}
+
+/**
+ * Reads the detail of a sim `listingSold` event (untrusted: type-checked field by field). The sim has already turned
+ * the buyer and seller ids into this operator's own `side` ('buy' | 'sell') and keeps the fee for the seller, so the
+ * counterparty is never named. Returns null for anything that is not a well-formed sale.
+ */
+export function parseSale(detail: unknown): SaleNote | null {
+  const d = detail as Record<string, unknown> | null;
+  if (d === null || typeof d !== 'object') return null;
+  const { listingId, species, price, fee, side } = d;
+  if (typeof listingId !== 'string' || typeof species !== 'string' || !Number.isSafeInteger(price) || (side !== 'buy' && side !== 'sell')) return null;
+  if (side === 'sell' && !Number.isSafeInteger(fee)) return null;
+  return { listingId, species, price: price as number, fee: side === 'sell' ? (fee as number) : 0, role: side === 'sell' ? 'seller' : 'buyer' };
 }
 
 /** The log line for a fill. */

@@ -1,14 +1,14 @@
 import { consoleBusLogger, type Bus } from '@daemonet/bus';
 import type { Daemon, Prisma, PrismaClient } from '@daemonet/db';
-import { getSpecies } from '@daemonet/rules';
+import { LISTING_TTL_MS, MAX_ACTIVE_LISTINGS, getSpecies } from '@daemonet/rules';
 import { badRequest, conflict, forbidden, notFound } from '../errors.js';
 import { publishSafely, type PublishLog } from '../publish.js';
 import { Outbox, announce, credit, debit, lockOperators, type Tx } from './ledger.js';
 import { MAX_PRICE, feeOn } from './orders.js';
 
 /** Daemon listings (SP5 spec §6): fixed price, from Disk, locked while listed. */
-export const MAX_ACTIVE_LISTINGS = 16;
-export const LISTING_TTL_MS = 7 * 86_400_000;
+// the cap and the lifetime live in @daemonet/rules (the client shows the same numbers)
+export { LISTING_TTL_MS, MAX_ACTIVE_LISTINGS };
 export const PAGE_SIZE = 32;
 
 /**

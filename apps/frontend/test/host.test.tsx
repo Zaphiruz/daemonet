@@ -26,6 +26,9 @@ vi.mock('../src/api.ts', async (importOriginal) => ({
     return { data: opts?.skip ? undefined : vault.data, refetch: vault.refetch };
   },
   useDiskQuery: () => ({ data: diskRows.data, refetch: vi.fn() }),
+  useMyListingsQuery: () => ({ data: [] }),
+  useListDaemonMutation: () => [vi.fn()],
+  useUnlistMutation: () => [vi.fn()],
 }));
 vi.mock('../src/render/draw.ts', () => ({ spriteCanvas: () => document.createElement('canvas') }));
 

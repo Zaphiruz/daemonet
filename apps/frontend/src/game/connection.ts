@@ -6,7 +6,7 @@ import { capture as appCapture, type CaptureStore } from './capture.ts';
 import { chatStore, setMe, type ChatStore } from './chat.ts';
 import { clusterStore, type ClusterStore } from './clusters.ts';
 import { getControls, setControls } from './controls.ts';
-import { describeFill, exchangeStore, parseFill, type ExchangeStore } from './exchange.ts';
+import { describeFill, exchangeStore, listingStore, parseFill, parseSale, type ExchangeStore, type ListingStore } from './exchange.ts';
 import { describeIncidentEvent, incidentStore, type IncidentStore } from './incident.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
@@ -53,6 +53,10 @@ export interface ConnectionDeps {
   exchange?: ExchangeStore;
   /** Refetches the orders, book and vault queries (a fill moved items and bits; also after a reconnect). Optional. */
   invalidateExchange?(): void;
+  /** Holds the operator's latest daemon sales and purchases (`listingSold` arrives before any panel mounts). Optional. */
+  listings?: ListingStore;
+  /** Refetches the listings, Disk and ledger queries (a daemon changed hands; also after a reconnect). Optional. */
+  invalidateListings?(): void;
   /** Refetches /api/incidents (after a reconnect, when an Incident ended): the API re-seeds the store. Optional. */
   invalidateIncidents?(): void;
 }
@@ -131,6 +135,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.chat?.clear();
     deps.clusters?.clear();
     deps.exchange?.clear();
+    deps.listings?.clear();
     deps.incident?.resync();
     client.close();
     set({ status, kickReason: reason, client: null });
@@ -207,6 +212,7 @@ export function createConnection(deps: ConnectionDeps) {
       deps.incident?.resync();
       deps.invalidateIncidents?.();
       deps.invalidateExchange?.();
+      deps.invalidateListings?.();
       set({ status: 'online' });
       deps.log.push('system', 'reconnected');
     });
@@ -224,6 +230,17 @@ export function createConnection(deps: ConnectionDeps) {
     // fills are captured here, not in the Exchange panel: they arrive whether or not that tab is open. Every exchange
     // event makes the orders, book and vault queries refetch (a fill moved items and bits).
     on('exchange', (e) => {
+      if (e.kind === 'listingSold') {
+        // captured here too: a sale arrives whether or not the Exchange or Disk tab is open
+        const sale = parseSale(e.detail);
+        if (sale) {
+          deps.listings?.push(sale);
+          // the buyer's own panel already logged the purchase
+          if (sale.role === 'seller') deps.log.push('event', `Exchange: your ${sale.species} sold for ${sale.price} bits (${sale.price - sale.fee} after the fee)`);
+        } else deps.log.push('event', `Exchange: ${e.kind}`);
+        deps.invalidateListings?.();
+        return;
+      }
       const fill = e.kind === 'fill' ? parseFill(e.detail) : null;
       if (fill) {
         deps.exchange?.push(fill);
@@ -329,6 +346,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.chat?.clear();
     deps.clusters?.clear();
     deps.exchange?.clear();
+    deps.listings?.clear();
     deps.incident?.resync();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
@@ -359,11 +377,13 @@ const connection = createConnection({
   clusters: clusterStore,
   incident: incidentStore,
   exchange: exchangeStore,
+  listings: listingStore,
   stopSandbox,
   invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
   invalidateTickets: () => store.dispatch(api.util.invalidateTags(['Tickets'])),
   invalidateIncidents: () => store.dispatch(api.util.invalidateTags(['Incidents'])),
   invalidateExchange: () => store.dispatch(api.util.invalidateTags(['Orders', 'Book', 'Vault'])),
+  invalidateListings: () => store.dispatch(api.util.invalidateTags(['Listings', 'Disk', 'Ledger'])),
 });
 
 // the sandbox only starts a script on a live socket

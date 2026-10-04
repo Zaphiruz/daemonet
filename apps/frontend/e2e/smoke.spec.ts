@@ -225,6 +225,27 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await pb.getByTestId('tab-log').click();
   await expect(pb.getByTestId('log')).toContainText('Exchange: sold 3 frag:heap @ 20', { timeout: 10_000 });
 
+  // Daemon listings: B lists a daemon from the Disk tab; A buys it and finds it on their own Disk
+  const seededB = await pb.request.post('/api/dev/daemon', { data: { species: 'pingling', level: 8 }, headers: hdr });
+  const listed = (await seededB.json()) as { id: string };
+  await pb.getByTestId('tab-disk').click();
+  await pb.getByRole('button', { name: 'refresh' }).click(); // the seed went in behind the cache
+  await pb.getByTestId('list-' + listed.id).click();
+  await pb.getByTestId('list-price').fill('64');
+  await pb.getByTestId('list-confirm').click();
+  await expect(pb.getByTestId('unlist-' + listed.id)).toBeVisible({ timeout: 10_000 });
+  await pa.getByTestId('exchange-daemons').click();
+  await expect(pa.getByTestId('listing-' + listed.id)).toContainText('64 bits', { timeout: 15_000 });
+  await pa.getByTestId('buy-' + listed.id).click();
+  await pa.getByTestId('buy-confirm-' + listed.id).click(); // spends bits: confirmed first
+  await expect(pa.getByTestId('listing-' + listed.id)).toHaveCount(0, { timeout: 10_000 });
+  await pa.getByTestId('tab-disk').click();
+  await expect(pa.getByTestId('list-' + listed.id)).toBeVisible({ timeout: 10_000 });
+  await pb.getByTestId('tab-log').click();
+  await expect(pb.getByTestId('log')).toContainText('sold for 64 bits (60 after the fee)', { timeout: 10_000 });
+  await pb.getByTestId('tab-disk').click();
+  await expect(pb.getByTestId('unlist-' + listed.id)).toHaveCount(0, { timeout: 10_000 });
+
   // Incidents: an admin starts one; every connected operator sees the banner and the Incidents tab lists it
   const adm = await browser.newContext({ baseURL: 'http://127.0.0.1:4173' });
   expect((await adm.request.get(`/api/auth/dev?name=${name}adm&admin=true`, { maxRedirects: 0 })).status()).toBe(302);

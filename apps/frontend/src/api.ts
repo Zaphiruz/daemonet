@@ -1,7 +1,7 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import { chatStore } from './game/chat.ts';
 import { clusterStore } from './game/clusters.ts';
-import { exchangeStore, type Book } from './game/exchange.ts';
+import { exchangeStore, listingStore, type Book } from './game/exchange.ts';
 import { incidentStore } from './game/incident.ts';
 import type { CodexBestiaryRow, ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
 
@@ -150,6 +150,66 @@ export function describeOrgError(err: unknown): string {
   return describeApiError(err);
 }
 
+export interface ListedDaemon {
+  id: string;
+  species: string;
+  level: number;
+  nature: number;
+  traitSlot: number;
+  ivs: number[];
+  clean: boolean;
+  signature: number;
+  moves: string[];
+  heldItem: string | null;
+  patched: boolean;
+  crashes: number;
+  arenaWins: number;
+  history: Array<{ at: string; kind: string; detail: string }>;
+  log: { originalOperatorId: string; capturedAt: string; subnet: string; tool: string; spawnIndex: number | null };
+}
+export interface Listing {
+  id: string;
+  price: number;
+  sellerId: string;
+  sellerName: string | null;
+  createdAt: string;
+  expiresAt: string;
+  daemon: ListedDaemon;
+}
+export interface MyListing {
+  id: string;
+  price: number;
+  status: 'ACTIVE' | 'SOLD' | 'CANCELLED' | 'EXPIRED';
+  species: string;
+  level: number;
+  createdAt: string;
+  expiresAt: string;
+  soldAt: string | null;
+}
+export interface ListingQuery {
+  species?: string | undefined;
+  type?: string | undefined;
+  clean?: boolean | undefined;
+  minSignature?: number | undefined;
+  maxPrice?: number | undefined;
+  sort?: 'price' | 'new' | undefined;
+  page?: number | undefined;
+}
+
+/**
+ * A readable message for a failed listing call. A lost Disk slot (409) charged nothing and is worth a retry; a 402 says the
+ * balance is short; the api's own short reasons (`your Disk is full`, `that listing is no longer available`) show as they are.
+ */
+export function describeListingError(err: unknown): string {
+  const e = err as { status?: unknown; data?: { error?: unknown; message?: unknown } } | null | undefined;
+  if (e === null || typeof e !== 'object') return 'request failed';
+  const code = typeof e.data?.error === 'string' ? e.data.error : '';
+  const message = typeof e.data?.message === 'string' ? e.data.message : '';
+  if (e.status === 402 || code === 'insufficient_bits') return `not enough bits${message ? `: ${message}` : ''}`;
+  if (e.status === 409 || code === 'conflict') return `${message || 'Disk slot taken, try again'} (nothing was charged)`;
+  return describeApiError(err);
+}
+
 /** One operator's line in an Incident's history: names are live, there are no ids. `you` marks the caller. */
 export interface IncidentParticipant {
   name: string | null;
@@ -269,12 +329,12 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault', 'Orders', 'Book'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault', 'Orders', 'Book', 'Listings', 'Ledger'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
     disk: b.query<DiskDaemon[], void>({ query: () => '/disk', providesTags: ['Disk'] }),
-    ledger: b.query<LedgerEntry[], void>({ query: () => '/ledger' }),
+    ledger: b.query<LedgerEntry[], void>({ query: () => '/ledger', providesTags: ['Ledger'] }),
     vault: b.query<Record<string, number>, void>({ query: () => '/exchange/vault', providesTags: ['Vault'] }),
     exchangeItems: b.query<ExchangeItem[], void>({ query: () => '/exchange/items', providesTags: ['Book'] }),
     book: b.query<Book, string>({ query: (item) => `/exchange/book/${encodeURIComponent(item)}`, providesTags: ['Book'] }),
@@ -284,6 +344,24 @@ export const api = createApi({
       invalidatesTags: ['Orders', 'Book', 'Vault'],
     }),
     cancelOrder: b.mutation<{ ok: boolean }, string>({ query: (id) => ({ url: `/exchange/orders/${encodeURIComponent(id)}`, method: 'DELETE' }), invalidatesTags: ['Orders', 'Book', 'Vault'] }),
+    listings: b.query<{ page: number; more: boolean; listings: Listing[] }, ListingQuery>({
+      query: (q) => {
+        const params = new URLSearchParams();
+        for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') params.set(k, String(v));
+        return `/exchange/listings?${params.toString()}`;
+      },
+      providesTags: ['Listings'],
+    }),
+    myListings: b.query<MyListing[], void>({ query: () => '/exchange/listings/mine', providesTags: ['Listings'] }),
+    listDaemon: b.mutation<{ id: string; price: number; expiresAt: string }, { daemonId: string; price: number }>({
+      query: (body) => ({ url: '/exchange/listings', method: 'POST', body }),
+      invalidatesTags: ['Listings', 'Disk'],
+    }),
+    unlist: b.mutation<{ ok: boolean }, string>({ query: (id) => ({ url: `/exchange/listings/${encodeURIComponent(id)}`, method: 'DELETE' }), invalidatesTags: ['Listings', 'Disk'] }),
+    buyListing: b.mutation<{ daemonId: string; slot: number; price: number; fee: number }, string>({
+      query: (id) => ({ url: `/exchange/listings/${encodeURIComponent(id)}/buy`, method: 'POST' }),
+      invalidatesTags: ['Listings', 'Disk', 'Ledger'],
+    }),
     board: b.query<{ day: string; subnet: string; tickets: BoardTicket[]; acceptedToday: number }, string>({ query: (subnet) => `/tickets/board?subnet=${encodeURIComponent(subnet)}`, providesTags: ['Tickets'] }),
     ticketHistory: b.query<TicketHistory[], void>({ query: () => '/tickets', providesTags: ['Tickets'] }),
     chatHistory: b.query<ChatHistoryLine[], ChatHistoryArgs>({ query: chatHistoryUrl }),
@@ -332,6 +410,7 @@ export const api = createApi({
           clusterStore.clear();
           incidentStore.reset();
           exchangeStore.clear();
+          listingStore.clear();
         } catch {
           // a failed logout keeps the session and its caches
         }
@@ -362,6 +441,11 @@ export const {
   useMyOrdersQuery,
   usePlaceOrderMutation,
   useCancelOrderMutation,
+  useListingsQuery,
+  useMyListingsQuery,
+  useListDaemonMutation,
+  useUnlistMutation,
+  useBuyListingMutation,
   useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useVaultQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */
