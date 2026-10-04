@@ -1,5 +1,5 @@
 import { createPrisma, type PrismaClient } from '@daemonet/db';
-import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, ticketBoard } from '@daemonet/rules';
+import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, seasonBounds, ticketBoard } from '@daemonet/rules';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { DISK_SLOT_TAKEN, incidentParticipants, incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
@@ -48,7 +48,10 @@ function incidentRewards(incidentId: string, damage: Record<string, number>): Re
   }));
 }
 
-function contract(name: string, make: () => Promise<Store>, reset: () => Promise<void>) {
+/** Marks an arena season closed the way each store sees it (the api's season close sets `ArenaSeason.closedAt`). */
+type CloseSeason = (store: Store, seasonId: string) => Promise<void>;
+
+function contract(name: string, make: () => Promise<Store>, reset: () => Promise<void>, closeSeason: CloseSeason) {
   describe(`${name} contract`, () => {
     let store: Store;
     beforeEach(async () => {
@@ -890,10 +893,35 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await expect(store.recordArenaResult({ ...base, matchId: 'ag-4', winnerId: 'someone-else' })).rejects.toThrow(RangeError);
       await expect(store.recordArenaResult({ ...base, matchId: 'ag-5', endedAt: 'not a date' })).rejects.toThrow(RangeError);
     });
+
+    it('arena: a match whose season is already closed is recorded but never counted', async () => {
+      const ctx = { seedId: 'abcd1234' };
+      const ivy = await store.loadOrCreateOperator('sub-ac-ivy', 'lo', SPAWN);
+      const jo = await store.loadOrCreateOperator('sub-ac-jo', 'lo', SPAWN);
+      await store.applyIntent(claim(ivy.id, 'acivy', ownedRecord('pingling', 5, 0, 'abcd1234-ac-ivy')), ctx);
+      await store.applyIntent(claim(jo.id, 'acjo', ownedRecord('pingling', 5, 0, 'abcd1234-ac-jo')), ctx);
+      const late: ArenaResultInput = {
+        matchId: 'ac-1', mode: 'ranked', aId: ivy.id, bId: jo.id, winnerId: ivy.id, reason: 'wipeout', durationMs: 60_000, endedAt: '2026-09-30T23:50:00.000Z',
+        dealt: { [ivy.id]: ['abcd1234-ac-ivy'] },
+      };
+      await closeSeason(store, '2026-09');
+      const unchanged = { before: 1500, after: 1500, reward: 0, arenaWins: [] };
+      expect(await store.recordArenaResult(late)).toEqual({ counted: false, a: unchanged, b: unchanged });
+      expect(await store.recordArenaResult(late)).toEqual({ counted: false, a: unchanged, b: unchanged }); // a replay reports the same
+      const ivyNow = await store.loadOrCreateOperator('sub-ac-ivy', 'lo', SPAWN);
+      expect(ivyNow.bits).toBe(0);
+      expect(ivyNow.ram[0]).toMatchObject({ arenaWins: 0 });
+      expect(await store.arenaRating(ivy.id, new Date('2026-09-30T23:59:00Z'))).toBe(1500);
+      expect((await store.ledgerFor(ivy.id)).filter((l) => l.reason === 'arena')).toEqual([]);
+      // the open season still counts
+      expect(await store.recordArenaResult({ ...late, matchId: 'ac-2', endedAt: '2026-10-01T00:10:00.000Z' })).toMatchObject({ counted: true, a: { reward: 32, arenaWins: ['abcd1234-ac-ivy'] } });
+    });
   });
 }
 
-contract('MemoryStore', async () => new MemoryStore(), async () => {});
+contract('MemoryStore', async () => new MemoryStore(), async () => {}, async (store, seasonId) => {
+  (store as MemoryStore).arenaSeasons.set(seasonId, { closedAt: new Date().toISOString() });
+});
 
 describe('SIM_LEDGER_REASONS', () => {
   it('is exactly the reasons the store intents write (one source of truth)', () => {
@@ -955,6 +983,10 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     async () => new PrismaStore(prisma!),
     async () => {
       await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
+    },
+    async (_store, seasonId) => {
+      const { startsAt, endsAt } = seasonBounds(seasonId);
+      await prisma!.arenaSeason.upsert({ where: { id: seasonId }, create: { id: seasonId, startsAt, endsAt, closedAt: new Date() }, update: { closedAt: new Date() } });
     },
   );
 

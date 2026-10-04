@@ -602,7 +602,8 @@ export class PrismaStore implements Store {
    * One transaction (economy contract, carry-forward #30/#31/#34): both operator rows are locked first, sorted by id;
    * then the replay check, the caps (counted from committed ArenaMatch rows of the match's UTC day), the ratings (read
    * from the stored rows, a new season's row seeded by the soft reset), the win bits with one `arena` ledger row
-   * (ref = match id) and `arenaWins` on the winner's daemons that dealt damage and that it still owns.
+   * (ref = match id) and `arenaWins` on the winner's daemons that dealt damage and that it still owns. A match whose
+   * season is already closed (`ArenaSeason.closedAt`) is recorded uncounted.
    */
   async recordArenaResult(input: ArenaResultInput): Promise<ArenaSettlement> {
     const problem = arenaResultProblem(input);
@@ -620,6 +621,9 @@ export class PrismaStore implements Store {
         const bounds = seasonBounds(seasonId);
         // ON CONFLICT DO NOTHING: matches of other operators may create the season row at the same time.
         await tx.arenaSeason.createMany({ data: [{ id: seasonId, startsAt: bounds.startsAt, endsAt: bounds.endsAt }], skipDuplicates: true });
+        // Read under the operator locks: a season the api has already closed (and paid out) takes no more counted
+        // results, so a settlement that arrives after the close is recorded but moves nothing.
+        const seasonClosed = (await tx.arenaSeason.findUniqueOrThrow({ where: { id: seasonId }, select: { closedAt: true } })).closedAt !== null;
         const ratingOf = async (operatorId: string) => {
           const key = { operatorId_seasonId: { operatorId, seasonId } };
           const row = await tx.arenaRating.findUnique({ where: key });
@@ -637,7 +641,7 @@ export class PrismaStore implements Store {
           ? await tx.arenaMatch.count({ where: { endedAt: today, OR: [{ aId: input.winnerId, aReward: { gt: 0 } }, { bId: input.winnerId, bReward: { gt: 0 } }] } })
           : 0;
         const winner = input.winnerId === null ? null : input.winnerId === input.aId ? 'a' : 'b';
-        const s = settleArena(input.mode, winner, { a, b, pairCountedToday, winnerRewardedToday, live: input.live ?? true });
+        const s = seasonClosed ? { counted: false, a, b, reward: 0 } : settleArena(input.mode, winner, { a, b, pairCountedToday, winnerRewardedToday, live: input.live ?? true });
         const settlement: ArenaSettlement = {
           counted: s.counted,
           a: { before: a.rating, after: s.a.rating, reward: 0, arenaWins: [] },

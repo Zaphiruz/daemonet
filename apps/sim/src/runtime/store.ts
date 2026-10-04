@@ -637,6 +637,8 @@ export class MemoryStore implements Store {
   readonly vault = new Map<string, number>();
   /** `${operatorId}:${seasonId}` -> rating and record (mirrors ArenaRating). */
   readonly arenaRatings = new Map<string, Glicko & { wins: number; losses: number; draws: number }>();
+  /** Arena seasons by id (mirrors ArenaSeason; the api's season close sets `closedAt`, tests set it here). */
+  readonly arenaSeasons = new Map<string, { closedAt: string | null }>();
   /** Recorded matches by id (mirrors ArenaMatch). */
   readonly arenaMatches = new Map<string, { input: ArenaResultInput; settlement: ArenaSettlement }>();
   /** Incident rows by id (mirrors the Incident table). */
@@ -996,6 +998,9 @@ export class MemoryStore implements Store {
     const season = seasonIdOf(endedAt);
     const day = utcDayOf(endedAt);
     const today = (iso: string) => Date.parse(iso) >= day.gte.getTime() && Date.parse(iso) < day.lt.getTime();
+    if (!this.arenaSeasons.has(season)) this.arenaSeasons.set(season, { closedAt: null });
+    // Mirrors PrismaStore: a season already closed takes no more counted results.
+    const seasonClosed = this.arenaSeasons.get(season)!.closedAt !== null;
     const a = this.arenaRow(input.aId, season);
     const b = this.arenaRow(input.bId, season);
     const samePair = (m: ArenaResultInput) => (m.aId === input.aId && m.bId === input.bId) || (m.aId === input.bId && m.bId === input.aId);
@@ -1005,7 +1010,7 @@ export class MemoryStore implements Store {
       ? [...this.arenaMatches.values()].filter((m) => today(m.input.endedAt) && ((m.input.aId === w && m.settlement.a.reward > 0) || (m.input.bId === w && m.settlement.b.reward > 0))).length
       : 0;
     const winner = input.winnerId === null ? null : input.winnerId === input.aId ? 'a' : 'b';
-    const s = settleArena(input.mode, winner, { a, b, pairCountedToday, winnerRewardedToday, live: input.live ?? true });
+    const s = seasonClosed ? { counted: false, a, b, reward: 0 } : settleArena(input.mode, winner, { a, b, pairCountedToday, winnerRewardedToday, live: input.live ?? true });
     const side = (before: number, after: number): ArenaSideResult => ({ before, after, reward: 0, arenaWins: [] });
     const settlement: ArenaSettlement = { counted: s.counted, a: side(a.rating, s.a.rating), b: side(b.rating, s.b.rating) };
     if (s.counted) {
