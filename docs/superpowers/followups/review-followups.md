@@ -175,3 +175,15 @@ Fixed before merge: codex/api responses private no-store; SCAN_* thresholds in r
 - T2: addResearch in world.ts imported by capture.ts creates a runtime cycle (move to systems/research.ts); misnamed tickets test
 - T3: a capture doesn't invalidate the Codex cache (research points stale until refresh)
 Task F: minor (deferred): clear tickets accept kills of any level (spec sets no floor) — tuning knob; per-payout faucet metric log suggested
+
+## 2026-10-01-daemonet-sp4-plan1-bus-chat
+
+Fixed before merge: admin filter terms apply to names; bus onReconnect + periodic resync of mutes/terms; prune keeps reported lines and prunes filter hits; (at,id) history cursor; muted on join; history backfill on reconnect; enableReadyCheck false, bus logger, \p{Cf} stripped, no self-mute
+
+- T1: for Tasks 3/4 — "no REDIS_URL" warning lives in service wiring; sim+api createBus(undefined) give two unconnected MemoryBus instances; Dockerfiles must include packages/bus; fire-and-forget publish must catch rejections; subscribe/publish after close() asymmetric
+- T2: punctuation-only WORD terms dropped as empty; unbalanced regex reports invalid not unsafe
+- T3: MemoryStore.setMute doesn't throw for unknown operator (mirror gap; acceptable); integration test passes a fresh MemoryBus to gracefulShutdown
+- T4: cluster/org lines reportable by non-members (ids unguessable; revisit in plan 3); report queue fires 2 queries per target concurrently; daily report cap returns 400 not 429 (plan-mandated); fixed sleep in failing-bus test; admin not told when a live publish fails
+- T5: no Log feedback on a successful admin mute; no unread badge on the Chat tab
+Task F: minor (deferred): resync read can briefly overwrite a just-confirmed sim auto-mute (healed by next 60 s resync) — local mute epoch
+Task F: minor (deferred): `before` without `beforeId` still accepted (strict at<before); cleanChatText \p{Cf} strips ZWJ/ZWNJ (emoji sequences split); prune scans without an `at` index; frontend chat store LIMIT 256 stops "older lines" on full channels; join-time `muted` doesn't reach a sandbox started later
