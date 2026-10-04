@@ -166,3 +166,12 @@ Fixed before merge: conditional starter claim; leave waits on inventoryInFlight;
 Task F: minor (deferred): on the reload-required path world-only inventory changes since the last full checkpoint (useItem, capture tools) roll back — inherent to store-as-truth
 Task F: minor (deferred): a fresh SDK connect() during the reload window sees `reload required` as terminal (frontend retries; plain bots fail once); 10-minute time cap untested
 Task F: minor (deferred): capture tool consumption is only checkpointed (commit-then-crash returns the tool); /api/dev/bits duplicates grantBits (share one helper if an admin grant route is added)
+
+## 2026-09-30-daemonet-sp3b-plan3-tickets-research
+
+Fixed before merge: codex/api responses private no-store; SCAN_* thresholds in rules; RTK reset on logout; refused payouts logged and surfaced; checkpoint progress clamp parity; SDK serverDay
+
+- T1: capture-ticket satisfiability not asserted against regions; lo starter clear tickets may name band-1+ types (thread/shell/cloud)
+- T2: addResearch in world.ts imported by capture.ts creates a runtime cycle (move to systems/research.ts); misnamed tickets test
+- T3: a capture doesn't invalidate the Codex cache (research points stale until refresh)
+Task F: minor (deferred): clear tickets accept kills of any level (spec sets no floor) — tuning knob; per-payout faucet metric log suggested
