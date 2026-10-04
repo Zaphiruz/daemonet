@@ -4,13 +4,13 @@ import type { OperatorSelf } from '@daemonet/sdk';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArenaHud } from '../src/components/ArenaHud.tsx';
-import { arenaClock, clockText, createArenaStore, hpPercent, resultPending, resultText, type ArenaResultInfo } from '../src/game/arena.ts';
+import { arenaClock, clockText, createArenaStore, hpPercent, resultText, type ArenaResultInfo } from '../src/game/arena.ts';
 
 afterEach(cleanup);
 
 const result: ArenaResultInfo = { id: 'm1', mode: 'ranked', outcome: 'win', reason: 'wipeout', ratingBefore: 1500, ratingAfter: 1662.3, reward: 32, counted: true };
-/** What the sim announces when the store stayed unreachable: nothing changed, nothing counted. */
-const unknown: ArenaResultInfo = { ...result, ratingAfter: 1500, reward: 0, counted: false };
+/** A definitive ranked ending that did not count (countdown forfeit, pair cap, closed season): nothing moved. */
+const uncounted: ArenaResultInfo = { ...result, ratingAfter: 1500, reward: 0, counted: false };
 
 describe('arena helpers', () => {
   it('reads the clock from the match world tick', () => {
@@ -26,16 +26,13 @@ describe('arena helpers', () => {
   it('words results', () => {
     expect(resultText(result)).toBe('you won by wipe-out · 1500 → 1662 · +32 bits');
     expect(resultText({ ...result, outcome: 'loss', reason: 'forfeit', ratingAfter: 1340, reward: 0 })).toBe('you lost by forfeit · 1500 → 1340');
-    expect(resultText({ ...result, outcome: 'draw', reason: 'timeout', counted: false, reward: 0 })).toBe('draw on time · not counted');
+    expect(resultText({ ...uncounted, outcome: 'draw', reason: 'timeout' })).toBe('draw on time · not counted · rating unchanged');
     expect(resultText({ ...result, mode: 'unranked', counted: false, reward: 0 })).toBe('you won by wipe-out');
   });
 
-  it('says pending, never "not counted", for a ranked result the sim could not settle', () => {
-    expect(resultPending(unknown)).toBe(true);
-    expect(resultPending(result)).toBe(false);
-    expect(resultPending({ ...unknown, mode: 'unranked' })).toBe(false);
-    expect(resultText(unknown)).toBe('you won by wipe-out · rating pending');
-    expect(resultText(unknown)).not.toContain('not counted');
+  it('says an uncounted ranked result was not counted and the rating unchanged', () => {
+    expect(resultText(uncounted)).toBe('you won by wipe-out · not counted · rating unchanged');
+    expect(resultText({ ...uncounted, mode: 'unranked' })).toBe('you won by wipe-out');
   });
 
   it('tracks the queue, challenges and the last result', () => {
@@ -57,21 +54,32 @@ describe('arena helpers', () => {
     expect(s.get().lastResult).toBe(result);
   });
 
-  it('keeps the result past the match, takes a late one after the return home, and clears on logout', () => {
+  it('keeps the result past the match, takes the next match result, and clears on logout', () => {
     const s = createArenaStore();
     s.onMatch();
-    s.onResult(unknown);
+    s.onResult(uncounted);
     s.onQueued('ranked', undefined, 10); // back home, queueing again
-    expect(s.get().lastResult).toBe(unknown);
-    s.onMatch(); // the next match starting does not wipe the previous result
-    expect(s.get().lastResult).toBe(unknown);
-    s.onResult(result); // the settled one arrives minutes later and replaces the pending one
-    expect(s.get().lastResult).toBe(result);
+    expect(s.get().lastResult).toBe(uncounted);
+    s.onResult({ ...result, id: 'stray' }); // another match's result without a new match: ignored
+    expect(s.get().lastResult).toBe(uncounted);
+    s.onResult({ ...uncounted, counted: true }); // same match: replaced
+    expect(s.get().lastResult?.counted).toBe(true);
+    s.onMatch(); // the next match starting does not wipe it...
+    expect(s.get().lastResult?.id).toBe('m1');
+    s.onResult({ ...result, id: 'm2' }); // ...but its own result replaces it
+    expect(s.get().lastResult?.id).toBe('m2');
     const listener = vi.fn();
     s.subscribe(listener);
     s.clear();
     expect(s.get()).toEqual({ queued: null, note: null, challenges: [], lastResult: null });
     expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it('treats a malformed expiry as expired', () => {
+    const s = createArenaStore();
+    s.onChallenge({ challengeId: 'x', from: 'bob', name: null, mode: 'ranked', expiresAt: 'garbage' });
+    s.prune(1);
+    expect(s.get().challenges).toEqual([]);
   });
 
   it('does not notify when prune has nothing to drop', () => {
@@ -121,9 +129,9 @@ describe('ArenaHud', () => {
     expect(screen.queryByTestId('arena-hud')).toBeNull();
   });
 
-  it('words an unsettled result as pending and ignores another match\'s result', () => {
-    const { rerender } = render(<ArenaHud self={selfInMatch('over')} tick={900} result={unknown} onForfeit={null} />);
-    expect(screen.getByTestId('arena-result').textContent).toBe('you won by wipe-out · rating pending');
+  it('words an uncounted result and ignores a result of another match', () => {
+    const { rerender } = render(<ArenaHud self={selfInMatch('over')} tick={900} result={uncounted} onForfeit={null} />);
+    expect(screen.getByTestId('arena-result').textContent).toBe('you won by wipe-out · not counted · rating unchanged');
     rerender(<ArenaHud self={selfInMatch('over')} tick={900} result={{ ...result, id: 'older' }} onForfeit={null} />);
     expect(screen.getByTestId('arena-result').textContent).toBe('you won');
     expect(screen.queryByTestId('arena-forfeit')).toBeNull();
