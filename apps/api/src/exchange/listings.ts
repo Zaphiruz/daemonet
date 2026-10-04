@@ -3,7 +3,7 @@ import type { Daemon, Prisma, PrismaClient } from '@daemonet/db';
 import { LISTING_TTL_MS, MAX_ACTIVE_LISTINGS, getSpecies } from '@daemonet/rules';
 import { badRequest, conflict, forbidden, notFound } from '../errors.js';
 import { publishSafely, type PublishLog } from '../publish.js';
-import { Outbox, announce, credit, debit, freeDiskSlot, isSlotTaken, lockOperators, type Tx } from './ledger.js';
+import { Outbox, announce, credit, debit, freeDiskSlot, isSlotTaken, lockOperators, withTraded, type Tx } from './ledger.js';
 import { MAX_PRICE, feeOn } from './orders.js';
 
 /** Daemon listings (SP5 spec §6): fixed price, from Disk, locked while listed. */
@@ -169,7 +169,7 @@ export async function buyListing(prisma: PrismaClient, bus: Bus, buyerId: string
       const fee = feeOn(listing.price);
       await debit(tx, out, buyerId, listing.price, LISTING_LEDGER_REASONS.buy, listing.id);
       await credit(tx, out, listing.sellerId, listing.price - fee, LISTING_LEDGER_REASONS.sale, listing.id);
-      const history = [...(Array.isArray(daemon.history) ? (daemon.history as Prisma.JsonArray) : []), { at: at.toISOString(), kind: 'traded', detail: `sold on the Exchange for ${listing.price} bits` }];
+      const history = withTraded(daemon.history, at, `sold on the Exchange for ${listing.price} bits`);
       const moved = await tx.daemon.updateMany({
         where: { id: daemon.id, operatorId: listing.sellerId, location: 'DISK', lockedBy: lockValue(listing.id) },
         data: { operatorId: buyerId, slot, lockedBy: null, history },

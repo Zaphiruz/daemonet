@@ -3,7 +3,7 @@ import type { Daemon, Prisma, PrismaClient, Trade } from '@daemonet/db';
 import { MAX_OPEN_TRADES, MAX_TRADE_BITS, MAX_TRADE_DAEMONS, MAX_TRADE_ITEMS, TRADE_IDLE_MS, isTradable } from '@daemonet/rules';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../errors.js';
 import { publishSafely, type PublishLog } from '../publish.js';
-import { Outbox, announce, credit, debit, freeDiskSlot, isSlotTaken, lockOperators, type Tx } from './ledger.js';
+import { Outbox, announce, credit, debit, freeDiskSlot, isSlotTaken, lockOperators, withTraded, type Tx } from './ledger.js';
 import { daemonView } from './listings.js';
 import { MAX_QTY, feeOn, vaultAdd, vaultTake } from './orders.js';
 
@@ -208,7 +208,7 @@ async function execute(tx: Tx, t: Trade, confirmerId: string, at: Date, out: Out
       const slot = await freeDiskSlot(tx, s.to);
       if (slot === null) throw badRequest(`${s.to === confirmerId ? 'your' : "the other operator's"} Disk is too full to receive the daemons`);
       const d = await tx.daemon.findUniqueOrThrow({ where: { id }, select: { history: true } });
-      const history = [...(Array.isArray(d.history) ? (d.history as Prisma.JsonArray) : []), { at: at.toISOString(), kind: 'traded', detail: 'traded directly' }];
+      const history = withTraded(d.history, at, 'traded directly');
       await tx.daemon.update({ where: { id }, data: { operatorId: s.to, slot, lockedBy: null, history } });
       disk.add.push({ operatorId: s.to, slot });
     }

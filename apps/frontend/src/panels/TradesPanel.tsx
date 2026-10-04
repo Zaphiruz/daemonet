@@ -97,7 +97,8 @@ export function TradesPanel({ client }: { client?: GameClient }) {
           trades unavailable: {describeTradeError(trades.error, 'open')}
         </p>
       )}
-      {rows.length === 0 && trades.error === undefined && <p className="text-xs text-neutral-600">no trades</p>}
+      {trades.data === undefined && trades.error === undefined && <p className="text-xs text-neutral-600">loading trades…</p>}
+      {trades.data !== undefined && rows.length === 0 && trades.error === undefined && <p className="text-xs text-neutral-600">no trades</p>}
       {live.map((t) => (
         <TradeCard key={t.id} trade={t} client={client} />
       ))}

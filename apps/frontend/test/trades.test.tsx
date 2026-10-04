@@ -203,6 +203,18 @@ describe('Exchange tab', () => {
   });
 });
 
+describe('TradesPanel: loading', () => {
+  it('says "no trades" only once the list has loaded', () => {
+    q.trades.data = undefined as unknown as unknown[];
+    render(<TradesPanel client={client(1000)} />);
+    expect(screen.queryByText('no trades')).toBeNull();
+    cleanup();
+    q.trades.data = [];
+    render(<TradesPanel client={client(1000)} />);
+    expect(screen.getByText('no trades')).toBeTruthy();
+  });
+});
+
 describe('TradesPanel: opening', () => {
   it('opens by name once (in-flight guard), clears the field, and shows a refusal inline', async () => {
     const d = deferred<unknown>();

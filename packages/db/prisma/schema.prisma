@@ -223,6 +223,7 @@ model Listing {
   @@index([sellerId, status])
   @@index([daemonId])
   @@index([status, expiresAt])
+  @@index([status, soldAt])
 }
 
 enum OrderSide {
@@ -269,6 +270,7 @@ model Fill {
   at          DateTime @default(now())
 
   @@index([item, at])
+  @@index([at])
 }
 
 /// Decompiled daemons keep their capture log here (never loadable again).

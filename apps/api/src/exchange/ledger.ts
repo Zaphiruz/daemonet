@@ -85,6 +85,14 @@ export function announce(bus: Bus, log: PublishLog, out: Outbox): void {
 }
 
 /**
+ * A daemon's history with one `traded` entry appended (listing sales and direct trades): a non-array history (never
+ * expected) starts over rather than failing the move.
+ */
+export function withTraded(history: Prisma.JsonValue, at: Date, detail: string): Prisma.JsonArray {
+  return [...(Array.isArray(history) ? history : []), { at: at.toISOString(), kind: 'traded', detail }];
+}
+
+/**
  * Lowest free Disk slot of an operator, or null when the Disk is full. Read from the DB (never the sim's memory) against
  * `Operator.diskCapacity`; call it under the operator's lock. A sim store / capture that does not take the operator lock
  * can still claim the same slot concurrently: the `(operatorId, location, slot)` unique index then refuses one of them.
