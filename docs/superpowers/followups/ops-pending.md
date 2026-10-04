@@ -76,6 +76,3 @@ sandbox. Nothing new is needed in Vault or Authentik; the checks below happen af
       policy and `X-Frame-Options: SAMEORIGIN`, reachable without logging in. If a Cloudflare rule or the nginx
       server block on LC2 adds its own `Content-Security-Policy`, remove it for `/sandbox.html` (two policies would
       both apply).
-- [ ] Optional hardening not done in this plan: the `frontend` service in `docker-compose.prod.yml` has no `cap_drop`,
-      `read_only` or resource limits like `sim`/`api` (Caddy needs `/data` and `/config` writable and `NET_BIND_SERVICE`);
-      add them after testing on S1.

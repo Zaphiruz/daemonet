@@ -10,6 +10,13 @@ test('dev login, claim a starter, run a daemon, move by clicking, run the starte
   });
   page.on('pageerror', (e) => violations.push(`pageerror: ${e.message}`));
 
+  if (process.env.E2E_BASE_URL) {
+    // Against the production image the headers must really be there, otherwise the collector above proves nothing.
+    const sandbox = await page.request.get('/sandbox.html');
+    expect(sandbox.headers()['content-security-policy']).toContain("default-src 'none'");
+    expect((await page.request.get('/')).headers()['content-security-policy']).toContain("script-src 'self';");
+  }
+
   await page.goto('/');
   await page.getByTestId('dev-name').fill(name);
   await page.getByTestId('dev-login').click();
@@ -28,8 +35,10 @@ test('dev login, claim a starter, run a daemon, move by clicking, run the starte
   await page.getByTestId('run-0').click();
   const canvas = page.getByTestId('world');
   const box = (await canvas.boundingBox())!;
+  const tickAtClick = Number(await page.getByTestId('tick').textContent());
   await canvas.click({ position: { x: box.width / 2 + 96, y: box.height / 2 } });
-  await page.waitForTimeout(500);
+  // a rejection arrives within a few ticks of the command; wait for the world to advance past that window
+  await expect.poll(async () => Number(await page.getByTestId('tick').textContent())).toBeGreaterThanOrEqual(tickAtClick + 8);
   await page.getByTestId('tab-log').click();
   await expect(page.getByTestId('log')).not.toContainText('moveTo:');
   await expect(page.getByTestId('log')).not.toContainText('run:');

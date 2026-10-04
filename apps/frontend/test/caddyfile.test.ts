@@ -42,5 +42,16 @@ describe('Caddyfile sandbox contract', () => {
     expect(scriptSrc).not.toContain('unsafe-inline');
     expect(scriptSrc).not.toContain('data:');
     expect(csp).toContain("worker-src 'self' blob:");
+    expect(csp).toContain("default-src 'self';");
+    for (const directive of csp.split(';').map((d) => d.trim())) {
+      if (!directive.startsWith('style-src')) expect(directive, directive).not.toContain('unsafe-inline');
+      if (!directive.startsWith('img-src')) expect(directive, directive).not.toContain('data:');
+    }
+  });
+
+  it('applies the host CSP to /assets/* and the catch-all', () => {
+    expect(handleBlock('/assets/*')).toContain('import host_csp');
+    const catchAll = caddyfile.slice(caddyfile.indexOf('\n  handle {\n'));
+    expect(catchAll).toContain('import host_csp');
   });
 });

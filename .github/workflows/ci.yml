@@ -44,6 +44,7 @@ jobs:
   e2e:
     needs: check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17-alpine
@@ -71,13 +72,41 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:migrate
       - run: pnpm build
-      - run: pnpm --filter @daemonet/frontend build
       - run: pnpm --filter @daemonet/frontend exec playwright install --with-deps chromium
       - name: Start the sim and the API
         run: |
           PORT=3000 node apps/sim/dist/runtime/main.js > sim.log 2>&1 &
           PORT=3001 SESSION_SECRET=ci-session-secret-ci-session-secret-ci SESSION_COOKIE_SECURE=false FRONTEND_ORIGIN=http://127.0.0.1:4173 node apps/api/dist/server.js > api.log 2>&1 &
-          for i in $(seq 1 20); do curl -sf http://127.0.0.1:3000/ws/ready && curl -sf http://127.0.0.1:3001/api/ready && break; sleep 1; done
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3000/ws/ready && curl -sf http://127.0.0.1:3001/api/ready; then exit 0; fi
+            sleep 1
+          done
+          echo "sim or api did not become ready"; tail -n 50 sim.log api.log; exit 1
+      # The production image (Caddy + the real CSP headers) is what the browser talks to. Host networking
+      # lets it reach the sim and api on 127.0.0.1; the Caddyfile copy only moves the listener to 4173 and the
+      # api upstream to 3001 (the sim already owns 3000 here). Everything else is the shipped Caddyfile.
+      - name: Build and start the frontend image
+        run: |
+          docker build -f apps/frontend/Dockerfile -t daemonet-frontend:ci .
+          sed -e 's/^:80 {/:4173 {/' -e 's/api:3000/api:3001/' apps/frontend/Caddyfile > "$RUNNER_TEMP/Caddyfile"
+          docker run -d --name frontend --network host \
+            --add-host sim:127.0.0.1 --add-host api:127.0.0.1 \
+            -v "$RUNNER_TEMP/Caddyfile:/etc/caddy/Caddyfile:ro" daemonet-frontend:ci
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:4173/api/ready; then exit 0; fi
+            sleep 1
+          done
+          echo "frontend did not become ready"; docker logs frontend; exit 1
       - run: pnpm --filter @daemonet/frontend e2e
+        env:
+          E2E_BASE_URL: http://127.0.0.1:4173
       - if: failure()
-        run: tail -n 50 sim.log api.log
+        run: tail -n 50 sim.log api.log; docker logs --tail 50 frontend
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright
+          path: |
+            apps/frontend/playwright-report/
+            apps/frontend/test-results/
+          if-no-files-found: ignore
