@@ -69,7 +69,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   });
   beforeEach(async () => {
     oidc = fakeOidc();
-    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "DaemonArchive", "BitsLedger" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "DaemonArchive", "BitsLedger", "Ticket", "Research" CASCADE');
   });
 
   /** Runs the full login: /login sets the PKCE cookie, /callback exchanges and sets the session cookie. */

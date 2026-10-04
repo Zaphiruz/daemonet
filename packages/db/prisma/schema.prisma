@@ -181,6 +181,43 @@ model DaemonArchive {
   @@index([operatorId])
 }
 
+enum TicketStatus {
+  OPEN
+  DONE
+  ABANDONED
+}
+
+/// A helpdesk ticket an operator accepted (SP3b spec §7); the board itself is generated from rules.
+model Ticket {
+  id          String       @id
+  operatorId  String
+  /// UTC day of the board, YYYY-MM-DD
+  day         String
+  subnet      String
+  index       Int
+  kind        String
+  params      Json
+  target      Int
+  reward      Int
+  progress    Int          @default(0)
+  status      TicketStatus @default(OPEN)
+  acceptedAt  DateTime     @default(now())
+  completedAt DateTime?
+
+  @@unique([operatorId, day, subnet, index])
+  @@index([operatorId, status])
+  @@index([operatorId, day])
+}
+
+/// Codex research: one point per capture of any form of a bestiary line (design §7.2).
+model Research {
+  operatorId String
+  line       Int
+  points     Int    @default(0)
+
+  @@id([operatorId, line])
+}
+
 /// First operator to meet a hidden evolution requirement (reveals it in the Codex).
 model Discovery {
   formId       String   @id
