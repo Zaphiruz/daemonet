@@ -250,6 +250,49 @@ describe('Exchange notifications', () => {
     await game.shutdown();
   });
 
+  it('a store intent raised and committed while a resync read is in flight keeps its Disk slot', async () => {
+    class GatedLive extends MemoryStore {
+      gate: Promise<void> | null = null;
+      override async liveState(after: ReadonlyMap<string, number>): Promise<Map<string, LiveOperatorState>> {
+        const state = await super.liveState(after);
+        if (this.gate) await this.gate;
+        return state;
+      }
+    }
+    const bus = new MemoryBus();
+    const store = new GatedLive();
+    const world = new World({ subnet: TEST_SUBNET, seed: 'x', seedId: 'aaaa0001', spawner: false });
+    const rec = await store.loadOrCreateOperator('dev-hal', TEST_SUBNET.id, TEST_SUBNET.spawn);
+    const daemon = ownedRecord('pingling', 5, 0, 'hal-d0');
+    store.daemons.set(daemon.id, { ...daemon, operatorId: rec.id, location: 'RAM', lockedBy: null });
+    store.operators.get(rec.id)!.starterClaimed = true;
+    const game = new Game({ worlds: [world], store, verify: createDevVerifier('daemonet-users'), bus });
+    const conn = new FakeConn();
+    game.connect(conn);
+    await game.message(conn, JSON.stringify({ t: 'auth', seq: 1, d: { token: 'dev:hal' } }));
+    await game.flush();
+    const op = world.operators.get(rec.id)!;
+    op.x = TEST_SUBNET.host.x;
+    op.y = TEST_SUBNET.host.y;
+    let open!: () => void;
+    store.gate = new Promise<void>((r) => (open = r));
+    const resync = game.chat.resync();
+    await new Promise((r) => setTimeout(r, 5));
+    // the read saw an empty Disk; the store intent is raised and commits before the read is applied
+    await game.message(conn, JSON.stringify({ t: 'cmd', seq: 2, d: { reqId: 'st', cmd: 'store', actor: 'self', args: { daemonId: 'hal-d0' } } }));
+    game.tick();
+    await game.flush();
+    game.tick();
+    expect(conn.of('ack').at(-1)!.d).toMatchObject({ reqId: 'st' });
+    expect(store.daemons.get('hal-d0')).toMatchObject({ location: 'DISK', slot: 0 });
+    open();
+    await resync;
+    expect([...op.diskSlots]).toEqual([0]); // the stale read must not free the slot the store now holds
+    await game.chat.resync();
+    expect([...op.diskSlots]).toEqual([0]);
+    await game.shutdown();
+  });
+
   it('a store refused because its Disk slot was taken re-reads Disk occupancy from the store, and the retry succeeds', async () => {
     const bus = new MemoryBus();
     const store = new MemoryStore();

@@ -258,6 +258,11 @@ export interface Operator {
   ram: string[];
   running: string[];
   diskSlots: Set<number>;
+  /**
+   * Bumped whenever an intent that changes Disk occupancy (store, capture to Disk, load) is tracked or completed. Not
+   * persisted: the runtime's Disk resync compares it around its store read and drops a read that may predate one.
+   */
+  diskIntentGen: number;
   /** RAM slots reserved by pending load intents. */
   reservedSlots: Set<number>;
   swapReadyTick: number;

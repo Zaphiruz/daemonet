@@ -165,6 +165,7 @@ export class World {
       ram: [],
       running: [],
       diskSlots: new Set(rec.diskSlots),
+      diskIntentGen: 0,
       reservedSlots: new Set(),
       swapReadyTick: 0,
       captureId: null,
@@ -470,7 +471,15 @@ export class World {
 
   trackIntent(intent: Intent, out: Out): void {
     this.pending.set(intent.id, intent);
+    this.bumpDiskGen(intent);
     out.intent(intent);
+  }
+
+  /** A store, capture to Disk or load changes Disk occupancy: a Disk resync read taken around it may be stale. */
+  private bumpDiskGen(intent: Intent): void {
+    if (intent.kind !== 'store' && intent.kind !== 'load' && !(intent.kind === 'capture' && intent.location === 'DISK')) return;
+    const op = this.operators.get(intent.operatorId);
+    if (op) op.diskIntentGen++;
   }
 
   /** True while any intent of `operatorId` is waiting for the store. */
@@ -521,6 +530,7 @@ export class World {
     this.pending.delete(id);
     const elsewhere = this.rewardsElsewhere.delete(id);
     const out = this.carry;
+    this.bumpDiskGen(intent);
     const op = this.operators.get(intent.operatorId);
     // An evolve still records its discovery when the operator has left meanwhile.
     if (intent.kind === 'evolve') return completeEvolveIntent(this, op, intent, result, out);

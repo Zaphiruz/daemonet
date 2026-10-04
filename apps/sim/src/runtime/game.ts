@@ -160,12 +160,20 @@ const sameOrg = (a: OrgView | null, b: OrgView | null) => a === b || (a !== null
 /** Bus message kinds this class handles on the `admin` channel (the chat service handles the others). */
 const ADMIN_KINDS: ReadonlySet<unknown> = new Set(['bits', 'rename', 'incident:start', 'disk']);
 
-/** The Disk slots reserved by the operator's store and capture-to-Disk intents still waiting for the store, by intent id. */
-function pendingDiskSlots(world: World, operatorId: string): Map<string, number> {
-  const out = new Map<string, number>();
+/** What a Disk resync notes before its store read, to tell afterwards whether the read may be stale (`resyncDisk`). */
+interface DiskMark {
+  diskGen: number;
+  world: World;
+  op: Operator | null;
+  diskIntentGen: number;
+}
+
+/** The Disk slots reserved by the operator's store and capture-to-Disk intents still waiting for the store. */
+function pendingDiskSlots(world: World, operatorId: string): number[] {
+  const out: number[] = [];
   for (const i of world.pendingIntents(operatorId)) {
-    if (i.kind === 'store') out.set(i.id, i.diskSlot);
-    else if (i.kind === 'capture' && i.location === 'DISK') out.set(i.id, i.daemon.slot);
+    if (i.kind === 'store') out.push(i.diskSlot);
+    else if (i.kind === 'capture' && i.location === 'DISK') out.push(i.daemon.slot);
   }
   return out;
 }
@@ -396,15 +404,13 @@ export class Game {
    * row ids); an operator that left or reloaded meanwhile is skipped (its new load is newer). Never throws.
    */
   private async resyncOperators(ids: readonly string[]): Promise<void> {
-    const before = new Map<string, { session: Session; orgGen: number; nameGen: number; diskGen: number; world: World; pendingDisk: ReadonlySet<string> }>();
+    const before = new Map<string, { session: Session; orgGen: number; nameGen: number } & DiskMark>();
     const after = new Map<string, number>();
     for (const id of ids) {
       const session = this.sessions.get(id);
       if (!session) continue;
-      before.set(id, {
-        session, orgGen: session.orgGen, nameGen: session.nameGen, diskGen: session.diskGen, world: session.world,
-        pendingDisk: new Set(pendingDiskSlots(session.world, id).keys()),
-      });
+      const op = session.world.operators.get(id) ?? null;
+      before.set(id, { session, orgGen: session.orgGen, nameGen: session.nameGen, diskGen: session.diskGen, world: session.world, op, diskIntentGen: op?.diskIntentGen ?? 0 });
       after.set(id, session.ledgerSeq);
     }
     if (after.size === 0) return;
@@ -435,14 +441,14 @@ export class Game {
   /**
    * Disk occupancy from a resync read (Exchange sales move daemons between Disks behind the sim; a lost `disk` push
    * heals here): the stored slots plus the slots reserved by store / capture-to-Disk intents still waiting for the
-   * store. Skipped when the read may be stale for this operator: a `disk` push arrived meanwhile, one of those intents
-   * completed meanwhile (the read may predate its commit), or the operator moved worlds. The next resync catches up.
+   * store. Skipped when the read may be stale for this operator: a `disk` push arrived meanwhile, a store / capture to
+   * Disk / load was raised or completed meanwhile (`Operator.diskIntentGen`: the read may predate its commit, even one
+   * raised and committed entirely inside the read), or the operator moved worlds or reloaded. The next resync catches up.
    */
-  private resyncDisk(session: Session, op: Operator, b: { diskGen: number; world: World; pendingDisk: ReadonlySet<string> }, stored: readonly number[]): void {
-    if (session.diskGen !== b.diskGen || session.world !== b.world) return;
+  private resyncDisk(session: Session, op: Operator, b: DiskMark, stored: readonly number[]): void {
+    if (session.diskGen !== b.diskGen || session.world !== b.world || op !== b.op || op.diskIntentGen !== b.diskIntentGen) return;
     const pending = pendingDiskSlots(session.world, op.id);
-    for (const id of b.pendingDisk) if (!pending.has(id)) return;
-    const next = [...new Set([...stored, ...pending.values()])].sort((x, y) => x - y);
+    const next = [...new Set([...stored, ...pending])].sort((x, y) => x - y);
     if (next.length === op.diskSlots.size && next.every((s) => op.diskSlots.has(s))) return;
     op.diskSlots.clear();
     for (const s of next) op.diskSlots.add(s);
