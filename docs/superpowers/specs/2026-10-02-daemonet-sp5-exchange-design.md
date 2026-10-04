@@ -26,9 +26,9 @@ list, cross-server markets, lending, breeding.
 
 | Question | Decision |
 |---|---|
-| Limits | **16 open item orders and 16 active daemon listings per operator; both expire after 7 days** (escrow returns, daemon unlocks). Any daemon may be listed, clean and signature included. |
-| Fee | **1/16 of the bits a seller receives** (`floor(total / 16)`, taken from the proceeds, destroyed; ledger reason `exchange:fee`). Direct trades pay the same fee on the bits they move, so they are not a way around it. |
-| Bot auth | **Authentik bearer token.** `Authorization: Bearer <access token>` from the `daemonet-bot` device-flow client is accepted on `/api/exchange/*` (and `/api/me`); verified against the issuer's JWKS exactly as the sim does; no CSRF header needed for bearer requests; 120 requests / minute per operator. |
+| Limits | **16 open item orders and 16 active daemon listings per operator; both expire after 7 days** (escrow returns, daemon unlocks). Any daemon may be listed, clean and signature included. The order cap counts the OPEN orders that have not expired yet and is checked before matching: with 16 open, a new order is refused even if it would fill completely at once (no slot is ever used by it, but the check does not know that). |
+| Fee | **1/16 of the bits a seller receives** (`floor(total / 16)` per fill, taken from the proceeds, destroyed). There is no fee ledger row: the fee is recorded in `Fill.fee` and the seller's `exchange:sale` row credits the net amount. The floor applies per fill (per resting order met), so an order split over several fills can pay a few bits less than `floor(sum / 16)`; the client's preview therefore says "fee up to". Direct trades pay the same fee on the bits they move, so they are not a way around it. |
+| Bot auth | **Authentik bearer token.** `Authorization: Bearer <access token>` from the `daemonet-bot` device-flow client is accepted on `/api/exchange/*` (and `/api/me`); verified against the issuer's JWKS exactly as the sim does; no CSRF header needed for bearer requests; 120 requests / minute per operator, and 480 / minute per client address (IPv6 by /64, counted before authentication), each shared by every Exchange route; a 429 carries `retry-after`. The limiters live in the api's memory (one api process, see OPERATIONS). |
 | Where traded goods live | Live inventory belongs to the sim (in memory while online), so the api never touches it. Items are traded from an **Exchange vault** (`ExchangeVault` rows, api-owned). `deposit { item, qty }` / `withdraw { item, qty }` are sim commands at a host (durable intents that move items between inventory and vault). Daemons are listed **from Disk** (database-only state) and locked while listed or offered. Bits are spent by guarded decrements with ledger rows, as everywhere since SP3b; the bus `bits` push keeps online operators' balances current. |
 | Direct trades and hosts | The design's "confirmed by both operators at a host" is satisfied by the deposit step: everything a trade can move (vault items, Disk daemons, bits) is database state, so the confirmation itself is a REST call from anywhere. |
 | Traded daemons | Ownership moves (`Daemon.operatorId`), `originalOperatorId` does not — `originalOperator` evolution requirements fail for traded daemons, as designed. A `traded` history entry is appended. The buyer needs a free Disk slot. |
@@ -61,14 +61,20 @@ list, cross-server markets, lending, breeding.
 - Matching happens in the placing transaction (serialisable per item via
   `pg_advisory_xact_lock(hash(item))`): best price first, then oldest; the
   trade executes at the **resting** order's price; a BUY that fills below its
-  limit gets the difference back. Each fill: items to the buyer's vault,
-  `price × qty − fee` bits to the seller (ledger `exchange:sale`), fee
-  destroyed (`exchange:fee`), `Fill` row, bus `exchange { kind: 'fill', … }`
-  to both sides and `admin bits` pushes.
-- Cancel returns the unfilled escrow. An api timer expires orders past
-  `expiresAt` every 5 minutes.
+  limit gets the difference back (ledger `exchange:refund`). Each fill:
+  items to the buyer's vault, `price × qty − fee` bits to the seller (ledger
+  `exchange:sale`, net of the fee), the fee destroyed (kept in `Fill.fee`; no
+  ledger row of its own), `Fill` row, bus `exchange { kind: 'fill', … }` to
+  both sides and one `admin bits` push per ledger row. An order's time (price
+  priority among equals, fill time) is taken after the book lock is held.
+- Cancel returns the unfilled escrow (`exchange:refund` for bits). An api
+  timer expires orders past `expiresAt` at boot and every 5 minutes; an
+  order whose expiry fails is logged and retried on the next run. Orders
+  past `expiresAt` never match and do not count against the cap even before
+  the sweep reaches them.
 - REST: `GET /api/exchange/book/:item` (top 16 levels each side + last 16
-  fills), `GET /api/exchange/orders` (mine), `POST /api/exchange/orders`,
+  fills), `GET /api/exchange/orders` (mine: every OPEN order plus the 64
+  most recent closed ones; `?status=` filter), `POST /api/exchange/orders`,
   `DELETE /api/exchange/orders/:id`, `GET /api/exchange/items` (tradable ids
   with best bid / ask).
 
@@ -115,8 +121,10 @@ list, cross-server markets, lending, breeding.
 ## 9. Persistence summary
 
 New tables `ExchangeVault`, `Order`, `Fill`, `Listing`, `Trade`;
-`Daemon.lockedBy`. Ledger reasons `exchange:escrow`, `exchange:refund`,
-`exchange:sale`, `exchange:buy`, `exchange:fee`. Sim intent `vault`.
+`Daemon.lockedBy`. Ledger reasons: order book `exchange:escrow`,
+`exchange:refund`, `exchange:sale`; listings add `exchange:buy` (plan 3).
+No fee row: fees are `Fill.fee` (and the listing / trade equivalents),
+sellers are credited net. Sim intent `vault`.
 
 ## 10. Testing
 
