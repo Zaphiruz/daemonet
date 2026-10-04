@@ -325,7 +325,9 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       });
       expect(await store.applyIntent(dec('i-v6', yieldOf('tracerat', 40, 'jumboframe')), { ...ctx, storedDaemon: latest })).toEqual({ ok: true });
       const rec = await store.loadOrCreateOperator('sub-l8', 'lo', SPAWN);
-      expect(rec.inventory).toEqual({ sniff: 8, restore: 2, ...yieldOf('tracerat', 40, 'jumboframe') });
+      // The stored daemon holds nothing, so the store adds no held item: the world's hold since the last checkpoint took
+      // the item from an inventory the store has not seen yet (see 'decompile returns the held item the store knows of').
+      expect(rec.inventory).toEqual({ sniff: 8, restore: 2, ...yieldOf('tracerat', 40) });
       if (store instanceof MemoryStore) {
         expect(store.archive.get('abcd1234-f2')).toMatchObject({ level: 40, heldItem: 'jumboframe' });
         expect(store.archive.get('abcd1234-f2')!.history.map((h) => h.kind)).toEqual(['patched', 'decompiled']);
@@ -338,6 +340,37 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(await store.applyIntent(craft('i-c2', { 'frag:packet': 2 }, 'signal'), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
       expect(await store.applyIntent(craft('i-c3', { 'frag:packet': 2 }), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
       expect(await store.applyIntent(craft('i-c4', { 'frag:signal': 2 }, 'signal'), ctx)).toEqual({ ok: true });
+    });
+
+    it('decompile returns the held item the store knows of, whatever the world did since the last checkpoint', async () => {
+      const ctx = { seedId: 'abcd1234' };
+      const dec = (id: string, operatorId: string, daemonId: string, fragments: Record<string, number>): Intent => ({
+        id, kind: 'decompile', operatorId, reqId: 'r', daemonId, species: 'tracerat', fragments,
+        history: { at: '2026-09-30T00:00:00.000Z', kind: 'decompiled', detail: 'test' },
+      });
+      // 1. held after the last checkpoint: the store still has the item in the inventory and nothing on the daemon
+      const a = await store.loadOrCreateOperator('sub-h1', 'lo', SPAWN);
+      const da = ownedRecord('tracerat', 20, 0, 'abcd1234-m1');
+      await store.applyIntent(claim(a.id, 'hal', da, 'i-m-claim1'), ctx);
+      await store.checkpoint([{ ...(await store.loadOrCreateOperator('sub-h1', 'lo', SPAWN)), inventory: { sniff: 8, restore: 2, jumboframe: 1 } }]);
+      const held = { ...da, heldItem: 'jumboframe' };
+      expect(await store.applyIntent(dec('i-m-dec1', a.id, 'abcd1234-m1', yieldOf('tracerat', 20, 'jumboframe')), { ...ctx, storedDaemon: held })).toEqual({ ok: true });
+      expect((await store.loadOrCreateOperator('sub-h1', 'lo', SPAWN)).inventory).toEqual({ sniff: 8, restore: 2, jumboframe: 1, ...yieldOf('tracerat', 20) });
+      // 2. unheld after the last checkpoint: the store has the item on the daemon and not in the inventory
+      const b = await store.loadOrCreateOperator('sub-h2', 'lo', SPAWN);
+      const db = { ...ownedRecord('tracerat', 20, 0, 'abcd1234-m2'), heldItem: 'jumboframe' };
+      await store.applyIntent(claim(b.id, 'ida', db, 'i-m-claim2'), ctx);
+      const unheld = { ...db, heldItem: null };
+      expect(await store.applyIntent(dec('i-m-dec2', b.id, 'abcd1234-m2', yieldOf('tracerat', 20)), { ...ctx, storedDaemon: unheld })).toEqual({ ok: true });
+      expect((await store.loadOrCreateOperator('sub-h2', 'lo', SPAWN)).inventory).toEqual({ sniff: 8, restore: 2, jumboframe: 1, ...yieldOf('tracerat', 20) });
+      // a held item neither side knows of is still refused
+      const c = await store.loadOrCreateOperator('sub-h3', 'lo', SPAWN);
+      const dc = ownedRecord('tracerat', 20, 0, 'abcd1234-m3');
+      await store.applyIntent(claim(c.id, 'ivo', dc, 'i-m-claim3'), ctx);
+      expect(await store.applyIntent(dec('i-m-dec3', c.id, 'abcd1234-m3', yieldOf('tracerat', 20, 'amplifier')), { ...ctx, storedDaemon: { ...dc, heldItem: 'jumboframe' } })).toEqual({
+        ok: false,
+        reason: 'invalid decompile',
+      });
     });
 
     it('a capture or a second starter into an occupied slot is a domain failure, not an error', async () => {

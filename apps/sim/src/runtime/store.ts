@@ -90,30 +90,49 @@ export function sameCounts(a: Readonly<Record<string, number>>, b: Readonly<Reco
   return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && a[k] === b[k]);
 }
 
-/**
- * The state a decompile archives and the check of its fragments. `row` is the stored daemon (already matched on id,
- * owner, location and species); `latest` is the world's current record of it (`IntentContext.storedDaemon`), which
- * may be ahead of the last checkpoint (levels, a held item). The fragments must be exactly the rules' yield for the
- * species at that level, plus the held item.
- */
-export function decompileProblem(
-  intent: Extract<EconomyIntent, { kind: 'decompile' }>,
-  row: Pick<OwnedDaemonRecord, 'species' | 'level' | 'heldItem'>,
-  latest: OwnedDaemonRecord | undefined,
-): string | null {
-  if (latest && (latest.id !== intent.daemonId || latest.species !== row.species || latest.level < row.level)) return 'invalid decompile';
-  const level = latest?.level ?? row.level;
-  const heldItem = latest ? latest.heldItem : row.heldItem;
+type DecompileRow = Pick<OwnedDaemonRecord, 'species' | 'level' | 'heldItem'>;
+
+/** The rules' type fragments for a decompile at the latest known level, or null for an unknown species. */
+function decompileTypeYield(row: DecompileRow, latest: OwnedDaemonRecord | undefined): Record<string, number> | null {
   let sp;
   try {
     sp = getSpecies(row.species);
   } catch {
-    return 'invalid decompile';
+    return null;
   }
-  const expected: Record<string, number> = {};
-  for (const t of sp.types) expected[fragmentId(t)] = decompileYield(sp.stage, level);
-  if (heldItem) expected[heldItem] = (expected[heldItem] ?? 0) + 1;
-  return sameCounts(intent.fragments, expected) ? null : 'invalid decompile';
+  const level = latest?.level ?? row.level;
+  const out: Record<string, number> = {};
+  for (const t of sp.types) out[fragmentId(t)] = decompileYield(sp.stage, level);
+  return out;
+}
+
+/**
+ * The check of a decompile's fragments. `row` is the stored daemon (already matched on id, owner, location and
+ * species); `latest` is the world's current record of it (`IntentContext.storedDaemon`), which may be ahead of the last
+ * checkpoint (levels, a hold or unhold). The fragments must be exactly the rules' yield for the species at the latest
+ * level, plus at most one held item that either side believes the daemon holds (`row.heldItem` or `latest.heldItem`):
+ * each side returns the held item IT knows of (see `decompileStoreGain`).
+ */
+export function decompileProblem(intent: Extract<EconomyIntent, { kind: 'decompile' }>, row: DecompileRow, latest: OwnedDaemonRecord | undefined): string | null {
+  if (latest && (latest.id !== intent.daemonId || latest.species !== row.species || latest.level < row.level)) return 'invalid decompile';
+  const types = decompileTypeYield(row, latest);
+  if (!types) return 'invalid decompile';
+  if (sameCounts(intent.fragments, types)) return null;
+  for (const held of new Set([row.heldItem, latest?.heldItem ?? null])) {
+    if (held && sameCounts(intent.fragments, withItems(types, { [held]: 1 }, 1))) return null;
+  }
+  return 'invalid decompile';
+}
+
+/**
+ * What a decompile adds to the stored inventory: the type fragments plus the held item the STORE knows of
+ * (`row.heldItem`). The world adds the item it knows of (`d.heldItem`, in `intent.fragments`). A hold or unhold since the
+ * last checkpoint already moved the item in the world's inventory but not in the stored one, so each inventory stays
+ * right without a reconciling checkpoint.
+ */
+export function decompileStoreGain(row: DecompileRow, latest: OwnedDaemonRecord | undefined): Record<string, number> {
+  const types = decompileTypeYield(row, latest) ?? {};
+  return row.heldItem ? withItems(types, { [row.heldItem]: 1 }, 1) : types;
 }
 
 /** Copy of `inv` with `items` added (sign 1) or removed (sign -1); counts that reach 0 are dropped. */
@@ -306,7 +325,7 @@ export class MemoryStore implements Store {
         const state = ctx.storedDaemon ? stateFields(ctx.storedDaemon) : stateFields(d);
         this.daemons.delete(d.id);
         this.archive.set(d.id, { ...d, ...state, history: [...state.history, intent.history], reason: 'decompiled', archivedAt: new Date().toISOString() });
-        op.inventory = withItems(op.inventory, intent.fragments, 1);
+        op.inventory = withItems(op.inventory, decompileStoreGain(d, ctx.storedDaemon), 1);
         break;
       }
     }

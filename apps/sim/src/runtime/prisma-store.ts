@@ -3,6 +3,7 @@ import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OwnedDaemonRec
 import { DISK_EXPANSION_ITEM, DISK_STEP } from '@daemonet/rules';
 import {
   decompileProblem,
+  decompileStoreGain,
   economyIntentProblem,
   ledgerReason,
   missingItem,
@@ -282,7 +283,7 @@ export class PrismaStore implements Store {
             const history = latest ? latest.history : historyOf(row);
             await tx.daemonArchive.create({ data: { ...rest, ...state, history: json([...history, intent.history]), reason: 'decompiled' } });
             await tx.daemon.delete({ where: { id: intent.daemonId } });
-            await tx.operator.update({ where: { id: intent.operatorId }, data: { inventory: withItems(op.inventory, intent.fragments, 1) } });
+            await tx.operator.update({ where: { id: intent.operatorId }, data: { inventory: withItems(op.inventory, decompileStoreGain(row, ctx.storedDaemon), 1) } });
             return { ok: true } as const;
           }
         }
