@@ -3,7 +3,7 @@ import { TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, ticket
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Intent, OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
-import { MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type Store } from '../src/runtime/store.js';
+import { MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type LiveOperatorState, type Store } from '../src/runtime/store.js';
 import { ownedRecord } from './helpers.js';
 
 const SPAWN = { x: 18.5, y: 16.5 };
@@ -832,6 +832,40 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     const recs = await Promise.all(Array.from({ length: 8 }, () => store.loadOrCreateOperator('sub-first', 'lo', SPAWN)));
     expect(new Set(recs.map((r) => r.id)).size).toBe(1);
     expect(await prisma!.operator.count({ where: { sub: 'sub-first' } })).toBe(1);
+  });
+
+  it('seq order is commit order: concurrent grants, in-flight buys and liveState reads always see a gap-free prefix of the ledger', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-seq', 'lo', SPAWN);
+    const loaded = await store.loadOrCreateOperator('sub-seq', 'lo', SPAWN);
+    await store.grantBits(a.id, 64 * 32, 'admin');
+    let writing = true;
+    const reads: LiveOperatorState[] = [];
+    const reader = (async () => {
+      while (writing) reads.push((await store.liveState(new Map([[a.id, loaded.ledgerSeq]]))).get(a.id)!);
+    })();
+    const writers = Promise.all([
+      ...Array.from({ length: 48 }, (_, i) => store.grantBits(a.id, i + 1, i % 3 === 0 ? 'org' : 'admin')),
+      ...Array.from({ length: 16 }, (_, i) => store.applyIntent({ id: `i-seq-buy-${i}`, kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'sniff', qty: 1, price: 32 }, { seedId: 'abcd1234' })),
+    ]);
+    await writers;
+    writing = false;
+    await reader;
+    reads.push((await store.liveState(new Map([[a.id, loaded.ledgerSeq]]))).get(a.id)!);
+    const all = (await prisma!.bitsLedger.findMany({ where: { operatorId: a.id }, orderBy: { seq: 'asc' }, select: { id: true, seq: true, reason: true } })).map((r) => ({ ...r, seq: Number(r.seq) }));
+    expect(all).toHaveLength(1 + 48 + 16);
+    expect(reads.length).toBeGreaterThan(1);
+    for (const read of reads) {
+      // every committed row up to the read's watermark (and none above it) is in the read: no row with a lower seq can
+      // commit after it, so advancing the watermark to ledgerSeq never skips a row
+      const prefix = all.filter((r) => r.seq <= read.ledgerSeq && !SIM_LEDGER_REASONS.has(r.reason)).map((r) => r.id);
+      expect(read.ledger.map((r) => r.id)).toEqual(prefix);
+    }
+    expect(reads.at(-1)!.ledgerSeq).toBe(all.at(-1)!.seq);
+    // a cached sequence would hand each connection its own block of seqs (see LedgerWrite.seq)
+    const [sequence] = await prisma!.$queryRaw<Array<{ cache_size: bigint }>>`SELECT cache_size FROM pg_sequences WHERE sequencename = 'BitsLedger_seq_seq'`;
+    expect(Number(sequence!.cache_size)).toBe(1);
   });
 
   it('loads and resyncs the org from OrgMember; an api spend committed between loads moves balance and watermark together', async () => {

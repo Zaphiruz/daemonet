@@ -145,6 +145,13 @@ export interface LedgerWrite {
   /**
    * BitsLedger.seq. Per operator, rows commit in seq order: every writer locks the operator row (the balance update or
    * `lockOperator`) before inserting its row, so the next writer draws its seq only after the previous one committed.
+   * The load watermark and `liveState` depend on it (a read sees a gap-free prefix of the operator's rows, so moving
+   * the watermark to the highest seq read never skips a row). Two rules keep it true:
+   * - the sequence must stay `CACHE 1` (the Prisma `autoincrement()` default): a cached sequence hands each session
+   *   its own block of values, so a later commit could carry a lower seq;
+   * - every BitsLedger writer (sim intents, `grantBits`, the api's paid actions and dev route, any future one) must
+   *   lock the operator row before inserting. Inserting first lets two writers commit out of seq order.
+   * Pinned by the PrismaStore test "seq order is commit order".
    */
   seq: number;
   /** The balance after the row. */
