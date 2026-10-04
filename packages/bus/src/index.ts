@@ -7,7 +7,8 @@ export type Handler = (message: unknown) => void;
 
 /**
  * Pub/sub between the sim and the api (SP4 spec §4). Messages are JSON values; delivery is
- * at-most-once and never to the publisher's own handlers on RedisBus — MemoryBus mirrors that.
+ * at-most-once and reaches every subscriber of the channel, including the publisher's own handlers
+ * (Redis delivers to the process's subscriber connection too) — MemoryBus mirrors that.
  */
 export interface Bus {
   publish(channel: string, message: unknown): Promise<void>;
