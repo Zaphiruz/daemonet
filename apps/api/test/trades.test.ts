@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaStore } from '../../sim/src/runtime/prisma-store.js';
 import { BitsPush, DiskPush, ExchangePush, exchangeView } from '../../sim/src/runtime/pushes.js';
 import { SIM_LEDGER_REASONS } from '../../sim/src/runtime/store.js';
-import { buildApp } from '../src/app.js';
+import { COOKIE_NAME, buildApp } from '../src/app.js';
 import { createDevBearerVerifier } from '../src/auth/bearer.js';
 import { MAX_OPEN_TRADES, TRADE_IDLE_MS, TRADE_LEDGER_REASON, expireTrades } from '../src/exchange/trades.js';
 
@@ -510,8 +510,7 @@ describe.skipIf(!url)('Exchange direct trades (needs DATABASE_URL)', () => {
     }
   });
 
-  // Task 3 (admin market view) adds `GET /api/admin/market`; this test is enabled there.
-  it.skip('shows admins the market: open counts, 24 h volume and destroyed fees', async () => {
+  it('shows admins the market: open counts, 24 h volume and destroyed fees', async () => {
     const a = await trader('alice', 1000, { 'frag:packet': 4 });
     const b = await trader('bob', 1000);
     await a.call('POST', '/orders', { item: 'frag:packet', side: 'SELL', price: 50, qty: 4 });
@@ -519,11 +518,24 @@ describe.skipIf(!url)('Exchange direct trades (needs DATABASE_URL)', () => {
     const { body: listing } = await a.call('POST', '/listings', { daemonId: await a.seed(0), price: 160 });
     await b.call('POST', `/listings/${listing.id}/buy`);
     await a.open(b.id);
-    expect((await app.inject({ method: 'GET', url: '/api/admin/market', headers: { authorization: 'Bearer dev:alice' } })).statusCode).toBe(403);
-    const r = await app.inject({ method: 'GET', url: '/api/admin/market', headers: { authorization: 'Bearer dev:root' } });
+    // Browser sessions only: admin rights come from Operator.isAdmin, and a bearer token (even root's) never carries them.
+    const session = async (name: string, admin: boolean) => {
+      const dev = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}${admin ? '&admin=true' : ''}` });
+      return { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    };
+    const get = (cookies: Record<string, string>) => app.inject({ method: 'GET', url: '/api/admin/market', cookies });
+    expect((await get(await session('alice', false))).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/admin/market', headers: { authorization: 'Bearer dev:root' } })).statusCode).toBe(401);
+    const r = await get(await session('root', true));
+    expect(r.statusCode).toBe(200);
+    expect(r.headers['cache-control']).toBe('private, no-store');
     expect(r.json()).toMatchObject({
       openOrders: 1, activeListings: 0, openTrades: 1,
       day: { items: [{ item: 'frag:packet', qty: 3, bits: 150, fees: 9, last: 50 }], salesCount: 1, sales: [{ species: 'initling', price: 160 }], trades: 0, feesDestroyed: 19 },
     });
+    // Rights are re-read from the operator row on every request.
+    const cookies = await session('root', true);
+    await prisma!.operator.updateMany({ where: { sub: 'dev-root' }, data: { isAdmin: false } });
+    expect((await get(cookies)).statusCode).toBe(403);
   });
 });

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { describeApiError, useAddFilterTermMutation, useAdminEconomyQuery, useAdminReportsQuery, useDeleteFilterTermMutation, useFilterTermsQuery, useIncidentsQuery, useResolveReportMutation, useStartIncidentMutation } from '../api.ts';
+import { describeApiError, useAddFilterTermMutation, useAdminEconomyQuery, useAdminMarketQuery, useAdminReportsQuery, useDeleteFilterTermMutation, useFilterTermsQuery, useIncidentsQuery, useResolveReportMutation, useStartIncidentMutation } from '../api.ts';
 import { useLiveIncident, useNow, useSeedIncident } from '../game/incident.ts';
 
-const VIEWS = ['reports', 'filter', 'economy', 'incidents'] as const;
+const VIEWS = ['reports', 'filter', 'economy', 'market', 'incidents'] as const;
 type View = (typeof VIEWS)[number];
 
 /** Shows the readable form of an API failure (every admin error code goes through `describeApiError`). */
@@ -31,7 +31,7 @@ function useAction() {
   return { error, act };
 }
 
-/** Admin tools (daemonet-admins only): the report queue, chat filter terms, and the SP3b economy view. */
+/** Admin tools (daemonet-admins only): the report queue, chat filter terms, and the SP3b economy view, the SP5 market view. */
 export function AdminPanel() {
   const [view, setView] = useState<View>('reports');
   return (
@@ -46,6 +46,7 @@ export function AdminPanel() {
       {view === 'reports' && <Reports />}
       {view === 'filter' && <Filter />}
       {view === 'economy' && <Economy />}
+      {view === 'market' && <Market />}
       {view === 'incidents' && <Incidents />}
     </div>
   );
@@ -251,6 +252,40 @@ function Economy() {
               .map(([k, v]) => `${k} ${v}`)
               .join(' · ')}
           </span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function Market() {
+  const market = useAdminMarketQuery(undefined, { pollingInterval: 15_000 });
+  if (market.error && !market.data) return <ErrorNote error={market.error} />;
+  if (!market.data) return <p className="text-xs text-neutral-500">loading…</p>;
+  const { day } = market.data;
+  return (
+    <section className="mono space-y-2 text-xs" data-testid="admin-market">
+      <p>
+        {market.data.openOrders} open orders · {market.data.activeListings} listings · {market.data.openTrades} open trades
+      </p>
+      <p className="text-neutral-400">
+        last 24 h: {day.salesCount} daemons sold · {day.trades} trades · <span className="text-red-300">{day.feesDestroyed} bits destroyed by the fee</span>
+      </p>
+      {day.items.map((i) => (
+        <div key={i.item} className="flex justify-between border-b border-neutral-900 py-0.5">
+          <span>{i.item}</span>
+          <span>×{i.qty}</span>
+          <span>{i.bits} bits</span>
+          <span className="text-neutral-500">last {i.last}</span>
+        </div>
+      ))}
+      {day.sales.map((s, i) => (
+        <div key={i} className="flex justify-between border-b border-neutral-900 py-0.5 text-neutral-400">
+          <span>
+            {s.species} L{s.level}
+          </span>
+          <span>{s.price} bits</span>
+          <span className="text-neutral-600">{new Date(s.soldAt).toLocaleTimeString()}</span>
         </div>
       ))}
     </section>

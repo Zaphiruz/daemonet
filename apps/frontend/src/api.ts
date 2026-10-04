@@ -112,6 +112,19 @@ export interface EconomyView {
   operators: number;
   days: Array<{ day: string; created: number; destroyed: number; byReason: Record<string, number> }>;
 }
+/** GET /api/admin/market: aggregates only (no operator ids); `day` covers the last 24 hours. */
+export interface MarketView {
+  openOrders: number;
+  activeListings: number;
+  openTrades: number;
+  day: {
+    items: Array<{ item: string; qty: number; bits: number; fees: number; last: number }>;
+    sales: Array<{ species: string; level: number; price: number; soldAt: string }>;
+    salesCount: number;
+    trades: number;
+    feesDestroyed: number;
+  };
+}
 
 /**
  * A readable message for a failed API call. The API's error bodies (`validation_error` / `bad_request` / `not_found`
@@ -387,6 +400,7 @@ export const api = createApi({
       query: (body) => ({ url: '/admin/chat/mute', method: 'POST', body }),
     }),
     adminEconomy: b.query<EconomyView, void>({ query: () => '/admin/economy' }),
+    adminMarket: b.query<MarketView, void>({ query: () => '/admin/market' }),
     orgMine: b.query<OrgMine, void>({ query: () => '/orgs/mine', providesTags: ['Org'] }),
     orgLeaderboard: b.query<OrgLeaderRow[], string>({ query: (id) => `/orgs/${encodeURIComponent(id)}/leaderboard`, providesTags: ['Org'] }),
     /** POST /api/orgs<path> — create (''), /invite, /<id>/accept, /<id>/decline, /leave, /kick, /rank, /transfer, /tag. */
@@ -433,6 +447,7 @@ export const {
   useAdminDeleteMessageMutation,
   useAdminMuteMutation,
   useAdminEconomyQuery,
+  useAdminMarketQuery,
   useOrgMineQuery,
   useOrgLeaderboardQuery,
   useOrgActionMutation,

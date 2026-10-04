@@ -1,6 +1,6 @@
 import type { Bus } from '@daemonet/bus';
 import type { PrismaClient } from '@daemonet/db';
-import { ITEMS, isTradable } from '@daemonet/rules';
+import { FEE_DIVISOR, ITEMS, isTradable } from '@daemonet/rules';
 import { normalizeIP } from '@fastify/rate-limit';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
@@ -213,4 +213,53 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
   });
 
   app.post<{ Params: { id: string } }>('/api/exchange/trades/:id/cancel', auth, async (req) => view(req.operator!.id, await cancelTrade(prisma, bus, req.operator!.id, tradeId(req.params.id), undefined, log)));
+
+  /**
+   * Admin market view: what is open, what traded in the last 24 hours and the bits the fee destroyed. Admins only, from
+   * a browser session: the route does not opt into bearer auth (a bot token never carries admin rights, #17). Only
+   * aggregates plus the 16 latest sales (species, level, price, time: no operator ids or names); everything is summed in
+   * the database, in one REPEATABLE READ snapshot, with every result set bounded (#33).
+   */
+  app.get('/api/admin/market', { preHandler: [app.requireAuth, app.requireAdmin] }, async () => {
+    const since = new Date(Date.now() - 86_400_000);
+    const stamp = since.toISOString();
+    const r = await prisma.$transaction(
+      async (tx) => {
+        const [openOrders, activeListings, openTrades, trades, sales, salesCount, listingFees, items, fillFees] = await Promise.all([
+          tx.order.count({ where: { status: 'OPEN' } }),
+          tx.listing.count({ where: { status: 'ACTIVE' } }),
+          tx.trade.count({ where: { status: 'OPEN' } }),
+          tx.trade.count({ where: { status: 'DONE', updatedAt: { gte: since } } }),
+          tx.listing.findMany({ where: { status: 'SOLD', soldAt: { gte: since } }, orderBy: [{ soldAt: 'desc' }, { id: 'desc' }], take: 16, select: { species: true, level: true, price: true, soldAt: true } }),
+          tx.listing.count({ where: { status: 'SOLD', soldAt: { gte: since } } }),
+          // Each sale's fee is floored on its own (feeOn), so sum the per-row integer division.
+          tx.$queryRaw<Array<{ fees: bigint }>>`
+            SELECT COALESCE(SUM("price" / ${FEE_DIVISOR}), 0)::bigint AS "fees" FROM "Listing"
+            WHERE "status" = 'SOLD' AND "soldAt" >= (${stamp}::timestamptz AT TIME ZONE 'UTC')`,
+          // "at" is a UTC timestamp without time zone (as Prisma writes it). One row per item, so at most the item table.
+          tx.$queryRaw<Array<{ item: string; qty: bigint; bits: bigint; fees: bigint; last: number }>>`
+            SELECT "item", SUM("qty")::bigint AS "qty", SUM("price"::bigint * "qty")::bigint AS "bits", SUM("fee")::bigint AS "fees",
+                   (ARRAY_AGG("price" ORDER BY "at" DESC, "id" DESC))[1] AS "last"
+            FROM "Fill" WHERE "at" >= (${stamp}::timestamptz AT TIME ZONE 'UTC')
+            GROUP BY "item" ORDER BY "bits" DESC, "item" LIMIT 256`,
+          tx.$queryRaw<Array<{ fees: bigint }>>`
+            SELECT COALESCE(SUM("fee"), 0)::bigint AS "fees" FROM "Fill" WHERE "at" >= (${stamp}::timestamptz AT TIME ZONE 'UTC')`,
+        ]);
+        return { openOrders, activeListings, openTrades, trades, sales, salesCount, listingFees: Number(listingFees[0]!.fees), items, fillFees: Number(fillFees[0]!.fees) };
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
+    return {
+      openOrders: r.openOrders,
+      activeListings: r.activeListings,
+      openTrades: r.openTrades,
+      day: {
+        items: r.items.map((i) => ({ item: i.item, qty: Number(i.qty), bits: Number(i.bits), fees: Number(i.fees), last: i.last })),
+        sales: r.sales,
+        salesCount: r.salesCount,
+        trades: r.trades,
+        feesDestroyed: r.fillFees + r.listingFees,
+      },
+    };
+  });
 }
