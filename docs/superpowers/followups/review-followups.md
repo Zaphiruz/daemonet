@@ -230,3 +230,11 @@ Fixed before merge: my-orders lists every OPEN order; limits fit real use (per-a
 - T1: self-match skip can leave a crossed book of one owner's own orders (document in player rules); hot-item advisory waits can exhaust the Prisma pool (load-probe); expiry timer first run after 5 min
 - T3: e2e assumes an empty frag:heap book (fresh DB in CI); qty input snaps to 1 on clear
 Task F: minor (deferred): /orders OPEN + closed reads not in one snapshot (possible duplicate row; dedupe by id); ledger.ts `reason: string` loses compile-time reason check
+
+## 2026-10-02-daemonet-sp5-plan3-daemon-listings
+
+Fixed before merge: my listings show every active one; resync never drops a Disk slot; load frees its slot; maxPrice bounded; listing hints/refetch; line filter; shared isSlotTaken/freeDiskSlot in ledger.ts
+
+- T1: buyListing invariant break → plain 500 (add a log line naming the listing); slot-steal test polls DB-wide pg_locks
+- T3: 409 hint "(nothing was charged)" also shown for list/unlist; failed buy doesn't refetch listings; paging shows old query during the 400 ms debounce; e2e listing on page 0 of a price-sorted browse (use the species filter)
+Task F: minor (deferred): replayed load can't return its old slot (stays marked until resync); browse exposes originalOperatorId of the capturer (decide before launch); DiskPush is single add/remove (plan 4 trades: one push per daemon or widen deliberately)
