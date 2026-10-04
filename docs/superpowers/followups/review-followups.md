@@ -213,3 +213,12 @@ Task 2: fix round 1 c1f82c4 re-review all addressed (full damage list re-derived
 - T2: a refusal before the CLEARED record lands isn't marked (one extra recovery attempt); CLEARED retry path untested; pending-credit map pruned only on park
 - T3: AdminPanel duplicates IncidentsPanel row markup; no >16-row cap test; admin start not audit-logged; server-wide `cleared` event carries participant operatorIds
 Task F: minor (deferred): refusal before the CLEARED row lands isn't marked (one extra recovery attempt); restart inside an Incident window skips that slot; admin start colliding with a scheduled slot changes the announced boss; server-wide `cleared` event carries participant operatorIds (decide before SP5)
+
+## 2026-10-02-daemonet-sp5-plan1-vault-locks-bearer
+
+Fixed before merge: bearer scope per spec §3 (opt-in routes, never admin), per-operator Exchange limit, shared @daemonet/auth verifier (sim gains exp), pre-deposit save + retryable refusal, UI lock/refresh fixes
+
+- T1: misleading "not enough <item>" refusal when items arrived since the last checkpoint; unknown-outcome vault test timing-sensitive (pass unknownRetryLimit)
+- T2: per-operator 429 lacks retry-after/x-ratelimit headers; per-IP Exchange budget is per route (use a shared groupId when plans 2–4 add routes); frontend Dockerfile doesn't copy packages/auth (not needed)
+- T3: DiskPanel `lockedBy !== null` disables load forever if the field is missing (use !!); lock tooltip "cancel the order first" has no UI yet; vault qty clamped to 64 per click (brief-mandated)
+Task F: minor (deferred): packages/auth has no own tests; bearer without groups claim calls userinfo per request (cache per token); any Authorization header + cookie refused (document); per-operator limiter in memory (single api process)
