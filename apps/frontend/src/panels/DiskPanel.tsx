@@ -52,7 +52,7 @@ export function DiskPanel({ client }: { client: GameClient }) {
       log.push('event', `listed ${species} for ${price} bits`);
       setPricing(null);
     } catch (err) {
-      const message = describeListingError(err);
+      const message = describeListingError(err, 'list');
       setListError(message);
       log.push('reject', `list: ${message}`);
     } finally {
@@ -69,7 +69,7 @@ export function DiskPanel({ client }: { client: GameClient }) {
     try {
       await unlist(listingId).unwrap();
     } catch (err) {
-      const message = describeListingError(err);
+      const message = describeListingError(err, 'unlist');
       setUnlistError(message);
       log.push('reject', `unlist: ${message}`);
     } finally {

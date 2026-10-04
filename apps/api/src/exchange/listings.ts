@@ -1,9 +1,9 @@
-import { consoleBusLogger, type Bus } from '@daemonet/bus';
+import { consoleBusLogger, type Bus, type BusLogger } from '@daemonet/bus';
 import type { Daemon, Prisma, PrismaClient } from '@daemonet/db';
 import { LISTING_TTL_MS, MAX_ACTIVE_LISTINGS, getSpecies } from '@daemonet/rules';
 import { badRequest, conflict, forbidden, notFound } from '../errors.js';
 import { publishSafely, type PublishLog } from '../publish.js';
-import { Outbox, announce, credit, debit, lockOperators, type Tx } from './ledger.js';
+import { Outbox, announce, credit, debit, freeDiskSlot, isSlotTaken, lockOperators, type Tx } from './ledger.js';
 import { MAX_PRICE, feeOn } from './orders.js';
 
 /** Daemon listings (SP5 spec §6): fixed price, from Disk, locked while listed. */
@@ -139,36 +139,13 @@ export async function expireListings(prisma: PrismaClient, now = new Date(), log
 }
 
 /**
- * Lowest free Disk slot of an operator, or null when the Disk is full. Read from the DB (never the sim's memory) against
- * `Operator.diskCapacity`; call it under the operator's lock. A sim store / capture that does not take the operator lock
- * can still claim the same slot concurrently: the `(operatorId, location, slot)` unique index then refuses one of them.
- */
-export async function freeDiskSlot(tx: Tx, operatorId: string): Promise<number | null> {
-  const op = await tx.operator.findUniqueOrThrow({ where: { id: operatorId }, select: { diskCapacity: true } });
-  const used = new Set((await tx.daemon.findMany({ where: { operatorId, location: 'DISK' }, select: { slot: true } })).map((d) => d.slot));
-  for (let s = 0; s < op.diskCapacity; s++) if (!used.has(s)) return s;
-  return null;
-}
-
-/** True for the unique violation of a Disk (or RAM) slot (Prisma 7 + pg adapter report it under meta.driverAdapterError). */
-function isSlotTaken(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null || (err as { code?: unknown }).code !== 'P2002') return false;
-  const meta = (err as { meta?: Record<string, unknown> }).meta ?? {};
-  const cause = (meta.driverAdapterError as { cause?: { constraint?: { index?: string }; originalMessage?: string } } | undefined)?.cause;
-  const target = meta.target ?? meta.constraint;
-  return [cause?.constraint?.index, cause?.originalMessage, Array.isArray(target) ? target.join(',') : target, (err as Error).message]
-    .filter((x): x is string => typeof x === 'string')
-    .some((s) => s.includes('Daemon_operatorId_location_slot_key') || s.includes('operatorId,location,slot'));
-}
-
-/**
  * Buys a listing: one transaction moves the bits (seller pays the 1/16 fee, destroyed; ledger `exchange:buy` and
  * `exchange:sale`), the daemon (new owner, lowest free Disk slot, lock cleared, one `traded` history entry) and closes
  * the listing. The listing row lock makes concurrent buyers (and a racing cancel or expiry) queue; whoever comes second
  * finds it closed and pays nothing. After commit the sim is told: one bits push per ledger row, the Disk slots that
  * changed hands on both operators, and a `listingSold` event.
  */
-export async function buyListing(prisma: PrismaClient, bus: Bus, buyerId: string, listingId: string, now?: Date, log: PublishLog = consoleBusLogger) {
+export async function buyListing(prisma: PrismaClient, bus: Bus, buyerId: string, listingId: string, now?: Date, log: BusLogger = consoleBusLogger) {
   const out = new Outbox();
   let result;
   try {
@@ -183,6 +160,8 @@ export async function buyListing(prisma: PrismaClient, bus: Bus, buyerId: string
       const daemons = await tx.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "Daemon" WHERE "id" = ${listing.daemonId} FOR UPDATE`;
       const daemon = daemons.length === 1 ? await tx.daemon.findUniqueOrThrow({ where: { id: listing.daemonId } }) : null;
       if (!daemon || daemon.operatorId !== listing.sellerId || daemon.location !== 'DISK' || daemon.lockedBy !== lockValue(listing.id)) {
+        // an ACTIVE listing always holds its daemon locked: this is a bug (or a hand edit), worth finding in the logs
+        log.error({ listingId: listing.id, daemonId: listing.daemonId }, 'listing invariant broken: its daemon is no longer held by it');
         throw new Error(`listing ${listing.id}: its daemon is no longer held by it`);
       }
       const slot = await freeDiskSlot(tx, buyerId);

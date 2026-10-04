@@ -1,4 +1,4 @@
-import { MAX_PRICE, TYPES, getSpecies, type SpeciesDef } from '@daemonet/rules';
+import { MAX_PRICE, SPECIES, TYPES, getSpecies, type SpeciesDef } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useEffect, useRef, useState } from 'react';
 import { describeApiError, describeListingError, type ListedDaemon, type ListingQuery, useBuyListingMutation, useListingsQuery, useMyListingsQuery, useUnlistMutation } from '../api.ts';
@@ -11,6 +11,11 @@ const POLL_MS = 8000;
 /** Filters are applied this long after the last change, so typing does not spend the per-operator request budget. */
 const FILTER_DELAY_MS = 400;
 const HISTORY_SHOWN = 20;
+/** Bestiary lines for the line filter, each named after its first form (lowest stage). */
+const LINES: ReadonlyArray<{ line: number; name: string }> = [...SPECIES]
+  .sort((a, b) => a.line - b.line || a.stage - b.stage)
+  .filter((s, i, all) => i === 0 || all[i - 1]!.line !== s.line)
+  .map((s) => ({ line: s.line, name: s.name }));
 
 const clamp = (raw: string, min: number, max: number): number | undefined => {
   const n = Math.trunc(Number(raw));
@@ -85,9 +90,15 @@ export function ListingsPanel({ client }: { client: GameClient }) {
       setResult(text);
       log.push('event', `${text} (Disk slot ${r.slot})`);
     } catch (err) {
-      const message = describeListingError(err);
+      const message = describeListingError(err, 'buy');
       setError(message);
       log.push('reject', `buy: ${message}`);
+      // the listing may be gone (sold, unlisted, expired) or the page stale: show what is there now
+      try {
+        void listings.refetch();
+      } catch {
+        // not started yet: nothing shown to refresh
+      }
     } finally {
       buyBusy.current = false;
       setBuying(null);
@@ -104,7 +115,7 @@ export function ListingsPanel({ client }: { client: GameClient }) {
     try {
       await unlist(id).unwrap();
     } catch (err) {
-      const message = describeListingError(err);
+      const message = describeListingError(err, 'unlist');
       setError(message);
       log.push('reject', `unlist: ${message}`);
     } finally {
@@ -118,6 +129,14 @@ export function ListingsPanel({ client }: { client: GameClient }) {
     <div className="space-y-3 text-sm" data-testid="listings">
       <div className="flex flex-wrap items-center gap-1 text-xs">
         <input className="w-24 rounded bg-neutral-900 px-1" placeholder="species" value={draft.species ?? ''} onChange={(e) => set({ species: e.target.value.trim().toLowerCase() || undefined })} data-testid="listing-species" />
+        <select className="rounded bg-neutral-800 px-1 py-0.5" value={draft.line ?? ''} onChange={(e) => set({ line: e.target.value ? Number(e.target.value) : undefined })} data-testid="listing-line">
+          <option value="">any line</option>
+          {LINES.map((l) => (
+            <option key={l.line} value={l.line}>
+              {l.line} · {l.name}
+            </option>
+          ))}
+        </select>
         <select className="rounded bg-neutral-800 px-1 py-0.5" value={draft.type ?? ''} onChange={(e) => set({ type: e.target.value || undefined })} data-testid="listing-type">
           <option value="">any type</option>
           {TYPES.map((t) => (

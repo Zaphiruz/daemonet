@@ -235,6 +235,9 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await pb.getByTestId('list-confirm').click();
   await expect(pb.getByTestId('unlist-' + listed.id)).toBeVisible({ timeout: 10_000 });
   await pa.getByTestId('exchange-daemons').click();
+  // the shared database holds other runs' listings: narrow to the species, newest first, so ours is on the first page
+  await pa.getByTestId('listing-species').fill('pingling');
+  await pa.getByTestId('listing-sort').selectOption('new');
   await expect(pa.getByTestId('listing-' + listed.id)).toContainText('64 bits', { timeout: 15_000 });
   await pa.getByTestId('buy-' + listed.id).click();
   await pa.getByTestId('buy-confirm-' + listed.id).click(); // spends bits: confirmed first

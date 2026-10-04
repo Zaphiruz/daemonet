@@ -34,12 +34,19 @@ describe('exchange maths', () => {
 
   it('describes listing failures: a lost Disk slot says nothing was charged and to retry; a short balance says so', () => {
     const e = (status: number, error: string, message: string) => ({ status, data: { error, message } });
-    expect(describeListingError(e(409, 'conflict', 'a daemon just arrived in that Disk slot; try again'))).toContain('try again');
-    expect(describeListingError(e(409, 'conflict', 'a daemon just arrived in that Disk slot; try again'))).toContain('nothing was charged');
-    expect(describeListingError(e(402, 'insufficient_bits', 'need 64 bits'))).toBe('not enough bits: need 64 bits');
-    expect(describeListingError(e(400, 'bad_request', 'your Disk is full'))).toBe('your Disk is full');
-    expect(describeListingError({ status: 'FETCH_ERROR' })).toContain('network error');
-    expect(describeListingError(e(500, 'internal_error', 'secret'))).not.toContain('secret');
+    expect(describeListingError(e(409, 'conflict', 'a daemon just arrived in that Disk slot; try again'), 'buy')).toContain('try again');
+    expect(describeListingError(e(409, 'conflict', 'a daemon just arrived in that Disk slot; try again'), 'buy')).toContain('nothing was charged');
+    expect(describeListingError(e(402, 'insufficient_bits', 'need 64 bits'), 'buy')).toBe('not enough bits: need 64 bits');
+    expect(describeListingError(e(400, 'bad_request', 'your Disk is full'), 'buy')).toBe('your Disk is full');
+    expect(describeListingError({ status: 'FETCH_ERROR' }, 'buy')).toContain('network error');
+    expect(describeListingError(e(500, 'internal_error', 'secret'), 'buy')).not.toContain('secret');
+  });
+
+  it('only a buy is told that nothing was charged: listing and unlisting never charge', () => {
+    const conflict = { status: 409, data: { error: 'conflict', message: 'try again' } };
+    expect(describeListingError(conflict, 'list')).not.toContain('charged');
+    expect(describeListingError(conflict, 'unlist')).not.toContain('charged');
+    expect(describeListingError(conflict, 'list')).toContain('try again');
   });
 
   it('reads the spread and estimates immediate fills at resting prices', () => {
@@ -246,7 +253,7 @@ const q = vi.hoisted(() => ({
   cancel: vi.fn(),
   bookArgs: [] as unknown[],
   polls: {} as Record<string, number | undefined>,
-  listings: { data: undefined as unknown, error: undefined as unknown },
+  listings: { data: undefined as unknown, error: undefined as unknown, refetch: vi.fn() },
   listingArgs: [] as unknown[],
   mine: { data: undefined as unknown },
   buy: vi.fn(),
@@ -297,6 +304,7 @@ beforeEach(() => {
   q.bookArgs = [];
   q.listings.data = { page: 0, more: false, listings: [] };
   q.listings.error = undefined;
+  q.listings.refetch.mockReset();
   q.listingArgs = [];
   q.mine.data = [];
   q.buy.mockReset();
@@ -568,6 +576,40 @@ describe('ListingsPanel', () => {
     fireEvent.click(btn('buy-confirm-d1'));
     await act(async () => {});
     expect(screen.getByTestId('listings-error').textContent).toBe('that listing is no longer available');
+  });
+
+  it('a failed buy refetches the listings (the shown one may be gone or changed); a successful one does not need to', async () => {
+    q.listings.data = { page: 0, more: false, listings: [listing('d1')] };
+    render(<ExchangePanel client={client(1000)} />);
+    open();
+    q.buy.mockReturnValue({ unwrap: () => Promise.reject({ status: 400, data: { error: 'bad_request', message: 'that listing is no longer available' } }) });
+    fireEvent.click(btn('buy-d1'));
+    fireEvent.click(btn('buy-confirm-d1'));
+    await act(async () => {});
+    expect(q.listings.refetch).toHaveBeenCalledTimes(1);
+    q.buy.mockReturnValue({ unwrap: () => Promise.resolve({ daemonId: 'd1', slot: 0, price: 64, fee: 4 }) });
+    fireEvent.click(btn('buy-d1'));
+    fireEvent.click(btn('buy-confirm-d1'));
+    await act(async () => {});
+    expect(q.listings.refetch).toHaveBeenCalledTimes(1); // the mutation's tag invalidation refetches on success
+  });
+
+  it('filters by bestiary line', () => {
+    vi.useFakeTimers();
+    try {
+      render(<ExchangePanel client={client(1000)} />);
+      open();
+      const line = screen.getByTestId('listing-line') as HTMLSelectElement;
+      expect(line.textContent).toContain('Initling'); // each line is named after its first form
+      fireEvent.change(line, { target: { value: '2' } });
+      act(() => void vi.advanceTimersByTime(500));
+      expect(q.listingArgs.at(-1)).toEqual({ sort: 'price', page: 0, line: 2 });
+      fireEvent.change(screen.getByTestId('listing-line'), { target: { value: '' } });
+      act(() => void vi.advanceTimersByTime(500));
+      expect(q.listingArgs.at(-1)).toEqual({ sort: 'price', page: 0 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says why buying is disabled when the balance is short', () => {

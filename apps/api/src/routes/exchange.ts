@@ -37,7 +37,8 @@ const BrowseQuery = z.object({
   type: z.string().max(16).optional(),
   clean: bool.optional(),
   minSignature: z.coerce.number().int().min(0).max(15).optional(),
-  maxPrice: z.coerce.number().int().min(1).optional(),
+  // bounded: an unbounded number reached Postgres as an out-of-range int (a 500)
+  maxPrice: z.coerce.number().int().min(1).max(MAX_PRICE).optional(),
   sort: z.enum(['price', 'new']).optional(),
   page: z.coerce.number().int().min(0).max(1000).optional(),
 });

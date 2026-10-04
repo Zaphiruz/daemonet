@@ -128,6 +128,28 @@ describe.skipIf(!url)('Exchange daemon listings (needs DATABASE_URL)', () => {
     expect(mine.at(-1)!.id).toBe(old.body.id);
   });
 
+  it('browse refuses out-of-range numeric filters with a 400 (never a 500)', async () => {
+    const seller = await trader('sel');
+    for (const q of [`maxPrice=${MAX_PRICE + 1}`, 'maxPrice=1e30', 'maxPrice=99999999999999999999', 'maxPrice=0', 'minSignature=16', 'line=51', 'page=1001', 'page=-1']) {
+      expect((await seller.get(`/listings?${q}`)).status, q).toBe(400);
+    }
+    expect((await seller.get(`/listings?maxPrice=${MAX_PRICE}`)).status).toBe(200);
+  });
+
+  it('a listing whose daemon is no longer held by it fails the buy, charges nothing and logs the listing and daemon ids', async () => {
+    const seller = await trader('sel');
+    const buyer = await trader('buy', 500);
+    const d = await seller.seed();
+    const { body: made } = await seller.list(d, 100);
+    await prisma!.daemon.update({ where: { id: d }, data: { lockedBy: null } }); // broken behind the listing's back
+    const logged: Array<{ obj: object; msg: string }> = [];
+    const log = { warn: (obj: object, msg: string) => logged.push({ obj, msg }), error: (obj: object, msg: string) => logged.push({ obj, msg }) };
+    await expect(buyListing(prisma!, bus, buyer.id, made.id, undefined, log)).rejects.toThrow();
+    expect(logged).toEqual([{ obj: { listingId: made.id, daemonId: d }, msg: expect.stringContaining('no longer held') }]);
+    expect(await buyer.bits()).toBe(500);
+    expect(await prisma!.bitsLedger.count()).toBe(0);
+  });
+
   it('lists the same daemon only once when two listings race', async () => {
     const seller = await trader('sel');
     const d = await seller.seed();

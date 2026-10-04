@@ -7,6 +7,8 @@ import { publishSafely, type PublishLog } from '../publish.js';
  * Ledger primitives shared by the api's paid Exchange actions (order book; listings and trades in later plans). The
  * contract (carry-forward #30, #32): lock every Operator row involved FIRST, sorted by id, before any ledger row or
  * vault / order / daemon row is written; one BitsLedger row per balance change; after commit, one `BitsPush` per row.
+ * The Disk helpers at the end (`freeDiskSlot`, `isSlotTaken`) serve every action that moves a daemon onto a Disk
+ * (listing purchases; trades in plan 4).
  */
 
 export type Tx = Prisma.TransactionClient;
@@ -80,4 +82,27 @@ export function announce(bus: Bus, log: PublishLog, out: Outbox): void {
       detail: { item: f.item, price: f.price, qty: f.qty, buyerId: f.buyerId, sellerId: f.sellerId, fee: f.fee },
     });
   }
+}
+
+/**
+ * Lowest free Disk slot of an operator, or null when the Disk is full. Read from the DB (never the sim's memory) against
+ * `Operator.diskCapacity`; call it under the operator's lock. A sim store / capture that does not take the operator lock
+ * can still claim the same slot concurrently: the `(operatorId, location, slot)` unique index then refuses one of them.
+ */
+export async function freeDiskSlot(tx: Tx, operatorId: string): Promise<number | null> {
+  const op = await tx.operator.findUniqueOrThrow({ where: { id: operatorId }, select: { diskCapacity: true } });
+  const used = new Set((await tx.daemon.findMany({ where: { operatorId, location: 'DISK' }, select: { slot: true } })).map((d) => d.slot));
+  for (let s = 0; s < op.diskCapacity; s++) if (!used.has(s)) return s;
+  return null;
+}
+
+/** True for the unique violation of a Disk (or RAM) slot (Prisma 7 + pg adapter report it under meta.driverAdapterError). */
+export function isSlotTaken(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || (err as { code?: unknown }).code !== 'P2002') return false;
+  const meta = (err as { meta?: Record<string, unknown> }).meta ?? {};
+  const cause = (meta.driverAdapterError as { cause?: { constraint?: { index?: string }; originalMessage?: string } } | undefined)?.cause;
+  const target = meta.target ?? meta.constraint;
+  return [cause?.constraint?.index, cause?.originalMessage, Array.isArray(target) ? target.join(',') : target, (err as Error).message]
+    .filter((x): x is string => typeof x === 'string')
+    .some((s) => s.includes('Daemon_operatorId_location_slot_key') || s.includes('operatorId,location,slot'));
 }

@@ -188,6 +188,8 @@ export interface MyListing {
 }
 export interface ListingQuery {
   species?: string | undefined;
+  /** Bestiary line (1-50). */
+  line?: number | undefined;
   type?: string | undefined;
   clean?: boolean | undefined;
   minSignature?: number | undefined;
@@ -197,16 +199,17 @@ export interface ListingQuery {
 }
 
 /**
- * A readable message for a failed listing call. A lost Disk slot (409) charged nothing and is worth a retry; a 402 says the
- * balance is short; the api's own short reasons (`your Disk is full`, `that listing is no longer available`) show as they are.
+ * A readable message for a failed listing call. A buy that lost its Disk slot (409) charged nothing and is worth a retry
+ * (only a buy charges, so only a buy says so); a 402 says the balance is short; the api's own short reasons
+ * (`your Disk is full`, `that listing is no longer available`) show as they are.
  */
-export function describeListingError(err: unknown): string {
+export function describeListingError(err: unknown, action: 'buy' | 'list' | 'unlist'): string {
   const e = err as { status?: unknown; data?: { error?: unknown; message?: unknown } } | null | undefined;
   if (e === null || typeof e !== 'object') return 'request failed';
   const code = typeof e.data?.error === 'string' ? e.data.error : '';
   const message = typeof e.data?.message === 'string' ? e.data.message : '';
   if (e.status === 402 || code === 'insufficient_bits') return `not enough bits${message ? `: ${message}` : ''}`;
-  if (e.status === 409 || code === 'conflict') return `${message || 'Disk slot taken, try again'} (nothing was charged)`;
+  if (e.status === 409 || code === 'conflict') return action === 'buy' ? `${message || 'Disk slot taken, try again'} (nothing was charged)` : message || 'conflict, try again';
   return describeApiError(err);
 }
 
