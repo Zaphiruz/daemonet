@@ -22,3 +22,7 @@ export type { KernelParams, KernelPayload, KernelAnswer, KernelProcess } from '.
 export type { CacheParams, CachePayload, CacheAnswer } from './capture/cache.js';
 export type { ThreadParams, ThreadPayload, ThreadAnswer, ThreadEvent } from './capture/thread.js';
 export type { SignalParams, SignalPayload, SignalAnswer, SignalEvent } from './capture/signal.js';
+export type { SocketParams, SocketPayload, SocketAnswer, SocketState, SocketFlag, Segment } from './capture/socket.js';
+export type { BufferParams, BufferPayload, BufferAnswer } from './capture/buffer.js';
+export type { ShellParams, ShellPayload, ShellAnswer } from './capture/shell.js';
+export type { RootParams, RootPayload, RootAnswer, RootRequest, AclEntry } from './capture/root.js';

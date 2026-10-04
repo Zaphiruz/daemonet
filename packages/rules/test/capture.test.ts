@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { fromHex, fromUtf8, utf8 } from '../src/capture/common.js';
 import { lruHits } from '../src/capture/cache.js';
 import { hammingEncode } from '../src/capture/glitch.js';
+import { ringContents } from '../src/capture/buffer.js';
 import { roundRobin } from '../src/capture/kernel.js';
+import { checkAccess, type RootParams, type RootRequest } from '../src/capture/root.js';
+import { runPipeline } from '../src/capture/shell.js';
+import { finalStates, type Segment } from '../src/capture/socket.js';
 import { deliveryOrder, type SignalParams } from '../src/capture/signal.js';
 import { firstRace, type ThreadEvent } from '../src/capture/thread.js';
 import {
@@ -18,9 +22,9 @@ import { challengeSize, type ChallengeTarget } from '../src/capture/size.js';
 import { getTool, type Noise } from '../src/content/items.js';
 import { createRng } from '../src/rng.js';
 import { TYPES, type TypeId } from '../src/types.js';
-import { solve, solveCache, solveKernel, solveSignal, solveThread } from './solvers.js';
+import { solve, solveBuffer, solveCache, solveKernel, solveRoot, solveShell, solveSignal, solveSocket, solveThread } from './solvers.js';
 
-const FAMILIES: TypeId[] = ['packet', 'crypto', 'glitch', 'null', 'kernel', 'cache', 'thread', 'signal'];
+const FAMILIES: TypeId[] = ['packet', 'crypto', 'glitch', 'null', 'kernel', 'cache', 'thread', 'signal', 'socket', 'buffer', 'shell', 'root'];
 
 /** Change the answer so it is still schema-valid but wrong (every family's answer shape is covered). */
 function mutate(answer: Record<string, unknown>): Record<string, unknown> {
@@ -229,5 +233,115 @@ describe('hand-computed family fixtures', () => {
     ];
     expect(deliveryOrder(b, signalsB)).toEqual([2, 4, 1]);
     expect(solveSignal(b, { signals: signalsB })).toEqual({ order: [2, 4, 1] });
+  });
+
+  it('socket', () => {
+    const seg = (conn: string, flag: Segment['flag']): Segment => ({ conn, flag });
+    const connections = ['a', 'b', 'c', 'd', 'e'];
+    const segments = [
+      seg('a', 'ACK'), // ignored in CLOSED
+      seg('a', 'SYN'), // SYN_RCVD
+      seg('a', 'SYN'), // duplicate SYN ignored in SYN_RCVD
+      seg('a', 'SYNACK'), // ESTABLISHED
+      seg('a', 'ACK'), // ignored in ESTABLISHED
+      seg('a', 'FIN'), // CLOSE_WAIT
+      seg('b', 'SYN'),
+      seg('b', 'ACK'), // ESTABLISHED
+      seg('b', 'FIN'),
+      seg('b', 'FIN'), // LAST_ACK
+      seg('b', 'ACK'), // CLOSED
+      seg('c', 'SYN'),
+      seg('c', 'RST'), // CLOSED
+      seg('d', 'SYN'), // SYN_RCVD
+      seg('z', 'SYN'), // not in params: still reported
+      seg('z', 'FIN'), // ignored in SYN_RCVD
+    ];
+    const expected = { a: 'CLOSE_WAIT', b: 'CLOSED', c: 'CLOSED', d: 'SYN_RCVD', e: 'CLOSED', z: 'SYN_RCVD' };
+    expect(finalStates(connections, segments)).toEqual(expected);
+    expect(solveSocket({ connections }, { segments })).toEqual({ states: expected });
+    // SYNACK and FIN in CLOSED do nothing; ACK in CLOSE_WAIT does nothing; RST in LAST_ACK closes
+    const more = [
+      seg('a', 'SYNACK'),
+      seg('a', 'FIN'),
+      seg('b', 'SYN'),
+      seg('b', 'ACK'),
+      seg('b', 'FIN'),
+      seg('b', 'ACK'),
+      seg('c', 'SYN'),
+      seg('c', 'ACK'),
+      seg('c', 'FIN'),
+      seg('c', 'FIN'),
+      seg('c', 'RST'),
+    ];
+    const expected2 = { a: 'CLOSED', b: 'CLOSE_WAIT', c: 'CLOSED' };
+    expect(finalStates(['a', 'b', 'c'], more)).toEqual(expected2);
+    expect(solveSocket({ connections: ['a', 'b', 'c'] }, { segments: more })).toEqual({ states: expected2 });
+  });
+
+  it('buffer', () => {
+    // capacity 3: r no-op on empty; 01 02 03 -> [01 02 03]; 04 drops 01 -> [02 03 04]; r -> [03 04];
+    // 05 -> [03 04 05]; 0a drops 03 -> [04 05 0a]; 06 drops 04 -> [05 0a 06].
+    const ops = ['r', 'w:01', 'w:02', 'w:03', 'w:04', 'r', 'w:05', 'w:0a', 'w:06'];
+    expect(ringContents(3, ops)).toBe('050a06');
+    expect(solveBuffer({ capacity: 3 }, { ops })).toEqual({ contents: '050a06' });
+    // drained to empty -> ''
+    expect(ringContents(2, ['w:ff', 'r', 'r', 'r'])).toBe('');
+    expect(solveBuffer({ capacity: 2 }, { ops: ['w:ff', 'r', 'r', 'r'] })).toEqual({ contents: '' });
+    // capacity 1 keeps only the latest write
+    expect(ringContents(1, ['w:aa', 'w:bb', 'w:cc'])).toBe('cc');
+    expect(solveBuffer({ capacity: 1 }, { ops: ['w:aa', 'w:bb', 'w:cc'] })).toEqual({ contents: 'cc' });
+  });
+
+  it('shell', () => {
+    const lines = ['b,2,x', '', 'a,1,x', 'b,2,x', 'c,3,y', '', 'b,2,x'];
+    const run = (pipeline: string, input: string[] = lines) => {
+      expect(solveShell({ pipeline }, { lines: input })).toEqual({ output: runPipeline(pipeline, input) });
+      return runPipeline(pipeline, input);
+    };
+    // blank lines ignored; uniq only drops CONSECUTIVE duplicates (b,2,x repeats non-adjacently)
+    expect(run('uniq')).toEqual(['b,2,x', 'a,1,x', 'b,2,x', 'c,3,y', 'b,2,x']);
+    expect(run('sort | uniq')).toEqual(['a,1,x', 'b,2,x', 'c,3,y']);
+    expect(run('grep x | wc -l')).toEqual(['4']);
+    expect(run('grep nomatch | wc -l')).toEqual(['0']);
+    expect(run('cut -d, -f2 | sort')).toEqual(['1', '2', '2', '2', '3']);
+    // fewer fields than requested -> ""
+    expect(run('cut -d, -f3', ['a,b', 'a,b,c'])).toEqual(['', 'c']);
+    // grep is a substring match; stages apply left to right
+    expect(run('grep b | cut -d, -f1', ['abc', 'xyz', 'b'])).toEqual(['abc', 'b']);
+    // sort is by code point, not UTF-16 unit: U+FFFF < U+1F600 although surrogate D83D < FFFF; uppercase before lowercase
+    expect(run('sort', ['\u{1F600}', '￿', 'b', 'B', 'a'])).toEqual(['B', 'a', 'b', '￿', '\u{1F600}']);
+  });
+
+  it('root', () => {
+    // mode: owner rwx, group r-x, other --x
+    const params: RootParams = {
+      mode: 'rwxr-x--x',
+      owner: 'alice',
+      group: 'staff',
+      acl: [
+        { who: 'user:bob', perms: '---' },
+        { who: 'group:ops', perms: 'r--' },
+        { who: 'group:wheel', perms: '-w-' },
+      ],
+    };
+    const req = (user: string, groups: string[], op: RootRequest['op']): RootRequest => ({ user, groups, op });
+    const cases: Array<[RootRequest, boolean]> = [
+      [req('alice', [], 'w'), true], // owner triple rwx
+      [req('alice', ['ops'], 'x'), true], // owner beats the group ACL
+      [req('bob', ['staff'], 'r'), false], // user ACL --- beats the group triple r-x
+      [req('carol', ['ops'], 'r'), true], // group ACL ops grants r
+      [req('carol', ['ops'], 'x'), false], // group ACL ops denies x
+      [req('carol', ['staff', 'ops'], 'x'), false], // an ACL group matched: the file-group triple (r-x) is NOT consulted
+      [req('carol', ['ops', 'wheel'], 'w'), true], // ANY matching group entry grants: wheel grants w
+      [req('carol', ['ops', 'wheel'], 'r'), true], // ops grants r
+      [req('carol', ['staff'], 'x'), true], // no ACL match; file group triple r-x
+      [req('carol', ['staff'], 'w'), false],
+      [req('carol', ['guest'], 'x'), true], // other triple --x
+      [req('carol', ['guest'], 'r'), false],
+      [req('carol', [], 'x'), true], // no groups -> other triple
+    ];
+    for (const [r, want] of cases) expect(checkAccess(params, r), JSON.stringify(r)).toBe(want);
+    const requests = cases.map(([r]) => r);
+    expect(solveRoot(params, { requests })).toEqual({ allowed: '1101001110101' });
   });
 });

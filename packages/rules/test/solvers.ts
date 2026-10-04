@@ -7,7 +7,11 @@ import type { CryptoParams, CryptoPayload } from '../src/capture/crypto.js';
 import type { CacheParams, CachePayload } from '../src/capture/cache.js';
 import type { GlitchPayload } from '../src/capture/glitch.js';
 import type { KernelParams, KernelPayload } from '../src/capture/kernel.js';
+import type { BufferParams, BufferPayload } from '../src/capture/buffer.js';
+import type { RootParams, RootPayload } from '../src/capture/root.js';
+import type { ShellParams, ShellPayload } from '../src/capture/shell.js';
 import type { SignalParams, SignalPayload } from '../src/capture/signal.js';
+import type { SocketParams, SocketPayload, SocketState } from '../src/capture/socket.js';
 import type { ThreadPayload } from '../src/capture/thread.js';
 import type { NullParams, NullPayload } from '../src/capture/null.js';
 import { packetCrc, type PacketParams, type PacketPayload } from '../src/capture/packet.js';
@@ -136,6 +140,72 @@ export function solveSignal(params: SignalParams, payload: SignalPayload): { ord
   return { order };
 }
 
+export function solveSocket(params: SocketParams, payload: SocketPayload): { states: Record<string, SocketState> } {
+  const next: Record<SocketState, Partial<Record<string, SocketState>>> = {
+    CLOSED: { SYN: 'SYN_RCVD' },
+    SYN_RCVD: { ACK: 'ESTABLISHED', SYNACK: 'ESTABLISHED' },
+    ESTABLISHED: { FIN: 'CLOSE_WAIT' },
+    CLOSE_WAIT: { FIN: 'LAST_ACK' },
+    LAST_ACK: { ACK: 'CLOSED' },
+  };
+  const states: Record<string, SocketState> = Object.fromEntries(params.connections.map((c) => [c, 'CLOSED' as const]));
+  for (const s of payload.segments) {
+    const cur = states[s.conn] ?? 'CLOSED';
+    states[s.conn] = s.flag === 'RST' ? 'CLOSED' : (next[cur][s.flag] ?? cur);
+  }
+  return { states };
+}
+
+export function solveBuffer(params: BufferParams, payload: BufferPayload): { contents: string } {
+  const buf: string[] = [];
+  for (const op of payload.ops) {
+    if (op === 'r') buf.shift();
+    else {
+      if (buf.length >= params.capacity) buf.shift();
+      buf.push(op.slice(2));
+    }
+  }
+  return { contents: buf.join('') };
+}
+
+const codePointCompare = (a: string, b: string): number => {
+  const x = Array.from(a, (c) => c.codePointAt(0)!);
+  const y = Array.from(b, (c) => c.codePointAt(0)!);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
+  return x.length - y.length;
+};
+
+export function solveShell(params: ShellParams, payload: ShellPayload): { output: string[] } {
+  let out = payload.lines.filter((l) => l !== '');
+  for (const stage of params.pipeline.split(' | ')) {
+    const [cmd, ...args] = stage.split(' ');
+    if (cmd === 'grep') out = out.filter((l) => l.includes(args[0]!));
+    else if (cmd === 'sort') out = [...out].sort(codePointCompare);
+    else if (cmd === 'uniq') out = out.filter((l, i) => i === 0 || l !== out[i - 1]);
+    else if (cmd === 'cut') out = out.map((l) => l.split(args[0]!.slice(2))[Number(args[1]!.slice(2)) - 1] ?? '');
+    else if (cmd === 'wc') out = [String(out.length)];
+  }
+  return { output: out };
+}
+
+export function solveRoot(params: RootParams, payload: RootPayload): { allowed: string } {
+  const has = (t: string, op: string) => t[{ r: 0, w: 1, x: 2 }[op as 'r' | 'w' | 'x']] === op;
+  return {
+    allowed: payload.requests
+      .map((r) => {
+        if (r.user === params.owner) return has(params.mode.slice(0, 3), r.op);
+        const u = params.acl.find((a) => a.who === `user:${r.user}`);
+        if (u) return has(u.perms, r.op);
+        const g = params.acl.filter((a) => a.who.startsWith('group:') && r.groups.includes(a.who.slice(6)));
+        if (g.length) return g.some((a) => has(a.perms, r.op));
+        if (r.groups.includes(params.group)) return has(params.mode.slice(3, 6), r.op);
+        return has(params.mode.slice(6, 9), r.op);
+      })
+      .map((b) => (b ? '1' : '0'))
+      .join(''),
+  };
+}
+
 const SOLVERS: Partial<Record<TypeId, (params: never, payload: never) => unknown>> = {
   packet: solvePacket,
   crypto: solveCrypto,
@@ -145,6 +215,10 @@ const SOLVERS: Partial<Record<TypeId, (params: never, payload: never) => unknown
   cache: solveCache,
   thread: solveThread,
   signal: solveSignal,
+  socket: solveSocket,
+  buffer: solveBuffer,
+  shell: solveShell,
+  root: solveRoot,
 };
 
 export function solve(challenge: PublicChallenge): unknown {

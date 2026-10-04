@@ -2,6 +2,7 @@ import type { Noise } from '../content/items.js';
 import type { Rng } from '../rng.js';
 import type { TypeId } from '../types.js';
 import { fromHex, fromUtf8, toHex, utf8, type ChallengeFamily } from './common.js';
+import { bufferFamily } from './buffer.js';
 import { cacheFamily } from './cache.js';
 import { cryptoFamily } from './crypto.js';
 import { glitchFamily } from './glitch.js';
@@ -9,7 +10,10 @@ import { kernelFamily } from './kernel.js';
 import { nullFamily } from './null.js';
 import { packetFamily } from './packet.js';
 import { sha256 } from './sha256.js';
+import { rootFamily } from './root.js';
+import { shellFamily } from './shell.js';
 import { signalFamily } from './signal.js';
+import { socketFamily } from './socket.js';
 import { threadFamily } from './thread.js';
 
 export { sha256 };
@@ -23,6 +27,10 @@ const FAMILIES: Partial<Record<TypeId, ChallengeFamily>> = {
   cache: cacheFamily as ChallengeFamily,
   thread: threadFamily as ChallengeFamily,
   signal: signalFamily as ChallengeFamily,
+  socket: socketFamily as ChallengeFamily,
+  buffer: bufferFamily as ChallengeFamily,
+  shell: shellFamily as ChallengeFamily,
+  root: rootFamily as ChallengeFamily,
 };
 
 export function getFamily(type: TypeId): ChallengeFamily {
