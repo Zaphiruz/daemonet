@@ -406,6 +406,38 @@ describe('TradesPanel: confirming', () => {
     expect(btn('trade-confirm').disabled).toBe(false);
   });
 
+  it('a counter-offer that lands while your own offer is in flight still needs a review', async () => {
+    q.trades.data = [live()];
+    const d = deferred<Trade>();
+    q.setOffer.mockReturnValue({ unwrap: () => d.promise });
+    const { rerender } = render(<TradesPanel client={client(1000)} />);
+    setInput('trade-bits', '48');
+    fireEvent.click(btn('trade-offer'));
+    // they changed their side (version 4) before our offer committed (version 5): our response carries their new offer
+    const answer = live({ version: 5, me: side('me', 'Me', { bits: 48 }), them: side('o1', 'Bob', { bits: 1 }) });
+    await act(async () => d.resolve(answer));
+    q.trades.data = [answer];
+    rerender(<TradesPanel client={client(1000)} />);
+    expect(screen.getByTestId('trade-changed')).toBeTruthy();
+    expect(btn('trade-confirm').disabled).toBe(true);
+    fireEvent.click(btn('trade-review'));
+    expect(btn('trade-confirm').disabled).toBe(false);
+  });
+
+  it('your own offer is only taken as reviewed when the other side is unchanged and the version moved by exactly one', async () => {
+    // same version step, but the other side differs from what was on screen (a refetch had not shown it yet)
+    q.trades.data = [live()];
+    q.setOffer.mockReturnValue(ok(live({ version: 4, me: side('me', 'Me', { bits: 48 }), them: side('o1', 'Bob', { items: { 'frag:heap': 1 } }) })));
+    const { rerender } = render(<TradesPanel client={client(1000)} />);
+    setInput('trade-bits', '48');
+    fireEvent.click(btn('trade-offer'));
+    await act(async () => {});
+    q.trades.data = [live({ version: 4, me: side('me', 'Me', { bits: 48 }), them: side('o1', 'Bob', { items: { 'frag:heap': 1 } }) })];
+    rerender(<TradesPanel client={client(1000)} />);
+    expect(screen.getByTestId('trade-changed')).toBeTruthy();
+    expect(btn('trade-confirm').disabled).toBe(true);
+  });
+
   it('shows 409 (stale or lost slot) and 402 refusals inline, keeps the trade, and logs them', async () => {
     q.trades.data = [live()];
     render(<TradesPanel client={client(1000)} />);

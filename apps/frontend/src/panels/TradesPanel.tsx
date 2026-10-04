@@ -30,6 +30,8 @@ const sameItems = (a: Items, b: Items): boolean => {
   return ka.length === Object.keys(b).length && ka.every((k) => a[k] === b[k]);
 };
 const sameIds = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((id) => b.includes(id));
+const sameOffer = (a: TradeSide, b: TradeSide): boolean =>
+  a.offer.bits === b.offer.bits && sameItems(a.offer.items, b.offer.items) && sameIds(a.offer.daemons.map((d) => d.id), b.offer.daemons.map((d) => d.id));
 const nothing = (side: TradeSide): boolean => side.offer.bits === 0 && Object.keys(side.offer.items).length === 0 && side.offer.daemons.length === 0;
 
 /** Direct trades (SP5): open one with an operator by name, put bits / vault items / Disk daemons on the table, both confirm. */
@@ -243,9 +245,14 @@ function TradeCard({ trade, client }: { trade: Trade; client?: GameClient | unde
   const submitOffer = () => {
     if (offerWhy !== null) return;
     const offer: TradeOfferBody = { bits, items, daemonIds };
+    // what the player was looking at when sending: their own change is the only one they have approved
+    const seenVersion = reviewed;
+    const seenThem = trade.them;
     void run('offer', 'offer', async () => {
       const t = await setOffer({ id: trade.id, offer }).unwrap();
-      setReviewed(t.version); // the player made this offer and has just seen the table
+      // Taken as reviewed only when nothing else changed meanwhile: exactly our own bump, and their side as it was on
+      // screen. A counter-offer that landed first leaves the review step (and the "offers changed" banner) in place.
+      if (t.version === seenVersion + 1 && sameOffer(t.them, seenThem)) setReviewed(t.version);
     });
   };
   const submitConfirm = () => {
