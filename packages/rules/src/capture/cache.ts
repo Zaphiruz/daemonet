@@ -4,7 +4,7 @@ import type { ChallengeFamily } from './common.js';
 /**
  * Cache: count the hits of an LRU cache.
  *
- * Input: `capacity` (number of keys the cache holds) and `trace`, a list of accesses processed in array
+ * Input: `capacity` (number of keys the cache holds; capacity >= 1) and `trace`, a list of accesses processed in array
  * order. The cache starts empty.
  * - A trace entry whose first character is '#' is a comment (noise): skip it entirely; it is not an
  *   access and changes nothing.

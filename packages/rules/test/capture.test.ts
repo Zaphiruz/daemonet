@@ -1,7 +1,11 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { fromHex, fromUtf8, utf8 } from '../src/capture/common.js';
+import { lruHits } from '../src/capture/cache.js';
 import { hammingEncode } from '../src/capture/glitch.js';
+import { roundRobin } from '../src/capture/kernel.js';
+import { deliveryOrder, type SignalParams } from '../src/capture/signal.js';
+import { firstRace, type ThreadEvent } from '../src/capture/thread.js';
 import {
   checkAnswer,
   generateChallenge,
@@ -14,7 +18,7 @@ import { challengeSize, type ChallengeTarget } from '../src/capture/size.js';
 import { getTool, type Noise } from '../src/content/items.js';
 import { createRng } from '../src/rng.js';
 import { TYPES, type TypeId } from '../src/types.js';
-import { solve } from './solvers.js';
+import { solve, solveCache, solveKernel, solveSignal, solveThread } from './solvers.js';
 
 const FAMILIES: TypeId[] = ['packet', 'crypto', 'glitch', 'null', 'kernel', 'cache', 'thread', 'signal'];
 
@@ -150,5 +154,80 @@ describe('chained challenges', () => {
   it('rejects bad type counts', () => {
     expect(() => generateChallenge([], 16, 0, createRng(3))).toThrow(RangeError);
     expect(() => generateChallenge(['kernel', 'heap', 'null'], 16, 0, createRng(3))).toThrow(RangeError);
+  });
+});
+
+/**
+ * Hand-computed fixtures: expected answers were worked out by hand from the families' doc-comment rules,
+ * not by running the code, so a misread tie-break cannot hide behind a solver that copies the rule.
+ */
+describe('hand-computed family fixtures', () => {
+  const ev = (thread: number, op: ThreadEvent['op'], obj: string): ThreadEvent => ({ thread, op, obj });
+
+  it('kernel', () => {
+    // quantum 2. pid1 runs 0-2 (1 left); pid2 arrives at 2 exactly, so it queues AHEAD of pid1.
+    // pid2 runs 2-3 and finishes; pid1 runs 3-4 and finishes; queue empty, idle until pid3 arrives at 10,
+    // runs 10-12. pid4 has burst 0 and never runs.
+    const processes = [
+      { pid: 3, arrival: 10, burst: 2 },
+      { pid: 4, arrival: 1, burst: 0 },
+      { pid: 1, arrival: 0, burst: 3 },
+      { pid: 2, arrival: 2, burst: 1 },
+    ];
+    expect(roundRobin(processes, 2)).toEqual([2, 1, 3]);
+    expect(solveKernel({ quantum: 2 }, { processes })).toEqual({ order: [2, 1, 3] });
+  });
+
+  it('cache', () => {
+    // capacity 2: a miss [a]; b miss [a,b]; '#c' ignored; a HIT (1) -> [b,a]; c miss evicts b -> [a,c];
+    // b miss evicts a -> [c,b]; a miss evicts c -> [b,a]. Total 1 hit.
+    const trace = ['a', 'b', '#c', 'a', 'c', 'b', 'a'];
+    expect(lruHits(2, trace)).toBe(1);
+    expect(solveCache({ capacity: 2 }, { trace })).toEqual({ hits: 1 });
+  });
+
+  it('thread', () => {
+    const run = (events: ThreadEvent[]) => {
+      expect(solveThread({ threads: 2 }, { events })).toEqual({ race: firstRace(events) });
+      return firstRace(events);
+    };
+    // shared lock m held at both writes -> no race
+    expect(run([ev(0, 'lock', 'm'), ev(0, 'write', 'x'), ev(0, 'unlock', 'm'), ev(1, 'lock', 'm'), ev(1, 'write', 'x'), ev(1, 'unlock', 'm')])).toEqual([-1, -1]);
+    // t1's stray unlock is a no-op; t0 locks m twice but one unlock releases it, so at event 4 t0 holds
+    // nothing while t1 (event 6) holds m: no common lock -> race [4,6]
+    expect(run([ev(1, 'unlock', 'm'), ev(0, 'lock', 'm'), ev(0, 'lock', 'm'), ev(0, 'unlock', 'm'), ev(0, 'write', 'x'), ev(1, 'lock', 'm'), ev(1, 'read', 'x')])).toEqual([4, 6]);
+    // smallest i first: (0,2) on x beats (1,3) on y
+    expect(run([ev(0, 'write', 'x'), ev(1, 'write', 'y'), ev(1, 'write', 'x'), ev(0, 'write', 'y')])).toEqual([0, 2]);
+    // two reads never race
+    expect(run([ev(0, 'read', 'x'), ev(1, 'read', 'x')])).toEqual([-1, -1]);
+  });
+
+  it('signal', () => {
+    // masked {5,3}, unmaskAt 4. t0:5 pending{5}; t1:3 pending{3,5}; t1:5 coalesces; t2:7 delivered [7];
+    // t4:3 -> unmask first: pending flushed ascending [3,5] -> [7,3,5], then 3 delivered, 9 delivered;
+    // t6:5 delivered (mask gone).
+    const a: SignalParams = { masked: [5, 3], unmaskAt: 4 };
+    const signalsA = [
+      { t: 0, sig: 5 },
+      { t: 1, sig: 3 },
+      { t: 1, sig: 5 },
+      { t: 2, sig: 7 },
+      { t: 4, sig: 3 },
+      { t: 4, sig: 9 },
+      { t: 6, sig: 5 },
+    ];
+    expect(deliveryOrder(a, signalsA)).toEqual([7, 3, 5, 3, 9, 5]);
+    expect(solveSignal(a, { signals: signalsA })).toEqual({ order: [7, 3, 5, 3, 9, 5] });
+    // unmaskAt beyond every signal (and signals out of array order): 1 pending, 2 delivered, 1 coalesces,
+    // 4 delivered, flush at the end -> [2,4,1]
+    const b: SignalParams = { masked: [1], unmaskAt: 100 };
+    const signalsB = [
+      { t: 3, sig: 4 },
+      { t: 0, sig: 1 },
+      { t: 1, sig: 2 },
+      { t: 2, sig: 1 },
+    ];
+    expect(deliveryOrder(b, signalsB)).toEqual([2, 4, 1]);
+    expect(solveSignal(b, { signals: signalsB })).toEqual({ order: [2, 4, 1] });
   });
 });
