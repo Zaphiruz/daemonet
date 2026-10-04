@@ -1,6 +1,7 @@
 import { consoleBusLogger, createBus, type BusLogger } from '@daemonet/bus';
 import { createPrisma } from '@daemonet/db';
 import { buildApp } from './app.js';
+import { combineBearer, createBearerVerifier, createDevBearerVerifier } from './auth/bearer.js';
 import { createOidcClient } from './auth/oidc.js';
 import { loadConfig } from './config.js';
 import { loggerOptions } from './log.js';
@@ -31,13 +32,17 @@ const app = await buildApp({
   requiredGroup: config.requiredGroup,
   adminGroup: config.adminGroup,
   devBypass: config.devBypass,
+  bearer: combineBearer(
+    config.botOidc ? createBearerVerifier({ issuer: config.botOidc.issuer, audiences: [config.botOidc.clientId], requiredGroup: config.requiredGroup }) : null,
+    config.devBypass ? createDevBearerVerifier(config.requiredGroup) : null,
+  ),
   trustProxyHops: config.trustProxyHops,
   logger: loggerOptions(config.logLevel),
 });
 
 busLog = app.log;
 await app.listen({ port: config.port, host: '0.0.0.0' });
-app.log.info({ port: config.port, devBypass: config.devBypass, redis: Boolean(config.redisUrl) }, 'daemonet api started');
+app.log.info({ port: config.port, devBypass: config.devBypass, redis: Boolean(config.redisUrl), botBearer: Boolean(config.botOidc) }, 'daemonet api started');
 if (!config.redisUrl) app.log.warn('REDIS_URL not set: using the in-process bus (admin chat actions will not reach the sim)');
 
 const prune = () =>

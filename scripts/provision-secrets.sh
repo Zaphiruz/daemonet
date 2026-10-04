@@ -60,12 +60,13 @@ d = {
   "PORT": "3000",
   # Shared Redis on S2: ACL user daemonet (keys/channels daemonet:*), logical DB 4. Sim and api both use it.
   "REDIS_URL": f"redis://daemonet:{os.environ['REDIS_PW']}@192.168.40.20:6379/4",
-  # apps/api (web login). The sim's entrypoint drops these (and the api drops the bot/sim-only keys);
+  # apps/api (web login). The sim's entrypoint drops these (and the api drops the sim-only keys);
   # each app's allowlist logs only the NAMES it ignored.
   "SESSION_SECRET": os.environ["SESSION_SECRET"],
   "SESSION_COOKIE_SECURE": "true",
   "FRONTEND_ORIGIN": "https://daemonet.wispy-nook.casa",
-  # Issuer of the web provider (slug daemonet); the api no longer reads AUTHENTIK_ISSUER_URL (that is the bot issuer, used by the sim).
+  # Issuer of the web provider (slug daemonet), for browser login. AUTHENTIK_ISSUER_URL / AUTHENTIK_BOT_CLIENT_ID above are the bot
+  # provider: the sim verifies game-socket tokens with them and the api (SP5) bots' Authorization: Bearer tokens.
   "AUTHENTIK_WEB_ISSUER_URL": "https://authentik.wispy-nook.casa/application/o/daemonet/",
   "AUTHENTIK_CLIENT_ID": os.environ["WEB_CLIENT_ID"],
   "AUTHENTIK_CLIENT_SECRET": os.environ["WEB_CLIENT_SECRET"],

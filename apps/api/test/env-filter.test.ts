@@ -19,6 +19,8 @@ describe('filterSecrets', () => {
       'LOG_LEVEL',
       'PORT',
       'REDIS_URL',
+      'AUTHENTIK_ISSUER_URL',
+      'AUTHENTIK_BOT_CLIENT_ID',
     ]);
     expect(filterSecrets(doc)).toEqual({ applied: doc, ignored: [] });
   });

@@ -6,6 +6,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { COOKIE_NAME, buildApp } from '../src/app.js';
 import type { OidcClient, OidcIdentity } from '../src/auth/oidc.js';
+import { BearerError, combineBearer, createBearerVerifier, createDevBearerVerifier } from '../src/auth/bearer.js';
 import { CSRF_HEADER, CSRF_VALUE } from '../src/auth/middleware.js';
 import { hashToken } from '../src/auth/session.js';
 import { loadConfig } from '../src/config.js';
@@ -49,6 +50,17 @@ describe('config', () => {
     expect(full.redisUrl).toBeUndefined();
     expect(loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', REDIS_URL: 'redis://127.0.0.1:6379/4' }).redisUrl).toBe('redis://127.0.0.1:6379/4');
   });
+
+  it('reads the bot provider (the sim’s AUTHENTIK_ISSUER_URL / AUTHENTIK_BOT_CLIENT_ID) separately from the web issuer', () => {
+    const dev = { ...base, AUTH_DEV_BYPASS: 'true' };
+    expect(loadConfig(dev).botOidc).toBeNull();
+    expect(loadConfig({ ...dev, AUTHENTIK_ISSUER_URL: 'https://a/application/o/daemonet-bot/' }).botOidc).toBeNull();
+    const web = { AUTHENTIK_WEB_ISSUER_URL: 'https://a/application/o/daemonet/', AUTHENTIK_CLIENT_ID: 'c', AUTHENTIK_CLIENT_SECRET: 'x', AUTHENTIK_REDIRECT_URI: 'https://d/api/auth/callback' };
+    const c = loadConfig({ ...base, ...web, NODE_ENV: 'production', AUTHENTIK_ISSUER_URL: 'https://a/application/o/daemonet-bot/', AUTHENTIK_BOT_CLIENT_ID: 'bot' });
+    expect(c.botOidc).toEqual({ issuer: 'https://a/application/o/daemonet-bot/', clientId: 'bot' });
+    expect(c.oidc?.issuer).toBe('https://a/application/o/daemonet/');
+    expect(() => loadConfig({ ...dev, AUTHENTIK_ISSUER_URL: 'not a url', AUTHENTIK_BOT_CLIENT_ID: 'bot' })).toThrow();
+  });
 });
 
 describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
@@ -67,6 +79,14 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     app = await buildApp({
       prisma: prisma!, bus, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
       oidcClient: delegate, requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: true, disableRateLimit: true,
+      bearer: combineBearer(
+        async (token) => {
+          if (token === 'good-token') return { sub: 'bot-1', groups: ['daemonet-users'] };
+          if (token === 'admin-token') return { sub: 'bot-admin', groups: ['daemonet-users', 'daemonet-admins'] };
+          throw new Error('signature verification failed');
+        },
+        createDevBearerVerifier('daemonet-users'),
+      ),
     });
     await app.ready();
   });
@@ -77,7 +97,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   beforeEach(async () => {
     oidc = fakeOidc();
     bus.log.length = 0;
-    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "DaemonArchive", "BitsLedger", "Ticket", "Research", "ChatMessage", "ChatBlock", "ChatFilterTerm", "ChatFilterHit", "Report", "Org", "OrgMember", "OrgInvite", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "DaemonArchive", "BitsLedger", "Ticket", "Research", "ChatMessage", "ChatBlock", "ChatFilterTerm", "ChatFilterHit", "Report", "Org", "OrgMember", "OrgInvite", "Incident", "ExchangeVault" CASCADE');
   });
 
   /** Runs the full login: /login sets the PKCE cookie, /callback exchanges and sets the session cookie. */
@@ -1072,6 +1092,74 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect((await app.inject({ method: 'GET', url: '/api/me', cookies: { [COOKIE_NAME]: cookie! } })).statusCode).toBe(401);
     expect(await prisma!.session.count()).toBe(0);
   });
+
+  it('accepts bot bearer tokens (no CSRF header needed), rejects bad ones, and serves the vault and Disk locks', async () => {
+    const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+    expect((await app.inject({ method: 'GET', url: '/api/exchange/vault' })).statusCode).toBe(401);
+    const forged = await app.inject({ method: 'GET', url: '/api/exchange/vault', headers: bearer('forged') });
+    expect(forged.statusCode).toBe(401);
+    // the verifier's reason stays in the log
+    expect(forged.json()).toEqual({ error: 'unauthorized', message: 'authentication failed' });
+    const empty = await app.inject({ method: 'GET', url: '/api/exchange/vault', headers: bearer('good-token') });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({});
+    expect(empty.headers['cache-control']).toBe('private, no-store');
+    const op = await prisma!.operator.findFirstOrThrow({ where: { sub: 'bot-1' } });
+    await prisma!.exchangeVault.create({ data: { operatorId: op.id, item: 'frag:packet', qty: 7 } });
+    expect((await app.inject({ method: 'GET', url: '/api/exchange/vault', headers: bearer('good-token') })).json()).toEqual({ 'frag:packet': 7 });
+    // the same operator as a `dev:` game-socket bot; mutating requests work without the CSRF header
+    const me = (await app.inject({ method: 'GET', url: '/api/me', headers: bearer('dev:robo') })).json();
+    expect(me).toMatchObject({ name: null, isAdmin: false });
+    const seeded = await app.inject({ method: 'POST', url: '/api/dev/daemon', headers: bearer('dev:robo'), payload: { species: 'pingling', level: 8 } });
+    expect(seeded.statusCode).toBe(200);
+    await prisma!.daemon.update({ where: { id: seeded.json().id }, data: { lockedBy: 'listing:x' } });
+    expect((await app.inject({ method: 'GET', url: '/api/disk', headers: bearer('dev:robo') })).json()[0]).toMatchObject({ lockedBy: 'listing:x' });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: bearer('dev:robo') })).statusCode).toBe(403);
+  });
+
+  it('only shows the caller’s own vault', async () => {
+    const mine = await ensureOperator(prisma!, 'bot-1', false);
+    const other = await ensureOperator(prisma!, 'someone-else', false);
+    await prisma!.exchangeVault.createMany({ data: [{ operatorId: mine.id, item: 'sniff', qty: 2 }, { operatorId: other.id, item: 'tap', qty: 9 }] });
+    expect((await app.inject({ method: 'GET', url: '/api/exchange/vault', headers: { authorization: 'Bearer good-token' } })).json()).toEqual({ sniff: 2 });
+  });
+
+  it('bearer precedence: a request carrying both a session cookie and a bearer token is refused; other schemes are refused', async () => {
+    const { cookie } = await login();
+    const cookies = { [COOKIE_NAME]: cookie! };
+    expect((await app.inject({ method: 'GET', url: '/api/me', cookies })).statusCode).toBe(200);
+    for (const authorization of ['Bearer good-token', 'Bearer dev:robo', 'Basic dXNlcjpwYXNz', 'Bearer ', 'Bearer']) {
+      const both = await app.inject({ method: 'GET', url: '/api/me', cookies, headers: { authorization } });
+      expect(both.statusCode, authorization).toBe(401);
+      expect(both.json()).toEqual({ error: 'unauthorized', message: 'authentication failed' });
+    }
+    for (const authorization of ['Basic dXNlcjpwYXNz', 'Bearer ', 'Bearer', 'Token good-token']) {
+      expect((await app.inject({ method: 'GET', url: '/api/me', headers: { authorization } })).statusCode, authorization).toBe(401);
+    }
+    // the scheme is case-insensitive (RFC 7235)
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { authorization: 'bearer good-token' } })).statusCode).toBe(200);
+    // a cookie request still needs the CSRF header to mutate; a bearer request does not
+    expect((await app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, payload: { source: 'x' } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'PUT', url: '/api/scripts/main', headers: { authorization: 'Bearer good-token' }, payload: { source: 'x' } })).statusCode).toBe(200);
+    // and a bearer request cannot ride a cookie by adding the CSRF header either
+    expect((await app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, headers: { ...csrf, authorization: 'Bearer good-token' }, payload: { source: 'y' } })).statusCode).toBe(401);
+  });
+
+  it('bearer admin rights need both the operator row flag and the admin group in the token', async () => {
+    const admin = { authorization: 'Bearer admin-token' };
+    // first sight creates the operator with isAdmin from the token's groups
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: admin })).statusCode).toBe(200);
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { sub: 'bot-admin' } })).isAdmin).toBe(true);
+    // demoted in the database: the token's group alone is not enough, and the request does not re-promote
+    await prisma!.operator.update({ where: { sub: 'bot-admin' }, data: { isAdmin: false } });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: admin })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: admin })).json().isAdmin).toBe(false);
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { sub: 'bot-admin' } })).isAdmin).toBe(false);
+    // admin row, token without the admin group: refused
+    await ensureOperator(prisma!, 'bot-1', true);
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: { authorization: 'Bearer good-token' } })).statusCode).toBe(403);
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { sub: 'bot-1' } })).isAdmin).toBe(true);
+  });
 });
 
 describe.skipIf(!url)('API session lifetime and admin rights', () => {
@@ -1349,5 +1437,180 @@ describe.skipIf(!url)('admin self-moderation', () => {
     expect(bus.log).toEqual([]);
     expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies, headers: csrf, payload: { operatorId: other.id, minutes: 5 } })).statusCode).toBe(200);
     await app.close();
+  });
+});
+
+const BOT_ISSUER = 'https://authentik.test/application/o/daemonet-bot/';
+const LEAK = 'provider-secret-text';
+
+/** A fake `daemonet-bot` provider: discovery, JWKS and userinfo, each of which can be taken down. */
+async function fakeIdp() {
+  const { generateKeyPair, SignJWT, exportJWK } = await import('jose');
+  const { publicKey, privateKey } = await generateKeyPair('RS256');
+  const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
+  const state = { up: true, jwksUp: true, userinfoUp: true, groups: ['daemonet-users'] as unknown, calls: [] as string[], withSignal: 0 };
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const u = input instanceof Request ? input.url : String(input);
+    state.calls.push(u);
+    if (init?.signal instanceof AbortSignal) state.withSignal++;
+    if (!state.up) throw new TypeError(`fetch failed: connect ECONNREFUSED ${LEAK}`);
+    if (u === `${BOT_ISSUER}.well-known/openid-configuration`) return Response.json({ jwks_uri: `${BOT_ISSUER}jwks/`, userinfo_endpoint: 'https://authentik.test/application/o/userinfo/' });
+    if (u === `${BOT_ISSUER}jwks/`) return state.jwksUp ? Response.json({ keys: [jwk] }) : new Response(LEAK, { status: 502 });
+    if (u === 'https://authentik.test/application/o/userinfo/') return state.userinfoUp ? Response.json({ groups: state.groups }) : new Response(LEAK, { status: 500 });
+    return new Response('not found', { status: 404 });
+  }) as typeof fetch;
+  type Jwt = InstanceType<typeof SignJWT>;
+  const sign = (claims: Record<string, unknown> = { groups: ['daemonet-users'] }, edit: (j: Jwt) => Jwt = (j) => j) =>
+    edit(new SignJWT(claims).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(BOT_ISSUER).setAudience('bot-client').setSubject('user-9').setIssuedAt().setExpirationTime('5m')).sign(privateKey);
+  return { state, fetch: fetchImpl, sign, publicKey, privateKey };
+}
+
+const b64url = (v: unknown) => Buffer.from(typeof v === 'string' ? v : JSON.stringify(v)).toString('base64url');
+
+describe('bearer verifier', () => {
+  it('checks signature, issuer, audience and the required group', async () => {
+    const { generateKeyPair, SignJWT, exportJWK, createLocalJWKSet } = await import('jose');
+    const { publicKey, privateKey } = await generateKeyPair('RS256');
+    const jwks = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' }] });
+    const issuer = 'https://authentik.test/application/o/daemonet-bot/';
+    const sign = (claims: Record<string, unknown>, aud = 'bot-client', iss = issuer) =>
+      new SignJWT(claims).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(iss).setAudience(aud).setSubject('user-9').setExpirationTime('5m').sign(privateKey);
+    const verify = createBearerVerifier({ issuer, audiences: ['bot-client'], requiredGroup: 'daemonet-users', jwks, userinfo: async () => ({ groups: ['daemonet-users'] }) });
+    expect(await verify(await sign({ groups: ['daemonet-users', 'x'] }))).toEqual({ sub: 'user-9', groups: ['daemonet-users', 'x'] });
+    expect(await verify(await sign({}))).toEqual({ sub: 'user-9', groups: ['daemonet-users'] });
+    await expect(verify(await sign({ groups: ['other'] }))).rejects.toThrow(/not in daemonet-users/);
+    await expect(verify(await sign({ groups: ['daemonet-users'] }, 'someone-else'))).rejects.toThrow();
+    await expect(verify(await sign({ groups: ['daemonet-users'] }, 'bot-client', 'https://evil.test/'))).rejects.toThrow();
+    await expect(verify('not-a-jwt')).rejects.toThrow();
+  });
+
+  it('rejects expired, not-yet-valid, wrong-key, HS256-with-the-public-key, alg none, exp-less, sub-less and group-less tokens', async () => {
+    const { createHmac } = await import('node:crypto');
+    const { exportSPKI, generateKeyPair, SignJWT } = await import('jose');
+    const idp = await fakeIdp();
+    const verify = createBearerVerifier({ issuer: BOT_ISSUER, audiences: ['bot-client'], requiredGroup: 'daemonet-users', fetch: idp.fetch });
+    expect(await verify(await idp.sign())).toEqual({ sub: 'user-9', groups: ['daemonet-users'] });
+    const now = Math.floor(Date.now() / 1000);
+    const rejects = async (token: string, label: string) => {
+      const err = await verify(token).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err, label).toBeInstanceOf(BearerError);
+      expect((err as BearerError).unavailable, label).toBe(false);
+    };
+    await rejects(await idp.sign(undefined, (j) => j.setExpirationTime(now - 60)), 'expired');
+    await rejects(await idp.sign(undefined, (j) => j.setNotBefore(now + 300)), 'not yet valid');
+    const other = await generateKeyPair('RS256');
+    const base = (key: CryptoKey, exp = true) => {
+      const j = new SignJWT({ groups: ['daemonet-users'] }).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(BOT_ISSUER).setAudience('bot-client').setSubject('user-9');
+      return (exp ? j.setExpirationTime('5m') : j).sign(key);
+    };
+    await rejects(await base(other.privateKey), 'wrong key');
+    await rejects(await base(idp.privateKey, false), 'no exp');
+    const claims = { iss: BOT_ISSUER, aud: 'bot-client', sub: 'user-9', exp: now + 300, groups: ['daemonet-users'] };
+    const pem = await exportSPKI(idp.publicKey);
+    const hsInput = `${b64url({ alg: 'HS256', kid: 'k1', typ: 'JWT' })}.${b64url(claims)}`;
+    await rejects(`${hsInput}.${createHmac('sha256', pem).update(hsInput).digest('base64url')}`, 'HS256 with the public key');
+    await rejects(`${b64url({ alg: 'none', typ: 'JWT' })}.${b64url(claims)}.`, 'alg none');
+    await rejects(await idp.sign(undefined, (j) => j.setSubject('')), 'empty sub');
+    idp.state.groups = ['other'];
+    await rejects(await idp.sign({}), 'group missing from claim and userinfo');
+    idp.state.groups = 'daemonet-users';
+    await rejects(await idp.sign({}), 'malformed userinfo groups');
+  });
+
+  it('IdP failures are "unavailable", discovery and JWKS are retried after a failure, and every IdP fetch has a timeout signal', async () => {
+    const idp = await fakeIdp();
+    const verify = createBearerVerifier({ issuer: BOT_ISSUER, audiences: ['bot-client'], requiredGroup: 'daemonet-users', fetch: idp.fetch });
+    const token = await idp.sign({});
+    const unavailable = async () => {
+      const err = await verify(token).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(BearerError);
+      expect((err as BearerError).unavailable).toBe(true);
+    };
+    idp.state.up = false;
+    await unavailable();
+    await unavailable();
+    idp.state.up = true;
+    idp.state.jwksUp = false;
+    await unavailable();
+    idp.state.jwksUp = true;
+    idp.state.userinfoUp = false;
+    await unavailable();
+    idp.state.userinfoUp = true;
+    expect(await verify(token)).toEqual({ sub: 'user-9', groups: ['daemonet-users'] });
+    const discoveries = idp.state.calls.filter((c) => c.endsWith('openid-configuration')).length;
+    expect(discoveries).toBe(3); // two failures (never cached), then one success that is reused
+    expect(idp.state.withSignal).toBe(idp.state.calls.length);
+  });
+
+  it('combineBearer routes dev: tokens to the dev verifier only when it exists', async () => {
+    expect(combineBearer(null, null)).toBeNull();
+    const devOnly = combineBearer(null, createDevBearerVerifier('daemonet-users'))!;
+    expect(await devOnly('dev:alice')).toEqual({ sub: 'dev-alice', groups: ['daemonet-users'] });
+    await expect(devOnly('dev:Bad Name')).rejects.toThrow();
+    await expect(devOnly('eyJhbGciOi.x.y')).rejects.toThrow();
+    const oidcOnly = combineBearer(async () => ({ sub: 's', groups: [] }), null)!;
+    await expect(oidcOnly('dev:alice')).rejects.toThrow(/disabled/);
+    expect(await oidcOnly('anything')).toEqual({ sub: 's', groups: [] });
+  });
+});
+
+describe.skipIf(!url)('API bearer hardening', () => {
+  it('maps IdP outages to a generic 503 and recovers, keeps 401s generic, never logs tokens, and rate-limits bearer requests', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator", "ExchangeVault" CASCADE');
+    const idp = await fakeIdp();
+    const lines: string[] = [];
+    const app = await buildApp({
+      prisma: prisma!, bus: new MemoryBus(), sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false,
+      bearer: combineBearer(createBearerVerifier({ issuer: BOT_ISSUER, audiences: ['bot-client'], requiredGroup: 'daemonet-users', fetch: idp.fetch }), null),
+      logger: { ...loggerOptions('info'), stream: { write: (l: string) => void lines.push(l) } },
+    });
+    await app.ready();
+    let sent = 0;
+    const vault = (token: string) => {
+      sent++;
+      return app.inject({ method: 'GET', url: '/api/exchange/vault?token=QUERYSECRET', headers: { authorization: `Bearer ${token}` } });
+    };
+    const good = await idp.sign();
+    const expired = await idp.sign(undefined, (j) => j.setExpirationTime(Math.floor(Date.now() / 1000) - 60));
+
+    idp.state.up = false;
+    const down = await vault(good);
+    expect(down.statusCode).toBe(503);
+    expect(down.json()).toEqual({ error: 'unavailable', message: 'authentication temporarily unavailable' });
+    expect(down.body).not.toContain(LEAK);
+    idp.state.up = true;
+    const up = await vault(good);
+    expect(up.statusCode).toBe(200);
+    expect(up.json()).toEqual({});
+
+    for (const bad of [expired, 'dev:robo', 'garbage']) {
+      const r = await vault(bad);
+      expect(r.statusCode, bad).toBe(401);
+      expect(r.json()).toEqual({ error: 'unauthorized', message: 'authentication failed' });
+    }
+
+    // the Exchange limit (120 / minute per client IP) counts bearer requests, failed ones included
+    while (sent < 120) expect((await vault(good)).statusCode).toBe(200);
+    const limited = await vault(good);
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json().error).toBe('rate_limited');
+    expect((await vault('garbage')).statusCode).toBe(429);
+    await app.close();
+
+    const all = lines.join('\n');
+    const logged = lines.map((l) => JSON.parse(l) as { msg?: string; reason?: string; unavailable?: boolean });
+    const failures = logged.filter((l) => l.msg === 'bearer authentication failed');
+    expect(failures.length).toBe(4);
+    expect(failures[0]).toMatchObject({ unavailable: true });
+    expect(failures[0]!.reason).toContain('identity provider unavailable');
+    expect(failures.slice(1).every((f) => typeof f.reason === 'string' && f.reason.length > 0)).toBe(true);
+    for (const secret of [good, expired, good.split('.')[2]!, expired.split('.')[2]!, 'dev:robo', 'garbage', 'QUERYSECRET']) expect(all).not.toContain(secret);
   });
 });

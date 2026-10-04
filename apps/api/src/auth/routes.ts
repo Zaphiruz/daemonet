@@ -55,6 +55,18 @@ export async function ensureOperator(prisma: PrismaClient, sub: string, isAdmin:
   }
 }
 
+/**
+ * Bearer requests (SP5): the operator row for a token's sub, created on first sight with `isAdmin` from the token's
+ * groups (as a first login would). An existing row is read, never updated: admin rights stay with `Operator.isAdmin`
+ * (synced at web login), so a bot request can neither promote nor demote anyone.
+ */
+export async function operatorForSub(prisma: PrismaClient, sub: string, groupAdmin: boolean): Promise<{ id: string; isAdmin: boolean }> {
+  const row = await prisma.operator.findUnique({ where: { sub }, select: { id: true, isAdmin: true } });
+  if (row) return row;
+  const created = await ensureOperator(prisma, sub, groupAdmin);
+  return { id: created.id, isAdmin: groupAdmin };
+}
+
 function isSubConflict(err: unknown): boolean {
   if (typeof err !== 'object' || err === null || (err as { code?: unknown }).code !== 'P2002') return false;
   const meta = (err as { meta?: Record<string, unknown> }).meta ?? {};

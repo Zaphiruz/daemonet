@@ -3,14 +3,16 @@ import rateLimit from '@fastify/rate-limit';
 import type { Bus } from '@daemonet/bus';
 import type { PrismaClient } from '@daemonet/db';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import type { BearerVerifier } from './auth/bearer.js';
 import { registerDevBypass } from './auth/dev-bypass.js';
 import { makeRequireAdmin, makeRequireAuth } from './auth/middleware.js';
 import type { OidcClient } from './auth/oidc.js';
-import { registerAuthRoutes } from './auth/routes.js';
+import { operatorForSub, registerAuthRoutes } from './auth/routes.js';
 import { createSessionStore } from './auth/session.js';
 import { AppError } from './errors.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerEconomyRoutes } from './routes/economy.js';
+import { registerExchangeRoutes } from './routes/exchange.js';
 import { registerIncidentRoutes } from './routes/incidents.js';
 import { registerMiscRoutes } from './routes/misc.js';
 import { registerOrgRoutes } from './routes/orgs.js';
@@ -35,6 +37,8 @@ export interface BuildAppOptions {
   trustProxyHops?: number;
   logger?: FastifyServerOptions['logger'];
   disableRateLimit?: boolean;
+  /** Bots' `Authorization: Bearer` tokens (SP5): the bot provider's verifier, plus `dev:` tokens under the dev bypass. */
+  bearer?: BearerVerifier | null;
 }
 
 export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
@@ -46,7 +50,10 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
 
   const sessionStore = createSessionStore(o.prisma, SESSION_TTL_SECONDS);
   const common = { cookieName: COOKIE_NAME, cookieSecure: o.cookieSecure, ttlSeconds: SESSION_TTL_SECONDS, adminGroup: o.adminGroup };
-  app.decorate('requireAuth', makeRequireAuth({ sessionStore, ...common }));
+  app.decorate(
+    'requireAuth',
+    makeRequireAuth({ sessionStore, ...common, bearer: o.bearer ?? null, operatorForSub: (sub, groupAdmin) => operatorForSub(o.prisma, sub, groupAdmin) }),
+  );
   app.decorate('requireAdmin', makeRequireAdmin());
 
   // every /api response is per session (research, tickets, ledger...): never stored by a shared cache (the Caddy edge sends no-store too)
@@ -74,5 +81,6 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
   registerChatRoutes(app, o.prisma, o.bus);
   registerOrgRoutes(app, o.prisma, o.bus);
   registerIncidentRoutes(app, o.prisma, o.bus);
+  registerExchangeRoutes(app, o.prisma, o.bus);
   return app;
 }

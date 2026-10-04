@@ -11,6 +11,9 @@ const Env = z.object({
   AUTHENTIK_CLIENT_ID: z.string().min(1).optional(),
   AUTHENTIK_CLIENT_SECRET: z.string().min(1).optional(),
   AUTHENTIK_REDIRECT_URI: z.url().optional(),
+  /** The bot provider `daemonet-bot` (the sim's keys): bots' bearer tokens on /api (SP5). Both unset = bearer tokens off. */
+  AUTHENTIK_ISSUER_URL: z.url().optional(),
+  AUTHENTIK_BOT_CLIENT_ID: z.string().min(1).optional(),
   AUTH_REQUIRED_GROUP: z.string().min(1).default('daemonet-users'),
   AUTH_ADMIN_GROUP: z.string().min(1).default('daemonet-admins'),
   AUTH_DEV_BYPASS: z.enum(['true', 'false']).default('false'),
@@ -28,6 +31,8 @@ export interface ApiConfig {
   cookieSecure: boolean;
   frontendOrigin: string;
   oidc: { issuer: string; clientId: string; clientSecret: string; redirectUri: string } | null;
+  /** Bearer tokens from the bot provider (issuer + public client id = accepted audience); null = only `dev:` tokens (dev bypass). */
+  botOidc: { issuer: string; clientId: string } | null;
   requiredGroup: string;
   adminGroup: string;
   devBypass: boolean;
@@ -44,6 +49,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     e.AUTHENTIK_WEB_ISSUER_URL && e.AUTHENTIK_CLIENT_ID && e.AUTHENTIK_CLIENT_SECRET && e.AUTHENTIK_REDIRECT_URI
       ? { issuer: e.AUTHENTIK_WEB_ISSUER_URL, clientId: e.AUTHENTIK_CLIENT_ID, clientSecret: e.AUTHENTIK_CLIENT_SECRET, redirectUri: e.AUTHENTIK_REDIRECT_URI }
       : null;
+  const botOidc = e.AUTHENTIK_ISSUER_URL && e.AUTHENTIK_BOT_CLIENT_ID ? { issuer: e.AUTHENTIK_ISSUER_URL, clientId: e.AUTHENTIK_BOT_CLIENT_ID } : null;
   if (!oidc && !devBypass) throw new Error('set the AUTHENTIK_* variables (or AUTH_DEV_BYPASS=true outside production)');
   return {
     nodeEnv: e.NODE_ENV,
@@ -53,6 +59,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     cookieSecure: e.SESSION_COOKIE_SECURE === 'true',
     frontendOrigin: new URL(e.FRONTEND_ORIGIN).origin,
     oidc,
+    botOidc,
     requiredGroup: e.AUTH_REQUIRED_GROUP,
     adminGroup: e.AUTH_ADMIN_GROUP,
     devBypass,

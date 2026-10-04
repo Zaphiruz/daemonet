@@ -12,8 +12,8 @@ the workstation.
 | Key | Value | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | `postgresql://daemonet:<pw>@192.168.40.20:5432/daemonet` | built by `scripts/provision-secrets.sh` |
-| `AUTHENTIK_ISSUER_URL` | `https://authentik.wispy-nook.casa/application/o/daemonet-bot/` | sim only; issuer of the bot provider |
-| `AUTHENTIK_BOT_CLIENT_ID` | client ID of the public provider `daemonet-bot` | |
+| `AUTHENTIK_ISSUER_URL` | `https://authentik.wispy-nook.casa/application/o/daemonet-bot/` | sim and api; issuer of the bot provider (the sim verifies game-socket tokens with it, the api verifies bots' `Authorization: Bearer` tokens on `/api/*`, SP5) |
+| `AUTHENTIK_BOT_CLIENT_ID` | client ID of the public provider `daemonet-bot` | sim and api; the accepted token audience |
 | `AUTH_REQUIRED_GROUP` | `daemonet-users` | the access gate |
 | `TRUST_PROXY_HOPS` | `3` | see the warning below |
 | `MAX_CONNECTIONS_PER_IP` | `16` | concurrent connections allowed per client IP (sim default 16) |
@@ -33,8 +33,7 @@ the workstation.
 The sim and the api share this one document; each entrypoint applies only the keys in its own
 allowlist (`apps/sim/env-filter.mjs`, `apps/api/env-filter.mjs`) and logs the NAMES of the rest as
 `Ignored non-allowlisted key(s)`. That warning at start is expected for both services (the sim ignores the
-seven api-only keys plus `AUTHENTIK_WEB_ISSUER_URL`; the api ignores `AUTHENTIK_ISSUER_URL`,
-`AUTHENTIK_BOT_CLIENT_ID`, `MAX_CONNECTIONS_PER_IP` and `SUBNETS`).
+seven api-only keys plus `AUTHENTIK_WEB_ISSUER_URL`; the api ignores `MAX_CONNECTIONS_PER_IP` and `SUBNETS`).
 
 **`TRUST_PROXY_HOPS` must equal the real number of proxies in front of the sim and the api (one key, both services).** The chain is
 Cloudflare edge → cloudflared (LC2) → nginx (LC2) → Caddy → sim/api, which is 3 trusted hops. If it is
@@ -166,7 +165,7 @@ In `https://authentik.wispy-nook.casa` (admin):
 4. **System → Brands → the default brand → Device code flow**: set `default-provider-authorization-implicit-consent` if empty (the device flow is disabled on the brand until this is set).
 5. **Web login (SP2): Providers → Create → OAuth2/OpenID Provider** `daemonet`, authorization flow `default-provider-authorization-implicit-consent`, **Client type: Confidential**, redirect URI `https://daemonet.wispy-nook.casa/api/auth/callback` (strict match; add `http://localhost:3010/api/auth/callback` only if you test login against a local stack), same signing key, same scopes incl. the `groups` mapping. **Applications → Create**: name `Daemonet Web`, slug `daemonet`, provider `daemonet`, bind the group `daemonet-users` (access gate). Note the **Client ID** and **Client Secret**. The api's redirect URI in Vault must be exactly `FRONTEND_ORIGIN` + `/api/auth/callback`.
 
-The two providers have different issuers, so the sim reads the bot issuer from `AUTHENTIK_ISSUER_URL` and the api reads the web issuer from `AUTHENTIK_WEB_ISSUER_URL`.
+The two providers have different issuers, so the sim reads the bot issuer from `AUTHENTIK_ISSUER_URL` and the api reads the web issuer from `AUTHENTIK_WEB_ISSUER_URL` for browser login. Since SP5 the api also reads `AUTHENTIK_ISSUER_URL` / `AUTHENTIK_BOT_CLIENT_ID` to accept bots' bot-provider access tokens as `Authorization: Bearer` (both unset: the api accepts no bearer tokens; a request carrying both a session cookie and an `Authorization` header is refused).
 
 Verify the device endpoint answers:
 
