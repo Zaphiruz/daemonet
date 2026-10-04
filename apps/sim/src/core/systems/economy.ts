@@ -5,11 +5,13 @@ import {
   DISK_MAX,
   DISK_STEP,
   SHOP,
+  VAULT_MAX_QTY,
   decompileYield,
   diskExpansionPrice,
   fragmentId,
   getRecipe,
   getSpecies,
+  isTradable,
   recipeFragments,
   type RecipeDef,
   type TypeId,
@@ -19,7 +21,7 @@ import type { Out } from '../out.js';
 import type { World } from '../world.js';
 
 /**
- * Shop, crafting and decompile (SP3b spec §5–§6).
+ * Shop, crafting, decompile (SP3b spec §5–§6) and Exchange vault moves (SP5 spec §4).
  *
  * Costs (bits, consumed fragments) are taken from the operator when the command is accepted, so a second command in
  * the same tick sees the lower balance and nothing can be spent twice; a failed intent refunds them exactly. Gains
@@ -133,8 +135,30 @@ export function decompile(world: World, op: Operator, d: Daemon, confirm: boolea
   );
 }
 
+/**
+ * Move items between the live inventory and the Exchange vault (SP5 spec §4). A deposit leaves the inventory at once
+ * (a cost: nothing deposited can be spent or deposited again meanwhile); a withdrawal arrives on commit (a gain).
+ */
+export function vaultMove(world: World, op: Operator, args: { item: string; qty: number }, direction: 1 | -1, input: Input, out: Out): void {
+  if (!isTradable(args.item)) throw new Rejection('E_INVALID', `${args.item} cannot be traded`);
+  requireQty(args.qty, VAULT_MAX_QTY);
+  if (direction === 1) {
+    requireItems(op, { [args.item]: args.qty });
+    addItems(op, { [args.item]: args.qty }, -1);
+  }
+  world.trackIntent({ id: world.newId('i'), kind: 'vault', operatorId: op.id, reqId: input.reqId, item: args.item, qty: direction * args.qty }, out);
+}
+
 export function completeEconomyIntent(world: World, op: Operator, intent: ShopIntent, result: IntentResult, out: Out): void {
   switch (intent.kind) {
+    case 'vault': {
+      if (!result.ok) {
+        if (intent.qty > 0) addItems(op, { [intent.item]: intent.qty }, 1);
+        return out.fail(intent, 'E_STATE', result.reason);
+      }
+      if (intent.qty < 0) addItems(op, { [intent.item]: -intent.qty }, 1);
+      return out.ok(intent, { item: intent.item, inventory: op.inventory[intent.item] ?? 0 });
+    }
     case 'buy': {
       const disk = intent.itemId === DISK_EXPANSION_ITEM;
       if (!result.ok) {

@@ -109,7 +109,7 @@ export interface OperatorRecord {
   /** The operator's org, or null (loaded with the record; never written by checkpoints). */
   org: OrgView | null;
   /**
-   * Set on checkpoint records while an intent that rewrites the inventory in the store (buy, craft, decompile,
+   * Set on checkpoint records while an intent that rewrites the inventory in the store (buy, craft, decompile, vault,
    * claimStarter) is in flight: the store must leave `inventory` alone so it can neither rewind a committed intent
    * nor persist the world's not-yet-committed view of it. The next checkpoint after it settles writes it.
    */
@@ -334,6 +334,8 @@ export type Intent =
     }
   /** `fragments` also carries the daemon's held item (it returns to the inventory). */
   | { id: string; kind: 'decompile'; operatorId: string; reqId: string; daemonId: string; species: string; fragments: Record<string, number>; history: HistoryEntry }
+  /** Exchange vault (SP5): `qty` > 0 deposits from the inventory, < 0 withdraws into it. */
+  | { id: string; kind: 'vault'; operatorId: string; reqId: string; item: string; qty: number }
   | {
       id: string;
       kind: 'acceptTicket';
@@ -377,8 +379,11 @@ export function incidentRewardId(incidentId: string, operatorId: string): string
   return `${incidentId}:reward:${operatorId}`;
 }
 
-/** Shop, crafting and decompile: intents that spend bits or rewrite the operator's inventory in the store. */
-export const SHOP_INTENTS = ['buy', 'craft', 'decompile'] as const;
+/**
+ * Shop, crafting, decompile and Exchange vault moves: intents that spend bits or rewrite the operator's inventory in the
+ * store (costs taken at accept, gains applied on commit; `completeEconomyIntent`).
+ */
+export const SHOP_INTENTS = ['buy', 'craft', 'decompile', 'vault'] as const;
 export type ShopIntent = Extract<Intent, { kind: (typeof SHOP_INTENTS)[number] }>;
 
 /**

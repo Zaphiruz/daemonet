@@ -15,6 +15,19 @@ export const SHOP: Readonly<Partial<Record<ItemId, number>>> = deepFreeze({
 export const BUY_MAX_QTY = 64;
 export const CRAFT_MAX_QTY = 16;
 
+/** Largest quantity one deposit / withdraw (and one Exchange order) moves. */
+export const VAULT_MAX_QTY = 1024;
+
+/** Items the Exchange trades (SP5): everything an inventory can hold. */
+export function isTradable(id: string): boolean {
+  try {
+    getItem(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Disk expansion: +32 slots per purchase from 256 up to 512; the price doubles each time. */
 export const DISK_BASE = 256;
 export const DISK_STEP = 32;

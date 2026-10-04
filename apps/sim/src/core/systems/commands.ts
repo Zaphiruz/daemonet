@@ -20,7 +20,7 @@ import { Rejection, type Daemon, type Input, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
 import { startCapture, submitCapture } from './capture.js';
-import { buy, craft, decompile } from './economy.js';
+import { buy, craft, decompile, vaultMove } from './economy.js';
 import { evolve } from './evolve.js';
 import { abandonTicket, acceptTicket } from './tickets.js';
 import { restoreDaemon } from './upkeep.js';
@@ -152,6 +152,12 @@ function handle(world: World, input: Input, out: Out): void {
     case 'decompile':
       requireAtHost(world, op);
       return decompile(world, op, ownedDaemon(world, op, c.args.daemonId), c.args.confirm, input, out);
+    case 'deposit':
+      requireAtHost(world, op);
+      return vaultMove(world, op, c.args, 1, input, out);
+    case 'withdraw':
+      requireAtHost(world, op);
+      return vaultMove(world, op, c.args, -1, input, out);
     case 'acceptTicket':
       return acceptTicket(world, op, c.args, input, out);
     case 'abandonTicket':

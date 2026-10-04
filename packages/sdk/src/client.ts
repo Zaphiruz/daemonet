@@ -264,6 +264,14 @@ export class OperatorApi {
   decompile(daemonId: string, confirm = false) {
     return this.client.command({ cmd: 'decompile', actor: 'self', args: { daemonId, confirm } });
   }
+  /** Move items from your inventory into the Exchange vault (at a host). */
+  deposit(item: string, qty = 1) {
+    return this.client.command({ cmd: 'deposit', actor: 'self', args: { item, qty } });
+  }
+  /** Take items back out of the Exchange vault (at a host). */
+  withdraw(item: string, qty = 1) {
+    return this.client.command({ cmd: 'withdraw', actor: 'self', args: { item, qty } });
+  }
   /** Accept a ticket from today's board at this host (`index` 0-7); `day` defaults to the server's day. */
   acceptTicket(index: number, subnet = this.client.subnet, day = this.client.serverDay) {
     return this.client.command({ cmd: 'acceptTicket', actor: 'self', args: { day, subnet, index } });

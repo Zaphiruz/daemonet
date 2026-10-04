@@ -295,6 +295,10 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await run(t);
       await run({ id: 'i-rs-done', kind: 'completeTicket', operatorId: a.id, ticketId: t.ticketId, reward: t.reward });
       await run(incidentRewards('abcd1234-inc-rs', { [a.id]: 100 })[0]!);
+      // vault moves write no ledger rows (items only)
+      await run({ id: 'i-rs-dep', kind: 'vault', operatorId: a.id, reqId: 'r', item: 'sniff', qty: 2 });
+      await run({ id: 'i-rs-wd', kind: 'vault', operatorId: a.id, reqId: 'r', item: 'sniff', qty: -2 });
+      expect(seen.get('vault')!.size).toBe(0);
       const writers = Object.fromEntries([...seen].filter(([, r]) => r.size > 0).map(([kind, r]) => [kind, [...r].sort()]));
       // Every kind listed in the map was exercised here (a new kind must add a scenario), and wrote only its listed reasons.
       expect(writers).toEqual(Object.fromEntries(Object.entries(SIM_INTENT_LEDGER_REASONS).map(([kind, r]) => [kind, [...r].sort()])));
@@ -696,6 +700,41 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(await store.applyIntent(acceptLo(a.id, 1, 'i-acc-1b', 'abcd1234-t1b'), ctx)).toEqual({ ok: false, reason: 'already accepted' });
     });
 
+    it('moves items between inventory and the Exchange vault; refuses overdrawn withdrawals', async () => {
+      const a = await store.loadOrCreateOperator('sub-v1', 'lo', SPAWN);
+      await store.applyIntent(claim(a.id, 'vera', ownedRecord('pingling', 5, 0, 'abcd1234-v1')), { seedId: 'abcd1234' });
+      const vault = (id: string, item: string, qty: number): Intent => ({ id, kind: 'vault', operatorId: a.id, reqId: 'r', item, qty });
+      expect(await store.applyIntent(vault('i-v1', 'sniff', 5), { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect(await store.applyIntent(vault('i-v1', 'sniff', 5), { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect((await store.loadOrCreateOperator('sub-v1', 'lo', SPAWN)).inventory).toEqual({ sniff: 3, restore: 2 });
+      expect(await store.applyIntent(vault('i-v2', 'sniff', -6), { seedId: 'abcd1234' })).toEqual({ ok: false, reason: 'not enough in the vault' });
+      expect(await store.applyIntent(vault('i-v3', 'sniff', -5), { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect((await store.loadOrCreateOperator('sub-v1', 'lo', SPAWN)).inventory).toEqual({ sniff: 8, restore: 2 });
+    });
+
+    it('vault moves are re-validated against the rules and the stored inventory; a refused one changes nothing', async () => {
+      const a = await store.loadOrCreateOperator('sub-v2', 'lo', SPAWN);
+      await store.applyIntent(claim(a.id, 'vic', ownedRecord('pingling', 5, 0, 'abcd1234-v2')), { seedId: 'abcd1234' });
+      const vault = (id: string, item: string, qty: number): Intent => ({ id, kind: 'vault', operatorId: a.id, reqId: 'r', item, qty });
+      const ctx = { seedId: 'abcd1234' };
+      const bad: Array<[string, number]> = [['sniff', 0], ['sniff', 2.5], ['sniff', 1025], ['sniff', -1025], ['nonsense', 1], ['__proto__', 1], ['diskExpansion', 1], ['sniff', Number.MAX_SAFE_INTEGER + 2]];
+      for (const [i, [item, qty]] of bad.entries()) expect(await store.applyIntent(vault(`i-vb-${i}`, item, qty), ctx), `${item} ${qty}`).toEqual({ ok: false, reason: 'invalid vault move' });
+      // more than the stored inventory holds: a forged or desynced deposit mints nothing
+      expect(await store.applyIntent(vault('i-vb-over', 'sniff', 9), ctx)).toEqual({ ok: false, reason: 'not enough sniff' });
+      expect(await store.applyIntent(vault('i-vb-none', 'tap', 1), ctx)).toEqual({ ok: false, reason: 'not enough tap' });
+      expect((await store.loadOrCreateOperator('sub-v2', 'lo', SPAWN)).inventory).toEqual({ sniff: 8, restore: 2 });
+      // all of it, then the vault row is gone once emptied
+      expect(await store.applyIntent(vault('i-vb-all', 'sniff', 8), ctx)).toEqual({ ok: true });
+      expect((await store.loadOrCreateOperator('sub-v2', 'lo', SPAWN)).inventory).toEqual({ restore: 2 });
+      expect(await store.applyIntent(vault('i-vb-back', 'sniff', -8), ctx)).toEqual({ ok: true });
+      expect(await store.applyIntent(vault('i-vb-again', 'sniff', -1), ctx)).toEqual({ ok: false, reason: 'not enough in the vault' });
+      expect((await store.loadOrCreateOperator('sub-v2', 'lo', SPAWN)).inventory).toEqual({ sniff: 8, restore: 2 });
+    });
+
+    it('refuses vault moves of an operator without a row', async () => {
+      await expect(store.applyIntent({ id: 'i-vx', kind: 'vault', operatorId: '00000000-0000-4000-8000-000000000000', reqId: 'r', item: 'sniff', qty: 1 }, { seedId: 'abcd1234' })).rejects.toThrow();
+    });
+
     it('refuses accepts that do not match the board, of a stale day, or past the daily cap', async () => {
       const a = await store.loadOrCreateOperator('sub-t2', 'lo', SPAWN);
       const ctx = { seedId: 'abcd1234' };
@@ -779,12 +818,12 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     'PrismaStore',
     async () => new PrismaStore(prisma!),
     async () => {
-      await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+      await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     },
   );
 
   it('treats a concurrent duplicate of the same claim as applied, not as a name clash', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race', 'lo', SPAWN);
     const d = ownedRecord('pingling', 5, 0, 'abcd1234-d8');
@@ -800,7 +839,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent first evolutions into one form: both apply, exactly one is the discoverer', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-ra', 'lo', SPAWN);
     const b = await store.loadOrCreateOperator('sub-rb', 'lo', SPAWN);
@@ -817,7 +856,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('a concurrent duplicate of one evolve intent applies it once', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-rc', 'lo', SPAWN);
     await store.applyIntent(claim(a.id, 'ric', ownedRecord('echolet', 16, 0, 'abcd1234-e3')), { seedId: 'abcd1234' });
@@ -828,7 +867,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent purchases cannot overdraw: the operator row lock serializes the balance check', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-buy', 'lo', SPAWN);
     await store.grantBits(a.id, 2048 * 3, 'admin');
@@ -843,7 +882,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('a concurrent duplicate of one buy applies it (and its ledger row) once', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-dup', 'lo', SPAWN);
     await store.grantBits(a.id, 1000, 'admin');
@@ -855,7 +894,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('two decompiles of one daemon: one archives it, the other finds nothing (no duplicate fragments)', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-dec', 'lo', SPAWN);
     await store.applyIntent(claim(a.id, 'rdec', { ...ownedRecord('pingling', 5, 0, 'abcd1234-e5'), heldItem: 'jumboframe' }), { seedId: 'abcd1234' });
@@ -873,7 +912,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent payouts of one ticket (different intents): exactly one moves it to DONE and writes the one ledger row', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-tk', 'lo', SPAWN);
     const t = acceptLo(a.id, 0);
@@ -889,7 +928,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent accepts cannot pass the open cap, and a concurrent duplicate board entry is "already accepted"', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-acc', 'lo', SPAWN);
     const results = await Promise.all([0, 1, 2, 3, 4].map((i) => store.applyIntent(acceptLo(a.id, i), { seedId: 'abcd1234' })));
@@ -903,7 +942,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('the unique (operator, day, subnet, index) violation is a domain answer only for an accept; a duplicate ticket id rethrows', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-tk-pk', 'lo', SPAWN);
     const b = await store.loadOrCreateOperator('sub-tk-pk2', 'lo', SPAWN);
@@ -913,7 +952,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent captures of one line add one research point each (no Research_pkey conflict)', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-research', 'lo', SPAWN);
     const cap = (i: number): Intent => ({
@@ -927,7 +966,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('simultaneous first logins for one sub all get the same operator', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const recs = await Promise.all(Array.from({ length: 8 }, () => store.loadOrCreateOperator('sub-first', 'lo', SPAWN)));
     expect(new Set(recs.map((r) => r.id)).size).toBe(1);
@@ -935,7 +974,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('seq order is commit order: concurrent grants, in-flight buys and liveState reads always see a gap-free prefix of the ledger', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-seq', 'lo', SPAWN);
     const loaded = await store.loadOrCreateOperator('sub-seq', 'lo', SPAWN);
@@ -968,8 +1007,76 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     expect(Number(sequence!.cache_size)).toBe(1);
   });
 
+  const truncate = () =>
+    prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+  const vaultIntent = (id: string, operatorId: string, item: string, qty: number): Intent => ({ id, kind: 'vault', operatorId, reqId: 'r', item, qty });
+
+  it('concurrent deposits and a craft cannot spend the same items: the operator lock serializes them', async () => {
+    await truncate();
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-vault-race', 'lo', SPAWN);
+    await prisma!.operator.update({ where: { id: a.id }, data: { inventory: { 'frag:packet': 4, 'frag:socket': 4 } } });
+    await store.grantBits(a.id, 64, 'admin');
+    const craft: Intent = { id: 'i-vr-craft', kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'tap', qty: 1, bits: 64, fragments: { 'frag:packet': 4, 'frag:socket': 4 }, output: { item: 'tap', qty: 1 } };
+    const results = await Promise.all([
+      store.applyIntent(craft, { seedId: 'abcd1234' }),
+      ...[0, 1, 2].map((i) => store.applyIntent(vaultIntent(`i-vr-${i}`, a.id, 'frag:packet', 4), { seedId: 'abcd1234' })),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const inventory = (await store.loadOrCreateOperator('sub-vault-race', 'lo', SPAWN)).inventory;
+    const vault = await prisma!.exchangeVault.findMany({ where: { operatorId: a.id } });
+    if (results[0]!.ok) {
+      expect(inventory).toEqual({ tap: 1 });
+      expect(vault).toEqual([]);
+    } else {
+      expect(inventory).toEqual({ 'frag:socket': 4 });
+      expect(vault).toEqual([{ operatorId: a.id, item: 'frag:packet', qty: 4 }]);
+    }
+  });
+
+  it('a concurrent duplicate of one withdrawal applies it once (no duplicated items)', async () => {
+    await truncate();
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-vault-dup', 'lo', SPAWN);
+    await prisma!.exchangeVault.create({ data: { operatorId: a.id, item: 'mirror', qty: 5 } });
+    const results = await Promise.all([0, 1, 2, 3].map(() => store.applyIntent(vaultIntent('i-vd', a.id, 'mirror', -3), { seedId: 'abcd1234' })));
+    expect(results).toEqual(Array.from({ length: 4 }, () => ({ ok: true })));
+    expect((await store.loadOrCreateOperator('sub-vault-dup', 'lo', SPAWN)).inventory).toEqual({ mirror: 3 });
+    expect(await prisma!.exchangeVault.findUniqueOrThrow({ where: { operatorId_item: { operatorId: a.id, item: 'mirror' } } })).toMatchObject({ qty: 2 });
+    // distinct withdrawals racing for the rest: only what is there comes out
+    const rest = await Promise.all([0, 1, 2].map((i) => store.applyIntent(vaultIntent(`i-vd-${i}`, a.id, 'mirror', -2), { seedId: 'abcd1234' })));
+    expect(rest.filter((r) => r.ok)).toHaveLength(1);
+    expect(rest.filter((r) => !r.ok)).toEqual([{ ok: false, reason: 'not enough in the vault' }, { ok: false, reason: 'not enough in the vault' }]);
+    expect((await store.loadOrCreateOperator('sub-vault-dup', 'lo', SPAWN)).inventory).toEqual({ mirror: 5 });
+    expect(await prisma!.exchangeVault.count({ where: { operatorId: a.id } })).toBe(0);
+  });
+
+  it('a vault row cannot go negative, whoever writes it', async () => {
+    await truncate();
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-vault-neg', 'lo', SPAWN);
+    await expect(prisma!.exchangeVault.create({ data: { operatorId: a.id, item: 'tap', qty: -1 } })).rejects.toThrow();
+  });
+
+  it('load refuses a daemon locked on the Exchange (and only the owner learns why)', async () => {
+    await truncate();
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-lock-a', 'lo', SPAWN);
+    const b = await store.loadOrCreateOperator('sub-lock-b', 'lo', SPAWN);
+    const d = ownedRecord('pingling', 5, 0, 'abcd1234-lk');
+    await store.applyIntent(claim(a.id, 'lola', d), { seedId: 'abcd1234' });
+    expect(await store.applyIntent({ id: 'i-lk-store', kind: 'store', operatorId: a.id, reqId: 'r', daemonId: d.id, diskSlot: 0 }, { seedId: 'abcd1234' })).toEqual({ ok: true });
+    await prisma!.daemon.update({ where: { id: d.id }, data: { lockedBy: 'listing:l1' } });
+    const load = (id: string, operatorId: string) => store.applyIntent({ id, kind: 'load', operatorId, reqId: 'r', daemonId: d.id, ramSlot: 1 }, { seedId: 'abcd1234' });
+    expect(await load('i-lk-1', a.id)).toEqual({ ok: false, reason: 'locked on the Exchange' });
+    expect(await load('i-lk-2', b.id)).toEqual({ ok: false, reason: 'not on Disk' });
+    expect(await prisma!.daemon.findUniqueOrThrow({ where: { id: d.id } })).toMatchObject({ location: 'DISK', slot: 0, lockedBy: 'listing:l1' });
+    await prisma!.daemon.update({ where: { id: d.id }, data: { lockedBy: null } });
+    expect(await load('i-lk-3', a.id)).toMatchObject({ ok: true, daemon: { id: d.id, slot: 1 } });
+  });
+
   it('loads and resyncs the org from OrgMember; an api spend committed between loads moves balance and watermark together', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "Org", "OrgMember", "OrgInvite" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "Org", "OrgMember", "OrgInvite" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-org', 'lo', SPAWN);
     await prisma!.org.create({ data: { id: 'o1', name: 'Root Access', tag: 'ROOT', ownerId: a.id, members: { create: { operatorId: a.id, rank: 'OWNER' } } } });

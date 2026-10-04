@@ -934,7 +934,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     const [d1, d2] = await prisma!.daemon.findMany({ where: { operatorId: lea.id }, orderBy: { level: 'asc' } });
     await prisma!.daemon.update({ where: { id: d1!.id }, data: { signature: 7, history: [{ kind: 'captured' }, { kind: 'evolved' }, { kind: 'evolved' }] } });
     // a decompiled daemon still counts, and so does one now owned by someone else
-    const { operatorId: _o, location: _l, slot: _s, energy: _e, hp: _h, crashed: _c, ...rest } = d2!;
+    const { operatorId: _o, location: _l, slot: _s, energy: _e, hp: _h, crashed: _c, lockedBy: _k, ...rest } = d2!;
     await prisma!.daemonArchive.create({ data: { ...rest, id: 'arch-1', operatorId: lea.id, signature: 3, history: [{ kind: 'evolved' }], reason: 'decompiled' } });
     await prisma!.daemon.delete({ where: { id: d2!.id } });
     const board = (await app.inject({ method: 'GET', url: `/api/orgs/${org.id}/leaderboard`, cookies })).json();

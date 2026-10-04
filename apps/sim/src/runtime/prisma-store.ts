@@ -336,11 +336,17 @@ export class PrismaStore implements Store {
             return { ok: true } as const;
           }
           case 'load': {
+            // Conditional on the lock too: the api locks a Disk daemon while it is on the Exchange (listing / trade), and
+            // either that update or this one sees the other's commit.
             const res = await tx.daemon.updateMany({
-              where: { id: intent.daemonId, operatorId: intent.operatorId, location: 'DISK' },
+              where: { id: intent.daemonId, operatorId: intent.operatorId, location: 'DISK', lockedBy: null },
               data: { location: 'RAM', slot: intent.ramSlot },
             });
-            if (res.count !== 1) throw new DomainFailure('not on Disk');
+            if (res.count !== 1) {
+              const row = await tx.daemon.findUnique({ where: { id: intent.daemonId }, select: { operatorId: true, location: true, lockedBy: true } });
+              // only the owner learns that the daemon is on the Exchange
+              throw new DomainFailure(row?.operatorId === intent.operatorId && row.location === 'DISK' && row.lockedBy ? 'locked on the Exchange' : 'not on Disk');
+            }
             const row = await tx.daemon.findUniqueOrThrow({ where: { id: intent.daemonId } });
             return { ok: true, daemon: toRecord(row) } as const;
           }
@@ -409,7 +415,7 @@ export class PrismaStore implements Store {
             if (!row || row.operatorId !== intent.operatorId || row.location !== 'RAM' || row.species !== intent.species) throw new DomainFailure('daemon not found');
             const problem = decompileProblem(intent, row, ctx.storedDaemon);
             if (problem) throw new DomainFailure(problem);
-            const { location: _l, slot: _s, hp: _h, energy: _e, crashed: _c, history: _hi, ...rest } = row;
+            const { location: _l, slot: _s, hp: _h, energy: _e, crashed: _c, history: _hi, lockedBy: _lk, ...rest } = row;
             const latest = ctx.storedDaemon ? memStateFields(ctx.storedDaemon) : null;
             const state = latest
               ? { level: latest.level, xp: latest.xp, moves: latest.moves, ivs: latest.ivs, patched: latest.patched, heldItem: latest.heldItem, moveTypeUses: latest.moveTypeUses, crashes: latest.crashes }
@@ -418,6 +424,29 @@ export class PrismaStore implements Store {
             await tx.daemonArchive.create({ data: { ...rest, ...state, history: json([...history, intent.history]), reason: 'decompiled' } });
             await tx.daemon.delete({ where: { id: intent.daemonId } });
             await tx.operator.update({ where: { id: intent.operatorId }, data: { inventory: withItems(op.inventory, decompileStoreGain(row, ctx.storedDaemon), 1) } });
+            return { ok: true } as const;
+          }
+          case 'vault': {
+            // Operator lock first (as every economy intent): a concurrent craft / buy / decompile / deposit of this
+            // operator commits before this read of the inventory or waits for this one.
+            const op = await lockOperator(tx, intent.operatorId);
+            const problem = economyIntentProblem(intent, op.diskCapacity);
+            if (problem) throw new DomainFailure(problem);
+            const { operatorId, item } = intent;
+            if (intent.qty > 0) {
+              // The world took a deposit out of its inventory at accept; the stored inventory must hold it too.
+              if (missingItem(op.inventory, { [item]: intent.qty })) throw new DomainFailure(`not enough ${item}`);
+              // ON CONFLICT: never an ExchangeVault_pkey P2002 against a concurrent first write of the row.
+              await tx.$executeRaw`
+                INSERT INTO "ExchangeVault" ("operatorId", "item", "qty") VALUES (${operatorId}, ${item}, ${intent.qty})
+                ON CONFLICT ("operatorId", "item") DO UPDATE SET "qty" = "ExchangeVault"."qty" + EXCLUDED."qty"`;
+            } else {
+              // Guarded decrement: whatever else writes the row (the api's order book), the vault never goes below zero.
+              const res = await tx.exchangeVault.updateMany({ where: { operatorId, item, qty: { gte: -intent.qty } }, data: { qty: { decrement: -intent.qty } } });
+              if (res.count !== 1) throw new DomainFailure('not enough in the vault');
+              await tx.exchangeVault.deleteMany({ where: { operatorId, item, qty: 0 } });
+            }
+            await tx.operator.update({ where: { id: operatorId }, data: { inventory: withItems(op.inventory, { [item]: Math.abs(intent.qty) }, intent.qty > 0 ? -1 : 1) } });
             return { ok: true } as const;
           }
           case 'acceptTicket': {

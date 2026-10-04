@@ -54,6 +54,8 @@ declare module '@daemonet/sdk' {
     travel(gatewayId: string): Promise<unknown>; evolve(daemonId: string, formId: string): Promise<unknown>; hold(daemonId: string, itemId: string): Promise<unknown>; unhold(daemonId: string): Promise<unknown>;
     useBitFlipper(daemonId: string, stat: 'hp' | 'attack' | 'defense' | 'focus' | 'resolve' | 'speed' | 'haste' | 'energy'): Promise<unknown>;
     buy(itemId: string, qty?: number): Promise<unknown>; craft(recipeId: string, qty?: number, using?: string): Promise<unknown>; decompile(daemonId: string, confirm?: boolean): Promise<unknown>;
+    /** Exchange vault (at a host): deposit moves items out of your inventory, withdraw brings them back. */
+    deposit(item: string, qty?: number): Promise<unknown>; withdraw(item: string, qty?: number): Promise<unknown>;
     acceptTicket(index: number, subnet?: string, day?: string): Promise<unknown>; abandonTicket(ticketId: string): Promise<unknown>;
     script(fn: (ctx: OperatorScriptContext) => void): () => void;
   }

@@ -5,12 +5,14 @@ import {
   INCIDENT_WINDOW_MS,
   OPEN_TICKETS_MAX,
   TICKETS_PER_DAY,
+  VAULT_MAX_QTY,
   dayKey,
   decompileYield,
   diskExpansionPrice,
   fragmentId,
   getRecipe,
   getSpecies,
+  isTradable,
   recipeFragments,
   ticketKey,
   type FilterTerm,
@@ -237,6 +239,9 @@ export function economyIntentProblem(intent: ShopIntent, diskCapacity: number): 
     case 'decompile':
       // Checked against the daemon row by `decompileProblem` once the store has it.
       return null;
+    case 'vault':
+      // Whether the inventory (deposit) or the vault (withdrawal) holds enough is checked under the operator lock.
+      return isTradable(intent.item) && Number.isSafeInteger(intent.qty) && intent.qty !== 0 && Math.abs(intent.qty) <= VAULT_MAX_QTY ? null : 'invalid vault move';
   }
 }
 
@@ -488,6 +493,8 @@ export function checkpointFields(d: OwnedDaemonRecord, inventoryInFlight: boolea
 interface MemDaemon extends OwnedDaemonRecord {
   operatorId: string;
   location: 'RAM' | 'DISK';
+  /** `listing:<id>` / `trade:<id>` while on the Exchange (the api sets it): `load` refuses the daemon. */
+  lockedBy?: string | null;
 }
 
 interface MemOperator {
@@ -524,6 +531,8 @@ export class MemoryStore implements Store {
   readonly mutes = new Map<string, string | null>();
   /** operatorId -> org membership (the api's OrgMember rows; tests set it). */
   readonly orgs = new Map<string, OrgView>();
+  /** Exchange vault rows, `${operatorId}:${item}` -> qty (mirrors ExchangeVault; an emptied row is deleted). */
+  readonly vault = new Map<string, number>();
   /** Incident rows by id (mirrors the Incident table). */
   readonly incidents = new Map<string, IncidentRow & { closedAt: string | null }>();
   /** BitsLedger ids and seqs, parallel to `ledger` (kept apart so `ledger` stays in the LedgerRow shape). */
@@ -614,7 +623,7 @@ export class MemoryStore implements Store {
       bits: op.bits,
       diskCapacity: op.diskCapacity,
       inventory: { ...op.inventory },
-      ram: mine.filter((d) => d.location === 'RAM').sort((a, b) => a.slot - b.slot).map(({ operatorId: _o, location: _l, ...rec }) => ({ ...rec })),
+      ram: mine.filter((d) => d.location === 'RAM').sort((a, b) => a.slot - b.slot).map(({ operatorId: _o, location: _l, lockedBy: _k, ...rec }) => ({ ...rec })),
       diskSlots: mine.filter((d) => d.location === 'DISK').map((d) => d.slot).sort((a, b) => a - b),
       ...this.ticketStateOf(op.id),
       research: this.researchFor(op.id),
@@ -670,7 +679,7 @@ export class MemoryStore implements Store {
     if (this.applied.has(intent.id)) {
       if (intent.kind === 'load') {
         const d = this.daemons.get(intent.daemonId)!;
-        const { operatorId: _o, location: _l, ...rec } = d;
+        const { operatorId: _o, location: _l, lockedBy: _k, ...rec } = d;
         return { ok: true, daemon: { ...rec } };
       }
       if (intent.kind === 'capture' || intent.kind === 'claimStarter') {
@@ -715,10 +724,11 @@ export class MemoryStore implements Store {
       case 'load': {
         const d = this.daemons.get(intent.daemonId);
         if (!d || d.operatorId !== op.id || d.location !== 'DISK') return { ok: false, reason: 'not on Disk' };
+        if (d.lockedBy) return { ok: false, reason: 'locked on the Exchange' };
         d.location = 'RAM';
         d.slot = intent.ramSlot;
         this.applied.add(intent.id);
-        const { operatorId: _o, location: _l, ...rec } = d;
+        const { operatorId: _o, location: _l, lockedBy: _k, ...rec } = d;
         return { ok: true, daemon: { ...rec } };
       }
       case 'evolve': {
@@ -774,8 +784,24 @@ export class MemoryStore implements Store {
         if (problem) return { ok: false, reason: problem };
         const state = ctx.storedDaemon ? stateFields(ctx.storedDaemon) : stateFields(d);
         this.daemons.delete(d.id);
-        this.archive.set(d.id, { ...d, ...state, history: [...state.history, intent.history], reason: 'decompiled', archivedAt: new Date().toISOString() });
+        // The archive has no lock column (mirrors DaemonArchive).
+        const { lockedBy: _k, ...unlocked } = d;
+        this.archive.set(d.id, { ...unlocked, ...state, history: [...state.history, intent.history], reason: 'decompiled', archivedAt: new Date().toISOString() });
         op.inventory = withItems(op.inventory, decompileStoreGain(d, ctx.storedDaemon), 1);
+        break;
+      }
+      case 'vault': {
+        // Mirrors PrismaStore: rules check, then (under the operator lock there) inventory and vault row together.
+        const problem = economyIntentProblem(intent, op.diskCapacity);
+        if (problem) return { ok: false, reason: problem };
+        const key = `${op.id}:${intent.item}`;
+        const have = this.vault.get(key) ?? 0;
+        if (intent.qty < 0 && have < -intent.qty) return { ok: false, reason: 'not enough in the vault' };
+        // The world took a deposit out of its inventory at accept; the stored inventory must hold it too.
+        if (intent.qty > 0 && missingItem(op.inventory, { [intent.item]: intent.qty })) return { ok: false, reason: `not enough ${intent.item}` };
+        op.inventory = withItems(op.inventory, { [intent.item]: Math.abs(intent.qty) }, intent.qty > 0 ? -1 : 1);
+        if (have + intent.qty === 0) this.vault.delete(key);
+        else this.vault.set(key, have + intent.qty);
         break;
       }
       case 'acceptTicket': {

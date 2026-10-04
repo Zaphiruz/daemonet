@@ -161,6 +161,21 @@ describe('serverDay', () => {
     client.close();
   });
 
+  it('sends Exchange vault deposits and withdrawals (qty defaults to 1)', async () => {
+    FakeWs.instances = [];
+    const p = connect({ url: 'ws://x', auth, WebSocket: Ws });
+    await tick();
+    const ws = last();
+    snapshot(ws);
+    const client = await p;
+    const sent = () => JSON.parse(ws.sent.at(-1)!).d;
+    void client.operator.deposit('frag:packet', 6).catch(() => {});
+    expect(sent()).toMatchObject({ cmd: 'deposit', actor: 'self', args: { item: 'frag:packet', qty: 6 } });
+    void client.operator.withdraw('tap').catch(() => {});
+    expect(sent()).toMatchObject({ cmd: 'withdraw', actor: 'self', args: { item: 'tap', qty: 1 } });
+    client.close();
+  });
+
   it('falls back to the local clock before any snapshot', () => {
     const client = new GameClient({ url: 'ws://x', auth, WebSocket: Ws as never });
     expect(client.serverDay).toBe(new Date().toISOString().slice(0, 10));

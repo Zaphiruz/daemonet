@@ -558,6 +558,7 @@ export class World {
       case 'buy':
       case 'craft':
       case 'decompile':
+      case 'vault':
         return completeEconomyIntent(this, op, intent, result, out);
       case 'acceptTicket':
       case 'abandonTicket':

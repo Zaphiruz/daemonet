@@ -1,4 +1,4 @@
-import { BOARD_SIZE, BUY_MAX_QTY, CRAFT_MAX_QTY, STATUS_IDS, TYPES } from '@daemonet/rules';
+import { BOARD_SIZE, BUY_MAX_QTY, CRAFT_MAX_QTY, STATUS_IDS, TYPES, VAULT_MAX_QTY } from '@daemonet/rules';
 import { z } from 'zod';
 
 /** Upstream limits (UTF-8 bytes). submitCapture gets the larger limit. */
@@ -45,6 +45,8 @@ export const Command = z.discriminatedUnion('cmd', [
     args: z.object({ recipeId: Id, qty: z.number().int().min(1).max(CRAFT_MAX_QTY).default(1), using: TypeIdSchema.optional() }),
   }),
   z.object({ cmd: z.literal('decompile'), actor: Self, args: z.object({ daemonId: Id, confirm: z.boolean().default(false) }) }),
+  z.object({ cmd: z.literal('deposit'), actor: Self, args: z.object({ item: Id, qty: z.number().int().min(1).max(VAULT_MAX_QTY) }) }),
+  z.object({ cmd: z.literal('withdraw'), actor: Self, args: z.object({ item: Id, qty: z.number().int().min(1).max(VAULT_MAX_QTY) }) }),
   z.object({ cmd: z.literal('acceptTicket'), actor: Self, args: z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), subnet: Id, index: z.number().int().min(0).max(BOARD_SIZE - 1) }) }),
   z.object({ cmd: z.literal('abandonTicket'), actor: Self, args: z.object({ ticketId: Id }) }),
   z.object({ cmd: z.literal('clusterCreate'), actor: Self, args: z.object({}) }),

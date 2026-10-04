@@ -9,11 +9,13 @@ import {
   FRAGMENT_IDS,
   RECIPES,
   SHOP,
+  VAULT_MAX_QTY,
   decompileYield,
   diskExpansionPrice,
   fragmentId,
   getRecipe,
   isFragmentId,
+  isTradable,
   recipeFragments,
   recipeOutputItem,
 } from '../src/content/economy.js';
@@ -33,6 +35,12 @@ describe('economy content', () => {
 
   it('exposes the quantity caps and Disk constants', () => {
     expect([BUY_MAX_QTY, CRAFT_MAX_QTY, DISK_BASE, DISK_STEP, DISK_MAX, DISK_EXPANSION_ITEM]).toEqual([64, 16, 256, 32, 512, 'diskExpansion']);
+  });
+
+  it('the Exchange trades every inventory item, at most VAULT_MAX_QTY per move', () => {
+    expect(VAULT_MAX_QTY).toBe(1024);
+    for (const item of ITEMS) expect(isTradable(item.id), item.id).toBe(true);
+    for (const id of ['nonsense', '', 'diskExpansion', 'frag:', 'frag:nothing', '__proto__', 'constructor', 'toString', 'SNIFF']) expect(isTradable(id), id).toBe(false);
   });
 
   it('disk expansion doubles from 8192 and stops at 512 slots', () => {

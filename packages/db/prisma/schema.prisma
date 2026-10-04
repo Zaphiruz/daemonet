@@ -107,6 +107,8 @@ model Daemon {
   location           Location
   slot               Int
   heldItem           String?
+  /// listing:<id> or trade:<id> while on the Exchange (SP5): cannot be loaded into RAM
+  lockedBy           String?
   patched            Boolean  @default(false)
   /// lifetime move uses per type, TYPES order (16)
   moveTypeUses       Int[]
@@ -151,6 +153,15 @@ model BitsLedger {
   @@index([operatorId, at])
   @@index([operatorId, seq])
   @@index([at])
+}
+
+/// Items an operator has deposited for trading (SP5 spec §4). The api owns these rows; live inventory stays with the sim.
+model ExchangeVault {
+  operatorId String
+  item       String
+  qty        Int
+
+  @@id([operatorId, item])
 }
 
 /// Decompiled daemons keep their capture log here (never loadable again).
