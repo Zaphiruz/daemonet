@@ -196,3 +196,10 @@ Fixed before merge: solo operators exempt from the party radius; three-pass defe
 - T2: invite reveals to a nearby operator whether the target is in a cluster (boolean); join limit per operator only (not per IP) — ~30-bit codes adequate
 - T3: stale invites reappear after join+leave within 60 s (clear on gaining a cluster); copy button silent without clipboard; failed join clears the input; inner ErrorBoundary test not discriminating; `send` duplicates `run`
 Task F: minor (deferred): bystander `clear` credit within 32 tiles is intended per spec §6 (record in spec; one-line change if tuning wanted); an inviter whose invite is ignored is a cluster of one and loses the solo radius exemption; invites cleared on close but not on transparent reconnect
+
+## 2026-10-01-daemonet-sp4-plan3-orgs
+
+Fixed before merge: no double charge for concurrent rename/tag; CI e2e gets Redis; ledger seq + originalOperatorId indexes; sim ledger reasons single source + grantBits guard; resync on session creation; strict org tag; seq invariant test; retry shows committed state
+
+- T2: `invite` org push has no sim consumer yet; kicked member may receive live org chat up to 60 s if the membership push is lost (history cut off immediately)
+Task F: minor (deferred): membership announces can arrive out of order (≤60 s live org chat for a kicked member); `invite` push has no consumer; any player can read any org's members/leaderboard (spec doesn't restrict — confirm intended); invite takes a raw operator id; a raw tx.bitsLedger.create outside the checked helper isn't type-caught
