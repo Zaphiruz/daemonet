@@ -242,16 +242,13 @@ describe.skipIf(!url)('Exchange direct trades (needs DATABASE_URL)', () => {
     expect(bitsPushes).toHaveLength(4);
     const disk = admin.filter((m) => m.kind === 'disk');
     for (const m of disk) DiskPush.parse(m);
-    // removes first: bob's slot 0 is freed before alice's daemon arrives in it
+    // Only what changed: a slot freed and refilled on the same Disk (alice's 0, bob's 0) is still occupied, so neither
+    // its remove nor its add is sent; removes go first.
     expect(disk).toEqual([
-      { kind: 'disk', operatorId: a.id, remove: 0, origin: 'api' },
       { kind: 'disk', operatorId: a.id, remove: 1, origin: 'api' },
-      { kind: 'disk', operatorId: b.id, remove: 0, origin: 'api' },
-      { kind: 'disk', operatorId: b.id, add: 0, origin: 'api' },
       { kind: 'disk', operatorId: b.id, add: 2, origin: 'api' },
-      { kind: 'disk', operatorId: a.id, add: 0, origin: 'api' },
     ]);
-    expect(admin).toHaveLength(10);
+    expect(admin).toHaveLength(6);
     const note = bus.log.at(-1)!;
     expect(note).toMatchObject({ channel: 'exchange', message: { kind: 'trade', operators: [a.id, b.id], detail: { tradeId: t.id, status: 'DONE' } } });
     // the sim shows each side the notification as is: it names no counterparty

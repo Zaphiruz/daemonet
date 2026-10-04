@@ -30,18 +30,30 @@ const lockValue = (tradeId: string): string => `trade:${tradeId}`;
 /** Execution waits for both operators' rows and can touch a few dozen rows: give it room (the default is 5 s). */
 const TX_OPTIONS = { maxWait: 10_000, timeout: 30_000 } as const;
 
-/** Disk changes behind the sim, announced after commit: every removal first (a slot freed and refilled is both). */
+/** Disk changes behind the sim, announced after commit: every removal first. */
 interface DiskMoves {
   remove: Array<{ operatorId: string; slot: number }>;
   add: Array<{ operatorId: string; slot: number }>;
+}
+
+/**
+ * The Disk pushes that change something: a slot freed and refilled on the same Disk (a swap reuses the slot a departing
+ * daemon left) is occupied before and after, so its remove / add pair is dropped. Removals still go first.
+ */
+function netDiskMoves(disk: DiskMoves): DiskMoves {
+  const key = (d: { operatorId: string; slot: number }) => `${d.operatorId}\u0000${d.slot}`;
+  const removed = new Set(disk.remove.map(key));
+  const added = new Set(disk.add.map(key));
+  return { remove: disk.remove.filter((d) => !added.has(key(d))), add: disk.add.filter((d) => !removed.has(key(d))) };
 }
 
 /** After commit: bits pushes (one per ledger row), Disk pushes, then the `trade` notification both clients refetch on. */
 function publish(bus: Bus, log: PublishLog, trade: Pick<Trade, 'id' | 'aId' | 'bId' | 'status'>, out?: Outbox, disk?: DiskMoves): void {
   if (out) announce(bus, log, out);
   if (disk) {
-    for (const d of disk.remove) publishSafely(bus, log, 'admin', { kind: 'disk', operatorId: d.operatorId, remove: d.slot, origin: 'api' });
-    for (const d of disk.add) publishSafely(bus, log, 'admin', { kind: 'disk', operatorId: d.operatorId, add: d.slot, origin: 'api' });
+    const net = netDiskMoves(disk);
+    for (const d of net.remove) publishSafely(bus, log, 'admin', { kind: 'disk', operatorId: d.operatorId, remove: d.slot, origin: 'api' });
+    for (const d of net.add) publishSafely(bus, log, 'admin', { kind: 'disk', operatorId: d.operatorId, add: d.slot, origin: 'api' });
   }
   // `detail` names no operator: the sim passes it to each side as is (exchangeView)
   publishSafely(bus, log, 'exchange', { kind: 'trade', operators: [trade.aId, trade.bId], detail: { tradeId: trade.id, status: trade.status } });
