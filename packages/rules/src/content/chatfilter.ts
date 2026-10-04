@@ -48,19 +48,37 @@ const CONFUSABLE: Record<string, string> = deepFreeze({
   'υ': 'u', 'χ': 'x', 'β': 'b', 'η': 'n', 'ω': 'w',
 });
 
-/** Case-fold, strip marks / format characters, fold confusables, undo leet, collapse repeats, drop separators inside words. Pure. */
-export function normalizeForFilter(text: string): string {
-  const folded = text
+function baseFold(text: string): string {
+  return text
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[\p{M}\p{Cf}]/gu, '')
-    .replace(/[Ͱ-ϿЀ-ԯ]/g, (c) => CONFUSABLE[c] ?? c)
-    .replace(/[0134578@$!|]/g, (c) => LEET[c] ?? c);
+    .replace(/[\p{Script=Greek}\p{Script=Cyrillic}]/gu, (c) => CONFUSABLE[c] ?? c);
+}
+
+function finish(folded: string, separators: 'remove' | 'space'): string {
   return folded
     .replace(/(.)\1{2,}/g, '$1$1')
-    .replace(/[.\-_*~^`'"]+(?=\S)/g, '')
+    .replace(/[.\-_*~^`'"]+(?=\S)/g, separators === 'remove' ? '' : ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/** Case-fold, strip marks / format characters, fold confusables, undo leet, collapse repeats (runs of 3+ become 2), drop separators inside words. Pure. */
+export function normalizeForFilter(text: string): string {
+  return finish(baseFold(text).replace(/[0134578@$!|]/g, (c) => LEET[c] ?? c), 'remove');
+}
+
+/**
+ * The forms of a text that terms are matched against; a hit in any counts.
+ * 1. full leet, separators removed (`f.u.c.k`, `sh1t`) = `normalizeForFilter`;
+ * 2. digits, `!` and `|` act as boundaries (`fuck!`, `fuck4`), separators removed;
+ * 3. as 2 but separators become spaces (`fuck.you`).
+ */
+export function normalizeForms(text: string): string[] {
+  const base = baseFold(text);
+  const soft = base.replace(/[0-9!|]/g, ' ').replace(/[@$]/g, (c) => LEET[c] ?? c);
+  return [...new Set([finish(base.replace(/[0134578@$!|]/g, (c) => LEET[c] ?? c), 'remove'), finish(soft, 'remove'), finish(soft, 'space')])];
 }
 
 export interface CompiledFilter {
@@ -117,24 +135,51 @@ function regexIsSafe(pattern: string): boolean {
   return unbounded <= 1 && counted <= 2;
 }
 
+export type TermRejection = 'length' | 'unsafe' | 'invalid' | 'empty';
+
+/** WORD regex source from a normalised term: a single letter tolerates elongation (`c{1,2}`), runs of 2+ stay exact. */
+function wordSource(norm: string): string {
+  let out = '';
+  for (let i = 0; i < norm.length; ) {
+    let j = i;
+    while (norm[j] === norm[i]) j++;
+    out += j - i === 1 ? `${escape(norm[i]!)}{1,2}` : escape(norm.slice(i, j));
+    i = j;
+  }
+  return `(?<![a-z])${out}(?![a-z])`;
+}
+
+function buildTerm(t: FilterTerm): { ok: true; re: RegExp } | { ok: false; reason: TermRejection } {
+  if (typeof t.pattern !== 'string') return { ok: false, reason: 'invalid' };
+  if (t.pattern.length > FILTER_MAX_PATTERN) return { ok: false, reason: 'length' };
+  let source: string;
+  if (t.kind === 'REGEX') {
+    if (t.pattern.length === 0) return { ok: false, reason: 'empty' };
+    if (!regexIsSafe(t.pattern)) return { ok: false, reason: 'unsafe' };
+    source = t.pattern;
+  } else {
+    const norm = normalizeForFilter(t.pattern);
+    if (!/[\p{L}\p{N}]/u.test(norm)) return { ok: false, reason: 'empty' }; // would match everywhere
+    source = wordSource(norm);
+  }
+  try {
+    return { ok: true, re: new RegExp(source, 'i') };
+  } catch {
+    return { ok: false, reason: 'invalid' };
+  }
+}
+
+/** Why a term would be dropped by `compileFilter` (admin APIs refuse such terms at entry). Admin REGEX terms see the normalised forms (runs of repeated characters are at most 2). */
+export function validateFilterTerm(term: FilterTerm): { ok: true } | { ok: false; reason: TermRejection } {
+  const r = buildTerm(term);
+  return r.ok ? { ok: true } : { ok: false, reason: r.reason };
+}
+
 export function compileFilter(terms: readonly FilterTerm[]): CompiledFilter {
   return {
     terms: terms.slice(0, FILTER_MAX_TERMS).flatMap((t) => {
-      try {
-        if (t.pattern.length > FILTER_MAX_PATTERN) return [];
-        let source: string;
-        if (t.kind === 'REGEX') {
-          if (!regexIsSafe(t.pattern)) return [];
-          source = t.pattern;
-        } else {
-          const norm = normalizeForFilter(t.pattern);
-          if (norm === '') return []; // would match everywhere
-          source = `(?<![a-z])${escape(norm)}(?![a-z])`;
-        }
-        return [{ ...t, re: new RegExp(source, 'i') }];
-      } catch {
-        return [];
-      }
+      const r = buildTerm(t);
+      return r.ok ? [{ ...t, re: r.re }] : [];
     }),
   };
 }
@@ -142,26 +187,32 @@ export function compileFilter(terms: readonly FilterTerm[]): CompiledFilter {
 export type FilterResult = { ok: true; text: string; masked: string[] } | { ok: false; term: string };
 
 /**
- * BLOCK wins over MASK; masking replaces the offending words in the *original* text with `***`.
- * Text longer than `FILTER_MAX_INPUT` is refused (fail closed) without being scanned.
+ * BLOCK wins over MASK; masking replaces the offending words in the *original* text with `***`. A MASK term that
+ * matches the text but no single word (a phrase) cannot be masked, so it blocks. Each term is tried against every
+ * form from `normalizeForms`. Text longer than `FILTER_MAX_INPUT` is refused (fail closed) without being scanned.
  */
 export function applyFilter(filter: CompiledFilter, text: string): FilterResult {
   if (text.length > FILTER_MAX_INPUT) return { ok: false, term: 'length' };
-  const norm = normalizeForFilter(text);
+  const forms = normalizeForms(text);
   const masked: string[] = [];
   let words: string[] | undefined;
-  let normWords: string[] = [];
+  let wordForms: string[][] = [];
   for (const t of filter.terms) {
-    if (!t.re.test(norm)) continue;
+    if (!forms.some((f) => t.re.test(f))) continue;
     if (t.action === 'BLOCK') return { ok: false, term: t.pattern };
     masked.push(t.pattern);
     if (!words) {
       words = text.split(/(\s+)/);
-      normWords = words.map((w) => (/\s/.test(w) ? '' : normalizeForFilter(w)));
+      wordForms = words.map((w) => (/\s/.test(w) ? [] : normalizeForms(w)));
     }
+    let replaced = 0;
     for (let i = 0; i < words.length; i++) {
-      if (words[i] !== '***' && normWords[i] !== '' && t.re.test(normWords[i]!)) words[i] = '***';
+      if (wordForms[i]!.some((f) => f !== '' && t.re.test(f))) {
+        words[i] = '***';
+        replaced++;
+      }
     }
+    if (replaced === 0) return { ok: false, term: t.pattern };
   }
   return { ok: true, text: words ? words.join('') : text, masked };
 }

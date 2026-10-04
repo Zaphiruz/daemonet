@@ -8,6 +8,7 @@ import {
   cleanChatText,
   compileFilter,
   nameAllowedBy,
+  validateFilterTerm,
   normalizeForFilter,
 } from '../src/content/chatfilter.js';
 
@@ -160,5 +161,63 @@ describe('cleanChatText', () => {
     expect(cleanChatText('  hi\u0000 there\n\n you ')).toBe('hi there you');
     expect(cleanChatText('x'.repeat(600))).toHaveLength(CHAT_MAX_CHARS);
     expect(cleanChatText('\u0007')).toBe('');
+  });
+});
+
+describe('spec 5.1 bypasses (leet, elongation, separators, phrases)', () => {
+  it('matches terms followed or preceded by punctuation and digits', () => {
+    expect(applyFilter(DEFAULT_FILTER, 'fuck!')).toMatchObject({ ok: true, text: '***', masked: ['fuck'] });
+    expect(applyFilter(DEFAULT_FILTER, 'fuck4 you')).toMatchObject({ ok: true, text: '*** you' });
+    expect(applyFilter(DEFAULT_FILTER, 'shit1')).toMatchObject({ ok: true, text: '***' });
+    expect(applyFilter(DEFAULT_FILTER, 'kys!!!')).toEqual({ ok: false, term: 'kys' });
+    expect(applyFilter(DEFAULT_FILTER, 'kys123')).toEqual({ ok: false, term: 'kys' });
+  });
+
+  it('still catches leet inside words', () => {
+    expect(applyFilter(DEFAULT_FILTER, 'sh1t')).toMatchObject({ ok: true, text: '***' });
+    expect(applyFilter(DEFAULT_FILTER, '$hit happens')).toMatchObject({ ok: true, text: '*** happens' });
+    expect(applyFilter(DEFAULT_FILTER, 'fvck'.replace('v', 'u'))).toMatchObject({ text: '***' });
+  });
+
+  it('matches elongated terms', () => {
+    expect(applyFilter(DEFAULT_FILTER, 'fuuuuck')).toMatchObject({ ok: true, text: '***' });
+    expect(applyFilter(DEFAULT_FILTER, 'ffffuck')).toMatchObject({ ok: true, text: '***' });
+    expect(applyFilter(DEFAULT_FILTER, 'KYYYYS')).toEqual({ ok: false, term: 'kys' });
+    const f = compileFilter([{ pattern: 'spam', kind: 'WORD', action: 'BLOCK' }]);
+    expect(applyFilter(f, 'spaaaam')).toEqual({ ok: false, term: 'spam' });
+    expect(applyFilter(f, 'spam')).toEqual({ ok: false, term: 'spam' });
+    const g = compileFilter([{ pattern: 'ass', kind: 'WORD', action: 'BLOCK' }]);
+    expect(applyFilter(g, 'asssss')).toEqual({ ok: false, term: 'ass' });
+    expect(applyFilter(g, 'assume')).toMatchObject({ ok: true });
+  });
+
+  it('matches terms joined by separators', () => {
+    expect(applyFilter(DEFAULT_FILTER, 'fuck.you')).toMatchObject({ ok: true, text: '***' });
+    expect(applyFilter(DEFAULT_FILTER, 'go_kys_now')).toEqual({ ok: false, term: 'kys' });
+  });
+
+  it('blocks a MASK term it cannot mask (a phrase)', () => {
+    const f = compileFilter([{ pattern: 'blue cheese', kind: 'WORD', action: 'MASK' }]);
+    expect(applyFilter(f, 'i like blue cheese')).toEqual({ ok: false, term: 'blue cheese' });
+    expect(applyFilter(f, 'blue sky')).toMatchObject({ ok: true, masked: [] });
+  });
+});
+
+describe('validateFilterTerm', () => {
+  it('reports why a term would be dropped, consistently with compileFilter', () => {
+    const t = (pattern: string, kind: 'WORD' | 'REGEX' = 'WORD') => validateFilterTerm({ pattern, kind, action: 'BLOCK' });
+    expect(t('ok')).toEqual({ ok: true });
+    expect(t('https?://', 'REGEX')).toEqual({ ok: true });
+    expect(t('')).toEqual({ ok: false, reason: 'empty' });
+    expect(t('...')).toEqual({ ok: false, reason: 'empty' });
+    expect(t('', 'REGEX')).toEqual({ ok: false, reason: 'empty' });
+    expect(t('x'.repeat(201))).toEqual({ ok: false, reason: 'length' });
+    expect(t('(a+)+$', 'REGEX')).toEqual({ ok: false, reason: 'unsafe' });
+    expect(t('(', 'REGEX')).toEqual({ ok: false, reason: 'invalid' });
+    expect(t('[', 'REGEX')).toEqual({ ok: false, reason: 'invalid' });
+    for (const p of ['ok', '(a+)+$', '[', '']) {
+      const term = { pattern: p, kind: 'REGEX' as const, action: 'BLOCK' as const };
+      expect(compileFilter([term]).terms.length).toBe(validateFilterTerm(term).ok ? 1 : 0);
+    }
   });
 });
