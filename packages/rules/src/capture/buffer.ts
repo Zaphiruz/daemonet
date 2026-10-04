@@ -2,9 +2,10 @@ import { z } from 'zod';
 import type { ChallengeFamily } from './common.js';
 
 /**
- * Buffer: an overwriting ring buffer of bytes.
+ * Buffer: an overwriting ring buffer of bytes holding at most `capacity` (>= 1) bytes.
+ * Every op is exactly `r` or `w:` followed by two lowercase hex digits (one byte).
  * `w:<hex byte>` appends (when full, the oldest byte is dropped first); `r` removes the oldest byte
- * (no-op when empty). Answer: the remaining bytes, oldest first, as lowercase hex.
+ * (no-op when empty). Answer: the remaining bytes, oldest first, as lowercase hex (`""` when empty).
  */
 export interface BufferParams {
   capacity: number;

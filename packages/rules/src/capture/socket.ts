@@ -5,7 +5,8 @@ import type { ChallengeFamily } from './common.js';
  * Socket: run a (server-side) TCP state machine per connection over a segment trace.
  *   CLOSED --SYN--> SYN_RCVD --ACK|SYNACK--> ESTABLISHED --FIN--> CLOSE_WAIT --FIN--> LAST_ACK --ACK--> CLOSED
  *   RST from any state -> CLOSED. Any other (state, flag) pair is ignored.
- * Every connection starts CLOSED. Answer: the final state of every connection that appears.
+ * Every connection starts CLOSED. Answer: `states`, the final state of every id listed in `connections` (CLOSED if
+ * no segment names it) plus every `conn` named by a segment, whether or not it is listed in `connections`.
  */
 export type SocketState = 'CLOSED' | 'SYN_RCVD' | 'ESTABLISHED' | 'CLOSE_WAIT' | 'LAST_ACK';
 export type SocketFlag = 'SYN' | 'SYNACK' | 'ACK' | 'FIN' | 'RST';

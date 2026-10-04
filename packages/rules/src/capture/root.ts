@@ -3,7 +3,9 @@ import type { ChallengeFamily } from './common.js';
 
 /**
  * Root: POSIX-style permission checks with a small ACL.
- * mode is 9 chars (`rwxr-x---`). Precedence for a request by user U with groups G for op o:
+ * mode is 9 chars (`rwxr-x---`): three triples, owner then group then other. A triple is 3 chars, positional:
+ * `r` or `-`, then `w` or `-`, then `x` or `-`. Each ACL entry's `perms` is one triple in the same format.
+ * Precedence for a request by user U with groups G for op o:
  *   1. U is the owner            -> the owner triple
  *   2. an ACL entry `user:U`     -> its perms
  *   3. any ACL entry `group:g` with g in G -> allowed if ANY such entry grants o

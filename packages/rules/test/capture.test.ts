@@ -414,6 +414,12 @@ describe('hand-computed family fixtures', () => {
     expect(run('cut -d, -f3', ['a,b', 'a,b,c'])).toEqual(['', 'c']);
     // grep is a substring match; stages apply left to right
     expect(run('grep b | cut -d, -f1', ['abc', 'xyz', 'b'])).toEqual(['abc', 'b']);
+    // grep is a plain case-sensitive substring match, not a pattern
+    expect(run('grep B', ['abc', 'ABC', 'aBc'])).toEqual(['ABC', 'aBc']);
+    expect(run('grep a.c', ['abc', 'a.c'])).toEqual(['a.c']);
+    // blank lines are dropped from the INPUT only: "" produced by cut is a line (counted, sorted first, uniq'd)
+    expect(run('cut -d, -f3 | wc -l', ['a,b', '', 'a,b,c'])).toEqual(['2']);
+    expect(run('cut -d, -f3 | sort | uniq', ['x,y,z', 'a,b', 'p,q'])).toEqual(['', 'z']);
     // sort is by code point, not UTF-16 unit: U+FFFF < U+1F600 although surrogate D83D < FFFF; uppercase before lowercase
     expect(run('sort', ['\u{1F600}', '￿', 'b', 'B', 'a'])).toEqual(['B', 'a', 'b', '￿', '\u{1F600}']);
   });
@@ -447,6 +453,15 @@ describe('hand-computed family fixtures', () => {
       [req('carol', [], 'x'), true], // no groups -> other triple
     ];
     for (const [r, want] of cases) expect(checkAccess(params, r), JSON.stringify(r)).toBe(want);
+    // perms are positional r/w/x: '--x' grants only x, and the thirds of mode are owner/group/other
+    const pos: RootParams = { mode: 'r---w---x', owner: 'alice', group: 'staff', acl: [{ who: 'user:bob', perms: '--x' }] };
+    expect(['r', 'w', 'x'].map((op) => checkAccess(pos, req('bob', [], op as RootRequest['op'])))).toEqual([false, false, true]);
+    expect(['r', 'w', 'x'].map((op) => checkAccess(pos, req('alice', [], op as RootRequest['op'])))).toEqual([true, false, false]);
+    expect(['r', 'w', 'x'].map((op) => checkAccess(pos, req('carol', ['staff'], op as RootRequest['op'])))).toEqual([false, true, false]);
+    expect(['r', 'w', 'x'].map((op) => checkAccess(pos, req('carol', [], op as RootRequest['op'])))).toEqual([false, false, true]);
+    expect(solveRoot(pos, { requests: [req('bob', [], 'x'), req('alice', [], 'r'), req('carol', ['staff'], 'w'), req('dave', ['ops'], 'r')] })).toEqual({
+      allowed: '1110',
+    });
     const requests = cases.map(([r]) => r);
     expect(solveRoot(params, { requests })).toEqual({ allowed: '1101001110101' });
   });
@@ -548,6 +563,17 @@ describe('hand-computed family fixtures', () => {
     expect(run(loop, 7)).toBe(2); // 1 + 3*2 steps
     expect(run(loop, 8)).toBe(1); // the 8th step (push 1) leaves 1 on top
     expect(runStack(loop, 0)).toBe(0);
+  });
+
+  it('generated buffer and stack challenges use only the documented formats', () => {
+    for (let seed = 0; seed < 50; seed++) {
+      const buffer = generateChallenge(['buffer'], 8 + seed * 20, 2, createRng(seed));
+      expect((buffer.params as { capacity: number }).capacity).toBeGreaterThanOrEqual(1);
+      for (const op of (buffer.payload as { ops: string[] }).ops) expect(op).toMatch(/^(?:r|w:[0-9a-f]{2})$/);
+      const stack = generateChallenge(['stack'], 8 + seed * 20, 2, createRng(seed));
+      for (const op of (stack.payload as { program: string[] }).program)
+        expect(op).toMatch(/^(?:(?:push|jz|jmp) -?\d+|add|sub|mul|dup|swap|drop|nop)$/);
+    }
   });
 
   it('heap', () => {

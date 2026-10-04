@@ -12,6 +12,7 @@ import type { ChallengeFamily } from './common.js';
  * - `dup`: pop a, push a, a.   `swap`: pop b, pop a, push b, a (exchanging the top two).   `drop`: pop and discard.
  * - `jz k`: pop; if the value is 0 continue at index k, otherwise at the next index (the value is popped either way).
  * - `jmp k`: continue at index k.   `nop`: nothing.
+ * No other mnemonics occur.
  * Popping an empty stack yields 0 (nothing is removed). Execution also ends when the next index is outside
  * 0..length-1 (past the last op, or a jump target that is negative or too large).
  * Answer: the top of the stack when execution ends (0 when the stack is empty).
