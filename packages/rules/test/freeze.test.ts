@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { WORDS } from '../src/capture/crypto.js';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
-import { MOVES, getMove, type MoveDef } from '../src/content/moves.js';
+import { MOVES, STATUS_IDS, TYPE_MOVES, TYPE_STATUS, getMove, type MoveDef } from '../src/content/moves.js';
 import { SPECIES, getSpecies } from '../src/content/species.js';
 import { ROLE_TRAITS, TRAITS } from '../src/content/traits.js';
 import { NATURES } from '../src/natures.js';
@@ -23,6 +23,9 @@ describe('content tables are deep-frozen', () => {
     ['BEATS', BEATS],
     ['RESISTED_BY', RESISTED_BY],
     ['IMMUNE', IMMUNE],
+    ['STATUS_IDS', STATUS_IDS],
+    ['TYPE_MOVES', TYPE_MOVES],
+    ['TYPE_STATUS', TYPE_STATUS],
     ['WORDS', WORDS],
   ])('%s is frozen', (_name, table) => {
     expect(Object.isFrozen(table)).toBe(true);

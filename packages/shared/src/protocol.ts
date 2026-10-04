@@ -1,4 +1,4 @@
-import { TYPES } from '@daemonet/rules';
+import { STATUS_IDS, TYPES } from '@daemonet/rules';
 import { z } from 'zod';
 
 /** Upstream limits (UTF-8 bytes). submitCapture gets the larger limit. */
@@ -65,7 +65,7 @@ export type ClientMessage = z.infer<typeof ClientMessage>;
 
 // ---- Entities (public, within interest radius) ----
 
-export const StatusSchema = z.enum(['throttled', 'stalled']);
+export const StatusSchema = z.enum(STATUS_IDS as [string, ...string[]]);
 
 export const OperatorEntity = z.object({
   kind: z.literal('operator'),

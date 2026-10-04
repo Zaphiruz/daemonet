@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { STAT_KEYS } from '../src/constants.js';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { EVOLUTION_ITEMS, getItem } from '../src/content/items.js';
+import { MOVES, STATUS_IDS, TYPE_MOVES, getMove, moveSlot } from '../src/content/moves.js';
 import { ROLE_TRAITS, TRAITS, getTrait } from '../src/content/traits.js';
 import { BEATS, IMMUNE, RESISTED_BY, TYPES, singleMultiplier, typeMultiplier } from '../src/types.js';
 
@@ -68,5 +69,27 @@ describe('type chart', () => {
     expect(singleMultiplier('packet', 'crypto')).toBe(0.5);
     expect(singleMultiplier('null', 'glitch')).toBe(1);
     expect(typeMultiplier('packet', ['glitch', 'crypto'])).toBe(1);
+  });
+});
+
+describe('moves', () => {
+  it('has 64 moves, 4 per type, with one status per type and power-of-2 cooldowns', () => {
+    expect(MOVES).toHaveLength(64);
+    expect(new Set(MOVES.map((m) => m.id)).size).toBe(64);
+    for (const t of TYPES) {
+      const own = MOVES.filter((m) => m.type === t);
+      expect(own).toHaveLength(4);
+      expect(own.filter((m) => m.status)).toHaveLength(1);
+      expect(TYPE_MOVES[t].map(moveSlot)).toEqual(['filler', 'ranged', 'area', 'heavy']);
+    }
+    for (const m of MOVES) {
+      expect([256, 512, 1024, 2048, 4096, 8192]).toContain(m.cooldownMs);
+      if (m.status) expect(STATUS_IDS).toContain(m.status.id);
+    }
+    expect(getMove('encrypt').status?.id).toBe('throttled');
+    expect(getMove('static').status?.id).toBe('stalled');
+    expect(getMove('broadcast').status?.id).toBe('leaking');
+    expect(getMove('panic').status?.id).toBe('exposed');
+    expect(getMove('bruteforce')).toMatchObject({ power: 100, energyCost: 56, cooldownMs: 8192 });
   });
 });
