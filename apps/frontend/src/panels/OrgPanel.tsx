@@ -1,6 +1,6 @@
 import type { GameClient } from '@daemonet/sdk';
 import { useEffect, useRef, useState } from 'react';
-import { describeOrgError, useOrgActionMutation, useOrgLeaderboardQuery, useOrgMineQuery, useRenameMutation, type OrgLeaderRow, type OrgMemberRow } from '../api.ts';
+import { describeOrgError, useMeQuery, useOrgActionMutation, useOrgLeaderboardQuery, useOrgMineQuery, useRenameMutation, type OrgLeaderRow, type OrgMemberRow } from '../api.ts';
 import { log } from '../game/log.ts';
 
 /** Same rules the api enforces (`OrgName`, `OrgTag`, `OperatorName`); the api stays the authority. */
@@ -19,6 +19,17 @@ const COLUMNS: Array<{ key: SortKey; label: string; title: string }> = [
   { key: 'ticketsDone', label: 'tix', title: 'tickets done' },
 ];
 const RANK_ORDER = { OWNER: 0, OFFICER: 1, MEMBER: 2 } as const;
+
+/**
+ * 400s the api answers when the change is already in place: a retry after the first request committed but its response
+ * was lost. The panel then refetches, so it shows the committed state instead of the stale one.
+ */
+const ALREADY_DONE = new Set(['leave your org first', 'that is already your name', 'that is already your tag']);
+function alreadyDone(err: unknown): string | null {
+  const e = err as { status?: unknown; data?: { message?: unknown } } | null;
+  const message = e?.data?.message;
+  return e?.status === 400 && typeof message === 'string' && ALREADY_DONE.has(message) ? message : null;
+}
 
 type Row = OrgLeaderRow | (OrgMemberRow & { captures?: undefined; highestSignature?: undefined; evolutions?: undefined; ticketsDone?: undefined });
 
@@ -39,6 +50,7 @@ interface Pending {
 /** Orgs (SP4 spec §7): create, invites, members by rank, sortable leaderboard, tag change and operator rename; prices come from the api. */
 export function OrgPanel({ client }: { client: GameClient }) {
   const mine = useOrgMineQuery(undefined, { refetchOnMountOrArgChange: true });
+  const meQuery = useMeQuery();
   const [act] = useOrgActionMutation();
   const [rename] = useRenameMutation();
   const [name, setName] = useState('');
@@ -81,6 +93,11 @@ export function OrgPanel({ client }: { client: GameClient }) {
       const text = describeOrgError(err);
       setError(text);
       log.push('reject', `${label}: ${text}`);
+      const done = alreadyDone(err);
+      if (done) {
+        void mine.refetch();
+        if (done === 'that is already your name') void meQuery.refetch();
+      }
     } finally {
       inFlight.current = false;
       setBusy(false);

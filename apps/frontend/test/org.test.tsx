@@ -8,6 +8,7 @@ import type { OrgLeaderRow, OrgMine, OrgRank, OrgView } from '../src/api.ts';
 
 const mocks = vi.hoisted(() => ({
   mine: { data: undefined as unknown, refetch: vi.fn() },
+  me: { data: undefined as unknown, refetch: vi.fn() },
   board: { data: undefined as unknown },
   act: vi.fn(),
   rename: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock('../src/api.ts', async (importOriginal) => ({
     mocks.mineArgs = args;
     return mocks.mine;
   },
+  useMeQuery: () => mocks.me,
   useOrgLeaderboardQuery: (_id: string, opts?: { skip?: boolean }) => {
     mocks.boardSkip = opts?.skip;
     return mocks.board;
@@ -85,6 +87,7 @@ beforeEach(() => {
   mocks.act.mockReset().mockImplementation(ok);
   mocks.rename.mockReset().mockImplementation(ok);
   mocks.mine.refetch.mockReset();
+  mocks.me.refetch.mockReset();
   mocks.history.mockReset().mockImplementation(() => ({ unwrap: () => Promise.resolve([]) }));
 });
 afterEach(cleanup);
@@ -393,6 +396,54 @@ describe('OrgPanel freshness', () => {
     f.raw.self.org = { id: 'o1', name: 'Red Team', tag: 'RED1', rank: 'MEMBER' };
     view.rerender(<OrgPanel client={f.client} />);
     expect(screen.queryByTestId('org-confirm')).toBeNull();
+  });
+});
+
+describe('OrgPanel after a lost response', () => {
+  // The first request committed but its response was lost; the retry is refused because the change is already there.
+  const createOnce = async () => {
+    fireEvent.change(screen.getByTestId('org-name'), { target: { value: 'Red Team' } });
+    fireEvent.change(screen.getByTestId('org-tag'), { target: { value: 'RED1' } });
+    fireEvent.click(screen.getByTestId('org-create'));
+    await act(async () => fireEvent.click(screen.getByTestId('org-confirm')));
+  };
+
+  it('a create refused with "leave your org first" refetches the membership', async () => {
+    mocks.act.mockImplementation(() => fail(400, { error: 'validation_error', message: 'leave your org first' }));
+    render(<OrgPanel client={fakeClient().client} />);
+    await createOnce();
+    expect(mocks.mine.refetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('org-error').textContent).toContain('leave your org first');
+  });
+
+  it('a rename refused with "that is already your name" refetches me and the membership', async () => {
+    mocks.rename.mockImplementation(() => fail(400, { error: 'validation_error', message: 'that is already your name' }));
+    render(<OrgPanel client={fakeClient().client} />);
+    fireEvent.change(screen.getByTestId('org-rename-input'), { target: { value: 'new_name' } });
+    fireEvent.click(screen.getByTestId('org-rename'));
+    await act(async () => fireEvent.click(screen.getByTestId('org-confirm')));
+    expect(mocks.me.refetch).toHaveBeenCalledTimes(1);
+    expect(mocks.mine.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('a tag change refused with "that is already your tag" refetches the membership', async () => {
+    setMine({ org: orgView(), rank: 'OWNER' });
+    mocks.act.mockImplementation(() => fail(400, { error: 'validation_error', message: 'that is already your tag' }));
+    render(<OrgPanel client={fakeClient({ org: { id: 'o1', name: 'Red Team', tag: 'RED1', rank: 'OWNER' } }).client} />);
+    fireEvent.change(screen.getByTestId('org-newtag'), { target: { value: 'BLU2' } });
+    fireEvent.click(screen.getByTestId('org-change-tag'));
+    await act(async () => fireEvent.click(screen.getByTestId('org-confirm')));
+    expect(mocks.mine.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('other refusals do not refetch', async () => {
+    mocks.act.mockImplementation(() => fail(400, { error: 'validation_error', message: 'that name is taken' }));
+    render(<OrgPanel client={fakeClient().client} />);
+    await createOnce();
+    mocks.act.mockImplementation(() => fail(402, { error: 'insufficient_bits', message: 'costs 111 bits' }));
+    await createOnce();
+    expect(mocks.mine.refetch).not.toHaveBeenCalled();
+    expect(mocks.me.refetch).not.toHaveBeenCalled();
   });
 });
 
