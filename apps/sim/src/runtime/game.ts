@@ -149,7 +149,7 @@ const UNKNOWN_RETRY_LIMIT = 32;
 const UNKNOWN_RETRY_MS = 10 * 60_000;
 /** Past the bounded retry schedule, only every WARN_EVERY-th failed attempt is logged. */
 const WARN_EVERY = 8;
-/** How long a committed Incident payout waits for its operator's session (it was mid-load when the payout landed). */
+/** How long a committed payout waits for its operator's session (it was mid-load when the payout landed). */
 const PARKED_REWARD_MS = 10 * 60_000;
 /** Kick reason when an operator must reconnect to reload its state from the store (transient in the SDK). */
 export const RELOAD_KICK = 'reload required';
@@ -208,10 +208,11 @@ export class Game {
   private readonly sessions = new Map<string, Session>();
   private readonly leaving = new Map<string, Promise<void>>();
   /**
-   * Committed Incident payouts of an operator that had no session when they landed (e.g. it was loading): the session
-   * created next applies each one whose ledger row is above its load's watermark (the load did not contain it).
+   * Committed sim payouts (Incident rewards, arena wins) of an operator that had no session when they landed (e.g. it
+   * was loading): the session created next applies each one whose ledger row is above its load's watermark (the load
+   * did not contain it).
    */
-  private readonly parkedRewards = new Map<string, Array<{ seq: number; intent: Extract<Intent, { kind: 'incidentReward' }>; at: number }>>();
+  private readonly parkedRewards = new Map<string, Array<{ seq: number; at: number; apply: (world: World, op: Operator) => void }>>();
   /** Operator loads in flight per sub; a leave marks them stale so they reload after its checkpoint. */
   private readonly loads = new Map<string, Set<{ stale: boolean }>>();
   private readonly inflight = new Set<Promise<void>>();
@@ -1046,23 +1047,24 @@ export class Game {
     const live = this.live(intent.operatorId);
     if (!live) {
       // No session (gone, or still loading): a session created soon applies it if its load predates the row.
-      if (result.ledgerSeq !== undefined) this.parkReward(intent, result.ledgerSeq);
+      if (result.ledgerSeq !== undefined) this.parkReward(intent.operatorId, result.ledgerSeq, (w, op) => w.creditIncidentReward(op, intent));
       return;
     }
     if (result.ledgerSeq !== undefined && result.ledgerSeq <= live.session.loadSeq) return;
     live.session.world.creditIncidentReward(live.op, intent);
   }
 
-  private parkReward(intent: Extract<Intent, { kind: 'incidentReward' }>, seq: number): void {
+  /** Parks a committed payout (ledger row `seq`) of an operator without a session; `apply` credits it in memory. */
+  private parkReward(operatorId: string, seq: number, apply: (world: World, op: Operator) => void): void {
     const now = Date.now();
     for (const [id, list] of this.parkedRewards) {
       const fresh = list.filter((r) => now - r.at < PARKED_REWARD_MS);
       if (fresh.length === 0) this.parkedRewards.delete(id);
       else this.parkedRewards.set(id, fresh);
     }
-    const list = this.parkedRewards.get(intent.operatorId) ?? [];
-    list.push({ seq, intent, at: now });
-    this.parkedRewards.set(intent.operatorId, list);
+    const list = this.parkedRewards.get(operatorId) ?? [];
+    list.push({ seq, at: now, apply });
+    this.parkedRewards.set(operatorId, list);
   }
 
   /** A new session takes the parked payouts its load did not contain (row above the load's watermark), once. */
@@ -1072,7 +1074,7 @@ export class Game {
     this.parkedRewards.delete(session.operatorId);
     const op = session.world.operators.get(session.operatorId);
     if (!op) return;
-    for (const r of list) if (r.seq > loadSeq && Date.now() - r.at < PARKED_REWARD_MS) session.world.creditIncidentReward(op, r.intent);
+    for (const r of list) if (r.seq > loadSeq && Date.now() - r.at < PARKED_REWARD_MS) r.apply(session.world, op);
   }
 
   /**
