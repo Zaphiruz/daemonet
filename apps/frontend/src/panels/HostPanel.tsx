@@ -91,7 +91,7 @@ export function HostPanel({ client }: { client: GameClient }) {
                   className="text-xs text-neutral-400 hover:text-white disabled:opacity-40"
                   disabled={!manual || inFlight}
                   title={manual ? undefined : 'spectators cannot abandon tickets'}
-                  onClick={() => submit(() => client.operator.abandonTicket(t.id).then(() => board.refetch()), 'abandonTicket')}
+                  onClick={() => submit(() => client.operator.abandonTicket(t.id).then(() => Promise.all([board.refetch(), history.refetch()])), 'abandonTicket')}
                 >
                   abandon
                 </button>
@@ -119,7 +119,7 @@ export function HostPanel({ client }: { client: GameClient }) {
                     className="rounded bg-amber-800 px-2 py-0.5 hover:bg-amber-700 disabled:opacity-40"
                     disabled={!can || t.status !== null || full}
                     title={why([t.status !== null, 'already accepted today'], [me.tickets.length >= OPEN_TICKETS_MAX, `at most ${OPEN_TICKETS_MAX} open tickets`], [me.ticketsToday >= TICKETS_PER_DAY, `${TICKETS_PER_DAY} tickets a day`])}
-                    onClick={() => submit(() => client.operator.acceptTicket(t.index, client.subnet, board.data!.day).then(() => board.refetch()), 'acceptTicket')}
+                    onClick={() => submit(() => client.operator.acceptTicket(t.index, client.subnet, board.data!.day).then(() => Promise.all([board.refetch(), history.refetch()])), 'acceptTicket')}
                     data-testid={`accept-${t.index}`}
                   >
                     accept

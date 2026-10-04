@@ -3,6 +3,15 @@ export const TICK_MS = 1000 / TICK_HZ;
 export const LEVEL_CAP = 64;
 export const MAX_IV = 31;
 export const ENERGY_MAX = 128;
+
+/** Codex research thresholds (SP3b design 7.2): captures of a line unlock what its scans reveal about wild daemons. */
+export const SCAN_NATURE = 4;
+export const SCAN_BUCKETS = 16;
+export const SCAN_IVS = 64;
+export const SCAN_HINTS = 256;
+/** IV bucket labels (0-3) shown for the `ivBuckets` scan: each bucket spans 8 values. */
+export const SCAN_BUCKET_WIDTH = 8;
+export const SCAN_BUCKET_LABELS: readonly string[] = Object.freeze(['0-7', '8-15', '16-23', '24-31']);
 export const RAM_SLOTS = 8;
 export const RUNNING_MAX = 2;
 export const DISK_SLOTS = 256;

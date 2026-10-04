@@ -43,6 +43,11 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
   app.decorate('requireAuth', makeRequireAuth({ sessionStore, ...common }));
   app.decorate('requireAdmin', makeRequireAdmin());
 
+  // every /api response is per session (research, tickets, ledger...): never stored by a shared cache (the Caddy edge sends no-store too)
+  app.addHook('onSend', async (req, reply) => {
+    if (req.url.startsWith('/api/') && !reply.hasHeader('cache-control')) reply.header('cache-control', 'private, no-store');
+  });
+
   app.setErrorHandler((err: unknown, req, reply) => {
     if (err instanceof AppError) return reply.code(err.status).send({ error: err.code, message: err.message });
     const e = err as { statusCode?: number; message?: string };

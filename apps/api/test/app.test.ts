@@ -252,6 +252,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     await prisma!.research.update({ where: { operatorId_line: { operatorId: op.id, line: 5 } }, data: { points: 256 } });
     const codex = (await app.inject({ method: 'GET', url: '/api/codex', cookies })).json();
     expect(codex.research).toEqual({ '5': 256 });
+    expect((await app.inject({ method: 'GET', url: '/api/codex', cookies })).headers['cache-control']).toBe('private, no-store');
     expect(codex.hints).toContainEqual({ formId: 'anycastrel', kind: 'dominantIV' });
     for (const h of codex.hints) {
       expect(Object.keys(h).sort()).toEqual(['formId', 'kind']);
@@ -285,7 +286,10 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     const theirs = (await app.inject({ method: 'GET', url: '/api/tickets/board?subnet=lo', cookies: otherCookies })).json();
     expect(theirs.tickets[0].status).toBeNull();
     expect(theirs.acceptedToday).toBe(0);
-    expect((await app.inject({ method: 'GET', url: '/api/tickets', cookies })).json()).toMatchObject([{ id: 't1', status: 'OPEN', progress: 1 }]);
+    const hist = await app.inject({ method: 'GET', url: '/api/tickets', cookies });
+    expect(hist.json()).toMatchObject([{ id: 't1', status: 'OPEN', progress: 1 }]);
+    expect(hist.headers['cache-control']).toBe('private, no-store');
+    expect((await app.inject({ method: 'GET', url: '/api/tickets/board?subnet=lo', cookies })).headers['cache-control']).toBe('private, no-store');
     expect((await app.inject({ method: 'GET', url: '/api/tickets', cookies: otherCookies })).json()).toEqual([]);
     const unknown = (await app.inject({ method: 'GET', url: '/api/tickets/board?subnet=nope', cookies })).json();
     expect(unknown.tickets).toEqual([]);

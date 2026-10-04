@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@daemonet/db';
-import { ITEMS, MOVES, NATURES, SPECIES, TRAITS, TYPES, dayKey, getFamily, ticketBoard, ticketKey, typeMultiplier } from '@daemonet/rules';
+import { ITEMS, MOVES, NATURES, SPECIES, TRAITS, TYPES, SCAN_HINTS, dayKey, getFamily, ticketBoard, ticketKey, typeMultiplier } from '@daemonet/rules';
 import { BESTIARY_WITH_RULES } from '@daemonet/rules/evolution';
 import type { FastifyInstance } from 'fastify';
 import { hashToken, randomToken } from '../auth/session.js';
@@ -7,9 +7,6 @@ import { hashToken, randomToken } from '../auth/session.js';
 export const TICKET_TTL_MS = 60_000;
 /** Readiness must answer even when the database hangs (carry-forward #10: the sim uses 2 s too). */
 export const READY_TIMEOUT_MS = 2_000;
-
-/** Research points at which a line's hidden branches show the kind of their requirement (design 7.2; the sim's `SCAN_HINTS`). */
-export const HINT_RESEARCH = 256;
 
 export interface DiscoveryRow {
   formId: string;
@@ -25,14 +22,14 @@ export interface DiscoveryRow {
  * `discovered` lists every form that has been evolved into at least once. `challenges` carries each
  * capture family's player-facing rule text (the package is private, so the client cannot read the source).
  * `research` is the REQUESTING operator's points per line; `hints` come from it alone (carry-forward #24): only
- * hidden, undiscovered forms of lines at or above HINT_RESEARCH, and only the kind of the first requirement
+ * hidden, undiscovered forms of lines at or above SCAN_HINTS, and only the kind of the first requirement
  * (never its stat, item or value). The hint data never leaves the server except through this projection.
  */
 export function codexPayload(discoveries: readonly DiscoveryRow[], research: Readonly<Record<string, number>> = {}) {
   const discovered = new Set(discoveries.map((d) => d.formId));
   const mask = <T extends { id: string; hidden: boolean; requirement: unknown }>(row: T): T =>
     row.hidden && !discovered.has(row.id) ? { ...row, requirement: null } : row;
-  const hints = BESTIARY_WITH_RULES.filter((r) => r.hidden && !discovered.has(r.id) && (research[String(r.line)] ?? 0) >= HINT_RESEARCH && r.requirement !== null && r.requirement.length > 0).map((r) => ({
+  const hints = BESTIARY_WITH_RULES.filter((r) => r.hidden && !discovered.has(r.id) && (research[String(r.line)] ?? 0) >= SCAN_HINTS && r.requirement !== null && r.requirement.length > 0).map((r) => ({
     formId: r.id,
     kind: (r.requirement![0] as { kind: string }).kind,
   }));

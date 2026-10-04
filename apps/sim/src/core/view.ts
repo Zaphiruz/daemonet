@@ -1,4 +1,4 @@
-import { STAT_KEYS, getSpecies, statBlockToArray, type StatusId } from '@daemonet/rules';
+import { SCAN_BUCKETS, SCAN_BUCKET_WIDTH, SCAN_IVS, SCAN_NATURE, STAT_KEYS, getSpecies, statBlockToArray, type StatusId } from '@daemonet/rules';
 import { evolutionOptions } from '@daemonet/rules/evolution';
 import type { Entity, OperatorSelf, RamDaemon } from '@daemonet/shared';
 import { distance } from './grid.js';
@@ -12,12 +12,6 @@ export const INTEREST_RADIUS = 32;
 const activeStatuses = (world: World, d: Daemon): StatusId[] =>
   (Object.entries(d.statuses) as Array<[StatusId, number]>).filter(([, until]) => until > world.tick).map(([s]) => s);
 
-/** Research thresholds (design §7.2): 4 → nature (HP is always exact), 16 → IV buckets, 64 → exact IVs. */
-export const SCAN_NATURE = 4;
-export const SCAN_BUCKETS = 16;
-export const SCAN_IVS = 64;
-export const SCAN_HINTS = 256;
-
 type Scan = NonNullable<Extract<Entity, { kind: 'daemon' }>['scan']>;
 
 /**
@@ -29,7 +23,7 @@ function scanFor(viewer: Operator | undefined, d: Daemon): Scan | undefined {
   const points = viewer.research[String(getSpecies(d.species).line)] ?? 0;
   if (points < SCAN_NATURE) return undefined;
   const scan: Scan = { nature: d.nature };
-  if (points >= SCAN_BUCKETS) scan.ivBuckets = STAT_KEYS.map((k) => Math.floor(d.ivs[k] / 8));
+  if (points >= SCAN_BUCKETS) scan.ivBuckets = STAT_KEYS.map((k) => Math.floor(d.ivs[k] / SCAN_BUCKET_WIDTH));
   if (points >= SCAN_IVS) scan.ivs = statBlockToArray(d.ivs);
   return scan;
 }

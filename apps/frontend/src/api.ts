@@ -110,7 +110,18 @@ export const api = createApi({
       query: (body) => ({ url: '/scripts/main', method: 'PUT', body }),
       invalidatesTags: ['Script'],
     }),
-    logout: b.mutation<{ ok: boolean; endSessionUrl: string | null }, void>({ query: () => ({ url: '/auth/logout', method: 'POST' }) }),
+    logout: b.mutation<{ ok: boolean; endSessionUrl: string | null }, void>({
+      query: () => ({ url: '/auth/logout', method: 'POST' }),
+      // the cached codex (research, hints), tickets and ledger belong to the operator who just left
+      async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+        try {
+          await queryFulfilled;
+          dispatch(api.util.resetApiState());
+        } catch {
+          // a failed logout keeps the session and its caches
+        }
+      },
+    }),
   }),
 });
 

@@ -1,4 +1,4 @@
-import { GATEWAY_RADIUS, getMove, getSpecies, NATURES, STAT_KEYS, TICK_HZ, type ToolId } from '@daemonet/rules';
+import { GATEWAY_RADIUS, getMove, getSpecies, NATURES, SCAN_BUCKET_LABELS, STAT_KEYS, TICK_HZ, type ToolId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useState } from 'react';
 import { run } from '../components/WorldCanvas.tsx';
@@ -95,7 +95,7 @@ export function PlayPanel({ client }: { client: GameClient }) {
                 {target.scan.nature !== undefined && <span>nature {NATURES[target.scan.nature]?.id ?? target.scan.nature} </span>}
                 {target.scan.ivs
                   ? STAT_KEYS.map((k, i) => `${k.slice(0, 2)}${target.scan!.ivs![i]}`).join(' ')
-                  : target.scan.ivBuckets && STAT_KEYS.map((k, i) => `${k.slice(0, 2)}${['0-7', '8-15', '16-23', '24-31'][target.scan!.ivBuckets![i]!]}`).join(' ')}
+                  : target.scan.ivBuckets && STAT_KEYS.map((k, i) => `${k.slice(0, 2)}${SCAN_BUCKET_LABELS[target.scan!.ivBuckets![i]!]}`).join(' ')}
               </div>
             )}
             <div className="mt-2 flex items-center gap-2">

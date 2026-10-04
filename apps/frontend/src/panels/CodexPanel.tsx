@@ -1,4 +1,4 @@
-import { STAT_KEYS } from '@daemonet/rules';
+import { SCAN_BUCKETS, SCAN_HINTS, SCAN_IVS, SCAN_NATURE, STAT_KEYS } from '@daemonet/rules';
 import { useState } from 'react';
 import { useCodexQuery, type Codex } from '../api.ts';
 import { describeBranch } from '../game/requirements.ts';
@@ -27,11 +27,11 @@ type View = (typeof VIEWS)[number];
 
 /** What research on a line currently reveals about its wild daemons (design 7.2). */
 export function scanLevel(points: number): string {
-  if (points >= 256) return 'IVs + hidden-branch hints';
-  if (points >= 64) return 'exact IVs';
-  if (points >= 16) return 'IV buckets';
-  if (points >= 4) return 'nature';
-  return 'none (4 captures for nature)';
+  if (points >= SCAN_HINTS) return 'IVs + hidden-branch hints';
+  if (points >= SCAN_IVS) return 'exact IVs';
+  if (points >= SCAN_BUCKETS) return 'IV buckets';
+  if (points >= SCAN_NATURE) return 'nature';
+  return `none (${SCAN_NATURE} captures for nature)`;
 }
 
 /** One evolution tree node: the form, its branch text, and a mark once anyone has evolved into it. */
