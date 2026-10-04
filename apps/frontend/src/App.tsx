@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMeQuery } from './api.ts';
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { WorldCanvas } from './components/WorldCanvas.tsx';
 import { open, useConnection } from './game/connection.ts';
@@ -62,7 +63,9 @@ export function App() {
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1">
           {client ? (
-            <WorldCanvas />
+            <ErrorBoundary label="world view">
+              <WorldCanvas />
+            </ErrorBoundary>
           ) : (
             <p className="p-4 text-neutral-500" data-testid="connection-note">
               {ended ? `${conn.status}${conn.kickReason ? `: ${conn.kickReason}` : ''}` : `${conn.status}…`}
@@ -86,6 +89,7 @@ export function App() {
             ))}
           </nav>
           <div className="min-h-0 flex-1 overflow-auto">
+            <ErrorBoundary key={tab} label={`${tab} panel`}>
             {tab === 'play' && (client?.self ? <PlayPanel client={client} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
             {tab === 'ram' && client?.self && <RamPanel client={client} />}
             {tab === 'disk' && client?.self && <DiskPanel client={client} />}
@@ -93,6 +97,7 @@ export function App() {
             {tab === 'codex' && <CodexPanel />}
             {tab === 'script' && <ScriptPanel client={client} />}
             {tab === 'log' && <LogPanel />}
+            </ErrorBoundary>
           </div>
         </aside>
       </div>
