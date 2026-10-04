@@ -5,6 +5,8 @@ declare module '@daemonet/sdk' {
   export interface DaemonEntity extends Positioned {
     kind: 'daemon'; id: string; species: string; types: string[]; level: number; hp: number; maxHp: number;
     owner: string | null; taggedBy: string | null; clean: boolean; signature: number; statuses: string[]; hardened: boolean;
+    /** Wild daemons only: what your Codex research on the line reveals (nature at 4 captures, IV buckets at 16, exact IVs at 64). */
+    scan?: { nature?: number; ivBuckets?: number[]; ivs?: number[] };
   }
   export interface DaemonView extends DaemonEntity { hpPct: number }
   export interface OperatorEntity extends Positioned { kind: 'operator'; id: string; name: string | null }
@@ -15,8 +17,11 @@ declare module '@daemonet/sdk' {
     hp: number; maxHp: number; energy: number; moves: string[]; crashed: boolean; slot: number; cooldowns: Record<string, number>;
     heldItem: string | null; patched: boolean; moveTypeUses: number[]; crashes: number; evolutions: EvolutionOption[];
   }
+  export interface TicketDef { index: number; kind: 'clear' | 'capture' | 'deliver' | 'evolve'; params: unknown; target: number; reward: number; title: string }
+  export interface OpenTicket { id: string; day: string; subnet: string; index: number; kind: 'clear' | 'capture' | 'deliver' | 'evolve'; params: unknown; target: number; reward: number; progress: number; title: string }
   export interface OperatorSelf extends Positioned {
     id: string; name: string | null; starterClaimed: boolean; bits: number; diskCapacity: number; ram: RamDaemon[]; running: string[];
+    tickets: OpenTicket[]; ticketsToday: number; research: Record<string, number>;
     inventory: Record<string, number>; swapReadyTick: number; capture: { captureId: string; targetId: string; deadlineTick: number } | null;
   }
   export class Query<T extends Positioned> {
@@ -25,7 +30,7 @@ declare module '@daemonet/sdk' {
     nearest(pred?: (item: T) => boolean): T | undefined; lowestHp(pred?: (item: T) => boolean): T | undefined;
   }
   export interface GatewayDef { id: string; at: Positioned; to: string; arrive: Positioned; requires: { level: number } }
-  export class WorldView { readonly daemons: Query<DaemonView>; readonly wild: Query<DaemonView>; readonly operators: Query<OperatorEntity>; readonly gateways: GatewayDef[]; get(id: string): unknown }
+  export class WorldView { readonly daemons: Query<DaemonView>; readonly wild: Query<DaemonView>; readonly operators: Query<OperatorEntity>; readonly gateways: GatewayDef[]; readonly tickets: TicketDef[]; get(id: string): unknown }
   export class DaemonHandle {
     readonly id: string; readonly ram: RamDaemon | undefined; readonly entity: DaemonView | undefined; readonly x: number; readonly y: number; readonly hpPct: number; readonly energy: number;
     distanceTo(target: Positioned): number; canUse(moveId: string): boolean; bestMoveAgainst(foe: DaemonView): string | null;
@@ -41,6 +46,7 @@ declare module '@daemonet/sdk' {
     travel(gatewayId: string): Promise<unknown>; evolve(daemonId: string, formId: string): Promise<unknown>; hold(daemonId: string, itemId: string): Promise<unknown>; unhold(daemonId: string): Promise<unknown>;
     useBitFlipper(daemonId: string, stat: 'hp' | 'attack' | 'defense' | 'focus' | 'resolve' | 'speed' | 'haste' | 'energy'): Promise<unknown>;
     buy(itemId: string, qty?: number): Promise<unknown>; craft(recipeId: string, qty?: number, using?: string): Promise<unknown>; decompile(daemonId: string, confirm?: boolean): Promise<unknown>;
+    acceptTicket(index: number, subnet?: string, day?: string): Promise<unknown>; abandonTicket(ticketId: string): Promise<unknown>;
     script(fn: (ctx: OperatorScriptContext) => void): () => void;
   }
   export class DaemonsApi { get(id: string): DaemonHandle; script(fn: (ctx: DaemonScriptContext) => void): () => void }
@@ -55,6 +61,8 @@ declare module '@daemonet/sdk' {
     on(name: 'travelled', handler: (ev: { from: string; to: string }) => void): () => void;
     on(name: 'bits', handler: (ev: { delta: number; reason: string; balance: number }) => void): () => void;
     on(name: 'decompiled', handler: (ev: { daemon: string; species: string; fragments: Record<string, number> }) => void): () => void;
+    on(name: 'ticketProgress', handler: (ev: { ticketId: string; progress: number; target: number }) => void): () => void;
+    on(name: 'ticketDone', handler: (ev: { ticketId: string; reward: number }) => void): () => void;
     on(name: string, handler: (value: any) => void): () => void;
   }
 }

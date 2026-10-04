@@ -25,17 +25,32 @@ export function ItemsPanel({ inventory }: { inventory: Record<string, number> })
 const VIEWS = ['trees', 'species', 'moves', 'chart', 'traits', 'items', 'challenges'] as const;
 type View = (typeof VIEWS)[number];
 
+/** What research on a line currently reveals about its wild daemons (design 7.2). */
+export function scanLevel(points: number): string {
+  if (points >= 256) return 'IVs + hidden-branch hints';
+  if (points >= 64) return 'exact IVs';
+  if (points >= 16) return 'IV buckets';
+  if (points >= 4) return 'nature';
+  return 'none (4 captures for nature)';
+}
+
 /** One evolution tree node: the form, its branch text, and a mark once anyone has evolved into it. */
 function TreeNode({ row, rows, codex }: { row: CodexBestiaryRow; rows: CodexBestiaryRow[]; codex: Codex }) {
   const children = rows.filter((r) => r.evolvesFrom === row.id);
   const found = codex.discoveries.find((d) => d.formId === row.id);
   const discovered = row.evolvesFrom === null || found !== undefined;
+  const hint = codex.hints.find((h) => h.formId === row.id);
   return (
     <li>
       <div className={`flex items-center gap-1 ${discovered ? '' : 'text-neutral-500'}`} data-testid={`tree-${row.id}`}>
         <SpriteImg species={row.id} types={row.types} clean={false} signature={0} size={16} />
         <span className={discovered ? 'font-medium' : ''}>{row.name}</span>
         {row.evolvesFrom !== null && <span className="mono text-xs text-neutral-500">{describeBranch(row.evolvesAt ?? 0, row.requirement, row.hidden)}</span>}
+        {hint && row.requirement === null && (
+          <span className="mono text-xs text-amber-300" title="research hint">
+            hint: {hint.kind}
+          </span>
+        )}
         {found && (
           <span className="text-emerald-400" title={`first evolved by ${found.operatorName ?? 'an operator'} on ${new Date(found.discoveredAt).toLocaleDateString()}`}>
             ✓
@@ -85,6 +100,9 @@ export function CodexPanel() {
             return (
               <ul key={line} className="rounded border border-neutral-800 p-2" data-testid={`line-${line}`}>
                 <TreeNode row={root} rows={rows} codex={data} />
+                <li className="mono mt-1 text-xs text-neutral-500">
+                  research {data.research[String(line)] ?? 0} · scans: {scanLevel(data.research[String(line)] ?? 0)}
+                </li>
               </ul>
             );
           })}

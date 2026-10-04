@@ -239,6 +239,61 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(after.discoveries).toMatchObject([{ formId: 'anycastrel', operatorName: 'alice' }]);
   });
 
+  it('codex carries the caller’s research and hints (kind only) at 256 points, for that operator alone', async () => {
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=ida' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const other = await app.inject({ method: 'GET', url: '/api/auth/dev?name=bob' });
+    const otherCookies = { [COOKIE_NAME]: other.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const op = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-ida' } });
+    await prisma!.research.create({ data: { operatorId: op.id, line: 5, points: 255 } });
+    const below = (await app.inject({ method: 'GET', url: '/api/codex', cookies })).json();
+    expect(below.research).toEqual({ '5': 255 });
+    expect(below.hints).toEqual([]);
+    await prisma!.research.update({ where: { operatorId_line: { operatorId: op.id, line: 5 } }, data: { points: 256 } });
+    const codex = (await app.inject({ method: 'GET', url: '/api/codex', cookies })).json();
+    expect(codex.research).toEqual({ '5': 256 });
+    expect(codex.hints).toContainEqual({ formId: 'anycastrel', kind: 'dominantIV' });
+    for (const h of codex.hints) {
+      expect(Object.keys(h).sort()).toEqual(['formId', 'kind']);
+      expect(codex.bestiary.find((r: { id: string }) => r.id === h.formId)).toMatchObject({ line: 5, hidden: true, requirement: null });
+    }
+    // a hint reveals the kind only: never the stat/value of the hidden requirement
+    expect(JSON.stringify(codex)).not.toContain(JSON.stringify(EVOLUTION_RULES['anycastrel']!.requirement));
+    // another operator with no research, and a request without a session, learn nothing
+    const bob = (await app.inject({ method: 'GET', url: '/api/codex', cookies: otherCookies })).json();
+    expect(bob.research).toEqual({});
+    expect(bob.hints).toEqual([]);
+    expect((await app.inject({ method: 'GET', url: '/api/codex' })).statusCode).toBe(401);
+    // a discovered form needs no hint
+    await prisma!.discovery.create({ data: { formId: 'anycastrel', operatorId: op.id } });
+    expect((await app.inject({ method: 'GET', url: '/api/codex', cookies })).json().hints.find((h: { formId: string }) => h.formId === 'anycastrel')).toBeUndefined();
+  });
+
+  it('serves today’s ticket board with the caller’s status and the caller’s history only', async () => {
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=ida' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const other = await app.inject({ method: 'GET', url: '/api/auth/dev?name=bob' });
+    const otherCookies = { [COOKIE_NAME]: other.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const op = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-ida' } });
+    const board = (await app.inject({ method: 'GET', url: '/api/tickets/board?subnet=lo', cookies })).json();
+    expect(board.tickets).toHaveLength(8);
+    expect(board.tickets[0]).toMatchObject({ index: 0, kind: 'clear', status: null });
+    await prisma!.ticket.create({ data: { id: 't1', operatorId: op.id, day: board.day, subnet: 'lo', index: 0, kind: 'clear', params: board.tickets[0].params, target: 4, reward: 64, progress: 1 } });
+    const again = (await app.inject({ method: 'GET', url: '/api/tickets/board?subnet=lo', cookies })).json();
+    expect(again.tickets[0].status).toBe('OPEN');
+    expect(again.acceptedToday).toBe(1);
+    const theirs = (await app.inject({ method: 'GET', url: '/api/tickets/board?subnet=lo', cookies: otherCookies })).json();
+    expect(theirs.tickets[0].status).toBeNull();
+    expect(theirs.acceptedToday).toBe(0);
+    expect((await app.inject({ method: 'GET', url: '/api/tickets', cookies })).json()).toMatchObject([{ id: 't1', status: 'OPEN', progress: 1 }]);
+    expect((await app.inject({ method: 'GET', url: '/api/tickets', cookies: otherCookies })).json()).toEqual([]);
+    const unknown = (await app.inject({ method: 'GET', url: '/api/tickets/board?subnet=nope', cookies })).json();
+    expect(unknown.tickets).toEqual([]);
+    expect(unknown.acceptedToday).toBe(0);
+    expect((await app.inject({ method: 'GET', url: '/api/tickets/board?subnet=lo' })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: '/api/tickets' })).statusCode).toBe(401);
+  });
+
   it('serves the shop, recipes and the caller’s ledger; the admin economy view sums the ledger', async () => {
     const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=fay&admin=true' });
     const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };

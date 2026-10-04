@@ -99,6 +99,7 @@ test('with dev bits: buy a tap at the host, decompile a seeded daemon into fragm
 
   await page.getByTestId('tab-host').click();
   await expect(page.getByTestId('host-status')).toContainText('at the host');
+  await page.getByTestId('host-shop').click();
   await page.getByTestId('buy-tap').click();
   await expect(page.getByTestId('host-status')).toContainText('384 bits', { timeout: 10_000 });
 
@@ -119,4 +120,14 @@ test('with dev bits: buy a tap at the host, decompile a seeded daemon into fragm
   await page.getByTestId('tab-log').click();
   await expect(page.getByTestId('log')).toContainText('decompiled tracerat');
   await expect(page.getByTestId('log')).toContainText('-16 bits (craft)');
+
+  // tickets: accept the first (always a tool-free clear ticket on lo), see it open, abandon it
+  await page.getByTestId('tab-host').click();
+  await page.getByTestId('host-tickets').click();
+  await expect(page.getByTestId('board-0')).toContainText('Clear', { timeout: 10_000 });
+  await page.getByTestId('accept-0').click();
+  await expect(page.getByTestId('tickets')).toContainText('open (1/2) · accepted today 1/8', { timeout: 10_000 });
+  await expect(page.getByTestId('board-0')).toContainText('open');
+  await page.getByRole('button', { name: 'abandon' }).click();
+  await expect(page.getByTestId('tickets')).toContainText('open (0/2) · accepted today 1/8', { timeout: 10_000 });
 });

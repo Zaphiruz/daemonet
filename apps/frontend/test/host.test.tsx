@@ -4,14 +4,21 @@ import type { GameClient } from '@daemonet/sdk';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { craftCheck, formatBits, fragmentTypes } from '../src/game/economy.ts';
+import { scanLevel } from '../src/panels/CodexPanel.tsx';
 
 const ledger = vi.hoisted(() => ({ data: undefined as unknown, skip: [] as unknown[], refetch: vi.fn() }));
+const tickets = vi.hoisted(() => ({ board: undefined as unknown, history: undefined as unknown, skip: [] as unknown[], refetch: vi.fn(() => Promise.resolve()) }));
 vi.mock('../src/api.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/api.ts')>()),
   useLedgerQuery: (_a: unknown, opts: { skip?: boolean }) => {
     ledger.skip.push(opts?.skip);
     return { data: opts?.skip ? undefined : ledger.data, refetch: ledger.refetch };
   },
+  useBoardQuery: (_a: unknown, opts: { skip?: boolean }) => {
+    tickets.skip.push(opts?.skip);
+    return { data: opts?.skip ? undefined : tickets.board, refetch: tickets.refetch };
+  },
+  useTicketHistoryQuery: (_a: unknown, opts: { skip?: boolean }) => ({ data: opts?.skip ? undefined : tickets.history, refetch: vi.fn() }),
   useDiskQuery: () => ({ data: [], refetch: vi.fn() }),
 }));
 vi.mock('../src/render/draw.ts', () => ({ spriteCanvas: () => document.createElement('canvas') }));
@@ -23,6 +30,10 @@ import { RamPanel } from '../src/panels/RamPanel.tsx';
 beforeEach(() => {
   ledger.data = undefined;
   ledger.skip = [];
+  tickets.board = undefined;
+  tickets.history = undefined;
+  tickets.skip = [];
+  tickets.refetch.mockClear();
   HTMLCanvasElement.prototype.getContext = (() => ({ imageSmoothingEnabled: false, clearRect() {}, drawImage() {} })) as never;
 });
 afterEach(() => {
@@ -82,6 +93,12 @@ function fakeClient(self: Record<string, unknown> = {}, over: { role?: 'controll
   return { client: client as unknown as GameClient, buy, craft, decompile };
 }
 
+/** The Host panel opens on tickets; the shop and craft tests start on their own view. */
+function renderHost(client: GameClient, view: 'shop' | 'craft' | 'ledger' = 'shop') {
+  const r = render(<HostPanel client={client} />);
+  fireEvent.click(screen.getByTestId(`host-${view}`));
+  return r;
+}
 const btn = (id: string) => screen.getByTestId(id) as HTMLButtonElement;
 const flush = async () => {
   await act(async () => {
@@ -93,7 +110,7 @@ const flush = async () => {
 describe('HostPanel shop', () => {
   it('shows balance and capacity, buys with qty, and disables a buy it cannot afford', async () => {
     const { client, buy } = fakeClient({ bits: 150 });
-    render(<HostPanel client={client} />);
+    renderHost(client);
     expect(screen.getByTestId('host-status').textContent).toContain('at the host');
     expect(screen.getByTestId('host-status').textContent).toContain('150 bits');
     expect(screen.getByTestId('host-status').textContent).toContain('Disk 256');
@@ -112,23 +129,23 @@ describe('HostPanel shop', () => {
 
   it('buys a disk expansion and shows maxed at the cap', () => {
     const { client, buy } = fakeClient({ bits: 100_000 });
-    const { unmount } = render(<HostPanel client={client} />);
+    const { unmount } = renderHost(client);
     fireEvent.click(btn('buy-diskExpansion'));
     expect(buy).toHaveBeenCalledWith('diskExpansion', 1);
     unmount();
     const max = fakeClient({ bits: 100_000, diskCapacity: DISK_MAX });
-    render(<HostPanel client={max.client} />);
+    renderHost(max.client);
     expect(btn('buy-diskExpansion').disabled).toBe(true);
     expect(btn('buy-diskExpansion').textContent).toBe('maxed');
   });
 
   it('disables everything away from the host and for spectators', () => {
     const away = fakeClient({}, { x: host.x + 20, y: host.y });
-    const { unmount } = render(<HostPanel client={away.client} />);
+    const { unmount } = renderHost(away.client);
     expect(screen.getByTestId('host-status').textContent).toContain('walk to the host');
     expect(btn('buy-sniff').disabled).toBe(true);
     unmount();
-    render(<HostPanel client={fakeClient({}, { role: 'spectator' }).client} />);
+    renderHost(fakeClient({}, { role: 'spectator' }).client);
     expect(btn('buy-sniff').disabled).toBe(true);
   });
 
@@ -137,7 +154,7 @@ describe('HostPanel shop', () => {
       const { client, buy } = fakeClient();
       let settle!: () => void;
       buy.mockImplementation(() => new Promise((res, rej) => (settle = () => (outcome === 'resolve' ? res({ ok: true }) : rej(new Error('no'))))));
-      const { unmount } = render(<HostPanel client={client} />);
+      const { unmount } = renderHost(client);
       fireEvent.click(btn('buy-sniff'));
       expect(btn('buy-sniff').disabled).toBe(true);
       expect(btn('buy-tap').disabled).toBe(true);
@@ -154,7 +171,7 @@ describe('HostPanel shop', () => {
 describe('HostPanel craft', () => {
   it('shows have/need, enables craft when covered, and passes the chosen type for any-recipes', () => {
     const { client, craft } = fakeClient({ bits: 100, inventory: { 'frag:packet': 4, 'frag:socket': 3, 'frag:glitch': 2 } });
-    render(<HostPanel client={client} />);
+    renderHost(client);
     fireEvent.click(screen.getByTestId('host-craft'));
     expect(screen.getByTestId('recipe-tap').textContent).toContain('socket 3/4');
     expect(btn('craft-tap').disabled).toBe(true);
@@ -170,7 +187,7 @@ describe('HostPanel craft', () => {
     const { client, craft } = fakeClient({ bits: 500, inventory: { 'frag:packet': 8, 'frag:socket': 8 } });
     let settle!: () => void;
     craft.mockImplementation(() => new Promise((res) => (settle = () => res({ ok: true }))));
-    render(<HostPanel client={client} />);
+    renderHost(client);
     fireEvent.click(screen.getByTestId('host-craft'));
     fireEvent.change(screen.getByTestId('qty'), { target: { value: '2' } });
     expect(btn('craft-tap').textContent).toContain('128');
@@ -186,7 +203,7 @@ describe('HostPanel craft', () => {
 describe('HostPanel limits and feedback', () => {
   it('clamps qty to the buy cap and disables crafts above the craft cap, with a reason', async () => {
     const { client, buy, craft } = fakeClient({ bits: 10_000_000, inventory: { 'frag:packet': 9999, 'frag:socket': 9999 } });
-    render(<HostPanel client={client} />);
+    renderHost(client);
     fireEvent.change(screen.getByTestId('qty'), { target: { value: '500' } });
     expect((screen.getByTestId('qty') as HTMLInputElement).value).toBe(String(BUY_MAX_QTY));
     fireEvent.click(btn('buy-sniff'));
@@ -205,12 +222,12 @@ describe('HostPanel limits and feedback', () => {
   it('shows the reason on a disabled button and the error of a rejected buy', async () => {
     const { client, buy } = fakeClient({ bits: 10 });
     buy.mockImplementation(() => Promise.reject(new Error('not enough bits')));
-    const { unmount } = render(<HostPanel client={client} />);
+    const { unmount } = renderHost(client);
     expect(btn('buy-tap').title).toBe('not enough bits');
     unmount();
     const rich = fakeClient({ bits: 1000 });
     rich.buy.mockImplementation(() => Promise.reject(new Error('host is busy')));
-    render(<HostPanel client={rich.client} />);
+    renderHost(rich.client);
     fireEvent.click(btn('buy-sniff'));
     await flush();
     expect(screen.getByTestId('host-error').textContent).toContain('host is busy');
@@ -218,13 +235,13 @@ describe('HostPanel limits and feedback', () => {
     expect(screen.queryByTestId('host-error')).toBeNull();
     const away = fakeClient({}, { x: host.x + 20 });
     cleanup();
-    render(<HostPanel client={away.client} />);
+    renderHost(away.client);
     expect(btn('buy-sniff').title).toContain('host');
   });
 
   it('forgets a chosen fragment type once it is no longer held', () => {
     const { client, craft } = fakeClient({ bits: 100, inventory: { 'frag:glitch': 2 } });
-    const { rerender } = render(<HostPanel client={client} />);
+    const { rerender } = renderHost(client);
     fireEvent.click(screen.getByTestId('host-craft'));
     fireEvent.change(screen.getByTestId('using'), { target: { value: 'glitch' } });
     expect(btn('craft-restore').disabled).toBe(false);
@@ -324,5 +341,64 @@ describe('DiskPanel capacity', () => {
   it('shows the operator disk capacity, not a constant', () => {
     render(<DiskPanel client={fakeClient({ diskCapacity: 288 }).client} />);
     expect(screen.getByText(/Disk 0\/288/)).toBeTruthy();
+  });
+});
+
+describe('scanLevel', () => {
+  it('names what each research tier reveals', () => {
+    expect(scanLevel(0)).toContain('none');
+    expect(scanLevel(4)).toBe('nature');
+    expect(scanLevel(16)).toBe('IV buckets');
+    expect(scanLevel(64)).toBe('exact IVs');
+    expect(scanLevel(256)).toContain('hints');
+  });
+});
+
+describe('HostPanel tickets', () => {
+  const def = (index: number, status: string | null = null) => ({ index, kind: 'clear', params: {}, target: 4, reward: 64, title: `Clear ${index}`, status });
+  const open = (id: string) => ({ id, day: '2026-10-04', subnet: 'lo', index: 0, kind: 'clear', params: {}, target: 4, reward: 64, progress: 1, title: 'Clear packet' });
+
+  it('opens on tickets, queries only there, and accepts a board ticket at the host', async () => {
+    tickets.board = { day: '2026-10-04', subnet: 'lo', tickets: [def(0), def(1, 'DONE')], acceptedToday: 1 };
+    const { client } = fakeClient({ ticketsToday: 1 });
+    const accept: Mock = vi.fn(() => Promise.resolve({ ok: true }));
+    (client.operator as unknown as { acceptTicket: Mock }).acceptTicket = accept;
+    render(<HostPanel client={client} />);
+    expect(screen.getByTestId('tickets').textContent).toContain('open (0/2) · accepted today 1/8');
+    expect(btn('accept-0').disabled).toBe(false);
+    expect(btn('accept-1').disabled).toBe(true);
+    expect(screen.getByTestId('board-1').textContent).toContain('done');
+    fireEvent.click(btn('accept-0'));
+    expect(accept).toHaveBeenCalledWith(0, 'lo', '2026-10-04');
+    await flush();
+    expect(tickets.refetch).toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('host-shop'));
+    expect(tickets.skip.at(-1)).toBe(true);
+  });
+
+  it('shows open tickets with progress, abandons one, and disables accepts at the open cap or away from the host', async () => {
+    tickets.board = { day: '2026-10-04', subnet: 'lo', tickets: [def(0)], acceptedToday: 2 };
+    const { client } = fakeClient({ tickets: [open('a'), open('b')], ticketsToday: 2 });
+    const abandon: Mock = vi.fn(() => Promise.resolve({ ok: true }));
+    (client.operator as unknown as { abandonTicket: Mock }).abandonTicket = abandon;
+    render(<HostPanel client={client} />);
+    expect(screen.getByTestId('ticket-a').textContent).toContain('1/4 · 64 bits');
+    expect(btn('accept-0').disabled).toBe(true);
+    expect(btn('accept-0').title).toContain('open tickets');
+    fireEvent.click(screen.getAllByRole('button', { name: 'abandon' })[0]!);
+    expect(abandon).toHaveBeenCalledWith('a');
+    await flush();
+    cleanup();
+    tickets.board = { day: '2026-10-04', subnet: 'lo', tickets: [def(0)], acceptedToday: 0 };
+    render(<HostPanel client={fakeClient({}, { x: host.x + 20 }).client} />);
+    expect(btn('accept-0').disabled).toBe(true);
+    expect(btn('accept-0').title).toContain('host');
+  });
+
+  it('lists the history', () => {
+    tickets.history = [{ id: 'h1', day: '2026-10-03', subnet: 'lo', index: 2, kind: 'capture', target: 1, reward: 128, progress: 1, status: 'DONE', acceptedAt: '2026-10-03T00:00:00Z', completedAt: '2026-10-03T01:00:00Z' }];
+    render(<HostPanel client={fakeClient().client} />);
+    expect(screen.getByText('history (1)')).toBeTruthy();
+    expect(screen.getByText(/lo #2 capture/)).toBeTruthy();
   });
 });

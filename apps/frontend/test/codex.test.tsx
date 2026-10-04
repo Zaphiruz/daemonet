@@ -22,11 +22,27 @@ const child = rows.find((r) => r.evolvesFrom !== null)!;
 function codex(over: Partial<Codex> = {}): Codex {
   return {
     types: [], chart: {}, species: [], moves: [], items: [], natures: [], traits: [],
-    bestiary: rows, discovered: [], discoveries: [], challenges: [], ...over,
+    bestiary: rows, discovered: [], discoveries: [], challenges: [], research: {}, hints: [], ...over,
   } as unknown as Codex;
 }
 
 describe('CodexPanel', () => {
+  it('shows research and scan level per line and the hint kind under a masked branch', () => {
+    codexState.data = codex({
+      bestiary: rows.map((r) => (r.id === child.id ? { ...r, hidden: true, requirement: null } : r)),
+      research: { [String(child.line)]: 256 },
+      hints: [{ formId: child.id, kind: 'dominantIV' }],
+    });
+    render(<CodexPanel />);
+    expect(screen.getByTestId(`tree-${child.id}`).textContent).toContain('hint: dominantIV');
+    expect(screen.getByTestId(`line-${child.line}`).textContent).toContain('research 256');
+    expect(screen.getByTestId(`line-${child.line}`).textContent).toContain('hidden-branch hints');
+    cleanup();
+    codexState.data = codex({ bestiary: rows.map((r) => (r.id === child.id ? { ...r, hidden: true, requirement: null } : r)) });
+    render(<CodexPanel />);
+    expect(screen.getByTestId(`tree-${child.id}`).textContent).not.toContain('hint:');
+  });
+
   it('draws each line as a tree, with ??? for a masked hidden requirement and a mark once discovered', () => {
     codexState.data = codex({
       bestiary: rows.map((r) => (r.id === child.id ? { ...r, hidden: true, requirement: null } : r)),

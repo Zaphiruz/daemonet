@@ -51,6 +51,7 @@ function setup(outcomes: Outcome[], ticket: () => Promise<string> = (() => {
   const capture = createCaptureStore();
   const stopSandbox = vi.fn();
   const invalidateCodex = vi.fn();
+  const invalidateTickets = vi.fn();
   const fetchTicketMock = vi.fn(ticket);
   const deps: ConnectionDeps = {
     fetchTicket: fetchTicketMock,
@@ -64,9 +65,10 @@ function setup(outcomes: Outcome[], ticket: () => Promise<string> = (() => {
     capture,
     stopSandbox,
     invalidateCodex,
+    invalidateTickets,
   };
   const conn = createConnection(deps);
-  return { conn, clients, log, capture, stopSandbox, invalidateCodex, fetchTicket: fetchTicketMock, texts: () => log.get().map((e) => `${e.kind}:${e.text}`) };
+  return { conn, clients, log, capture, stopSandbox, invalidateCodex, invalidateTickets, fetchTicket: fetchTicketMock, texts: () => log.get().map((e) => `${e.kind}:${e.text}`) };
 }
 
 beforeEach(() => {
@@ -335,6 +337,20 @@ describe('economy events', () => {
     expect(t.texts()).toContain('event:-16 bits (craft) → 368');
     expect(t.texts()).toContain('event:+50 bits (admin) → 418');
     expect(t.texts()).toContain('event:decompiled tracerat into 4 frag:packet, 2 frag:socket');
+  });
+});
+
+describe('ticket events', () => {
+  it('logs progress and completion from the store and drops the cached board when a ticket finishes', async () => {
+    const t = setup([{ kind: 'ready' }]);
+    await t.conn.open('controller');
+    const c = t.clients[0]!;
+    c.emit('ticketProgress', { ticketId: 't1', progress: 2, target: 4 });
+    expect(t.texts()).toContain('event:ticket t1: 2/4');
+    expect(t.invalidateTickets).not.toHaveBeenCalled();
+    c.emit('ticketDone', { ticketId: 't1', reward: 64 });
+    expect(t.texts()).toContain('event:ticket t1 done: +64 bits');
+    expect(t.invalidateTickets).toHaveBeenCalledTimes(1);
   });
 });
 

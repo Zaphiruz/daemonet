@@ -1,12 +1,12 @@
-import { BUY_MAX_QTY, CRAFT_MAX_QTY, DISK_MAX, DISK_STEP, RECIPES, SHOP, diskExpansionPrice, getItem, type TypeId } from '@daemonet/rules';
+import { BUY_MAX_QTY, CRAFT_MAX_QTY, DISK_MAX, DISK_STEP, OPEN_TICKETS_MAX, RECIPES, SHOP, TICKETS_PER_DAY, diskExpansionPrice, getItem, type TypeId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useRef, useState } from 'react';
-import { useLedgerQuery } from '../api.ts';
+import { useBoardQuery, useLedgerQuery, useTicketHistoryQuery } from '../api.ts';
 import { run } from '../components/WorldCanvas.tsx';
 import { craftCheck, formatBits, fragmentTypes } from '../game/economy.ts';
 import { nearHost } from './RamPanel.tsx';
 
-const VIEWS = ['shop', 'craft', 'ledger'] as const;
+const VIEWS = ['tickets', 'shop', 'craft', 'ledger'] as const;
 type View = (typeof VIEWS)[number];
 
 /** Everything that happens at a host node: the NPC shop, Disk expansion, crafting, and the bits ledger. */
@@ -14,7 +14,7 @@ export function HostPanel({ client }: { client: GameClient }) {
   const me = client.self;
   const manual = client.role === 'controller';
   const atHost = nearHost(client.subnet, me);
-  const [view, setView] = useState<View>('shop');
+  const [view, setView] = useState<View>('tickets');
   const [qty, setQty] = useState(1);
   const [using, setUsing] = useState<TypeId | ''>('');
   // one buy/craft at a time: the buttons stay disabled until the request settles (the ref also covers the gap before the re-render)
@@ -22,6 +22,8 @@ export function HostPanel({ client }: { client: GameClient }) {
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const ledger = useLedgerQuery(undefined, { skip: view !== 'ledger', refetchOnMountOrArgChange: true });
+  const board = useBoardQuery(client.subnet, { skip: view !== 'tickets', refetchOnMountOrArgChange: true });
+  const history = useTicketHistoryQuery(undefined, { skip: view !== 'tickets', refetchOnMountOrArgChange: true });
   const diskPrice = diskExpansionPrice(me.diskCapacity);
   const can = manual && atHost && !inFlight;
   // a chosen type that is no longer held (spent in a craft, say) counts as unchosen
@@ -68,6 +70,83 @@ export function HostPanel({ client }: { client: GameClient }) {
         <p className="text-xs text-red-400" data-testid="host-error">
           {error}
         </p>
+      )}
+
+      {view === 'tickets' && (
+        <section className="space-y-2" data-testid="tickets">
+          <div>
+            <h3 className="mb-1 text-xs uppercase tracking-wide text-neutral-500">
+              open ({me.tickets.length}/{OPEN_TICKETS_MAX}) · accepted today {me.ticketsToday}/{TICKETS_PER_DAY}
+            </h3>
+            {me.tickets.length === 0 && <p className="text-xs text-neutral-500">no open tickets</p>}
+            {me.tickets.map((t) => (
+              <div key={t.id} className="flex items-center justify-between rounded border border-neutral-800 px-2 py-1" data-testid={`ticket-${t.id}`}>
+                <span>
+                  {t.title}{' '}
+                  <span className="mono text-xs text-neutral-500">
+                    {t.progress}/{t.target} · {t.reward} bits
+                  </span>
+                </span>
+                <button
+                  className="text-xs text-neutral-400 hover:text-white disabled:opacity-40"
+                  disabled={!manual || inFlight}
+                  title={manual ? undefined : 'spectators cannot abandon tickets'}
+                  onClick={() => submit(() => client.operator.abandonTicket(t.id).then(() => board.refetch()), 'abandonTicket')}
+                >
+                  abandon
+                </button>
+              </div>
+            ))}
+          </div>
+          <div>
+            <h3 className="mb-1 text-xs uppercase tracking-wide text-neutral-500">
+              board · {client.subnet} · {board.data?.day ?? '…'}{' '}
+              <button className="underline" onClick={() => void board.refetch()}>
+                refresh
+              </button>
+            </h3>
+            {board.data?.tickets.map((t) => {
+              const full = me.tickets.length >= OPEN_TICKETS_MAX || me.ticketsToday >= TICKETS_PER_DAY;
+              return (
+                <div key={t.index} className="flex items-center justify-between rounded border border-neutral-800 px-2 py-1" data-testid={`board-${t.index}`}>
+                  <span className={t.status ? 'text-neutral-500' : ''}>
+                    {t.title}{' '}
+                    <span className="mono text-xs text-neutral-500">
+                      {t.reward} bits{t.status ? ` · ${t.status.toLowerCase()}` : ''}
+                    </span>
+                  </span>
+                  <button
+                    className="rounded bg-amber-800 px-2 py-0.5 hover:bg-amber-700 disabled:opacity-40"
+                    disabled={!can || t.status !== null || full}
+                    title={why([t.status !== null, 'already accepted today'], [me.tickets.length >= OPEN_TICKETS_MAX, `at most ${OPEN_TICKETS_MAX} open tickets`], [me.ticketsToday >= TICKETS_PER_DAY, `${TICKETS_PER_DAY} tickets a day`])}
+                    onClick={() => submit(() => client.operator.acceptTicket(t.index, client.subnet, board.data!.day).then(() => board.refetch()), 'acceptTicket')}
+                    data-testid={`accept-${t.index}`}
+                  >
+                    accept
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {history.data && history.data.length > 0 && (
+            <details>
+              <summary className="cursor-pointer text-xs text-neutral-500">history ({history.data.length})</summary>
+              <div className="mono text-xs">
+                {history.data.map((h) => (
+                  <div key={h.id} className="flex justify-between border-b border-neutral-900 py-0.5">
+                    <span className="text-neutral-500">{h.day}</span>
+                    <span>
+                      {h.subnet} #{h.index} {h.kind}
+                    </span>
+                    <span className={h.status === 'DONE' ? 'text-emerald-300' : 'text-neutral-400'}>
+                      {h.status.toLowerCase()} {h.progress}/{h.target}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </section>
       )}
 
       {view === 'shop' && (

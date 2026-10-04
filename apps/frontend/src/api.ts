@@ -55,6 +55,33 @@ export interface Codex {
   discoveries: Array<{ formId: string; operatorName: string | null; discoveredAt: string }>;
   /** Each type's capture challenge rules: plain text with line breaks; render as text, never HTML. */
   challenges: Array<{ type: TypeId; rules: string }>;
+  /** The caller's research points per bestiary line. */
+  research: Record<string, number>;
+  /** Requirement kinds of hidden, undiscovered branches in lines the caller researched to 256 (kind only). */
+  hints: Array<{ formId: string; kind: string }>;
+}
+
+export interface BoardTicket {
+  index: number;
+  kind: 'clear' | 'capture' | 'deliver' | 'evolve';
+  params: unknown;
+  target: number;
+  reward: number;
+  title: string;
+  status: 'OPEN' | 'DONE' | 'ABANDONED' | null;
+}
+export interface TicketHistory {
+  id: string;
+  day: string;
+  subnet: string;
+  index: number;
+  kind: string;
+  target: number;
+  reward: number;
+  progress: number;
+  status: 'OPEN' | 'DONE' | 'ABANDONED';
+  acceptedAt: string;
+  completedAt: string | null;
 }
 
 /** All mutations carry the CSRF header the API requires. */
@@ -68,12 +95,14 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk', 'Codex'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
     disk: b.query<DiskDaemon[], void>({ query: () => '/disk', providesTags: ['Disk'] }),
     ledger: b.query<LedgerEntry[], void>({ query: () => '/ledger' }),
+    board: b.query<{ day: string; subnet: string; tickets: BoardTicket[]; acceptedToday: number }, string>({ query: (subnet) => `/tickets/board?subnet=${encodeURIComponent(subnet)}`, providesTags: ['Tickets'] }),
+    ticketHistory: b.query<TicketHistory[], void>({ query: () => '/tickets', providesTags: ['Tickets'] }),
     script: b.query<ScriptDoc, void>({ query: () => '/scripts/main', providesTags: ['Script'] }),
     versions: b.query<ScriptVersion[], void>({ query: () => '/scripts/main/versions', providesTags: ['Script'] }),
     version: b.query<{ version: number; source: string }, number>({ query: (v) => `/scripts/main/versions/${v}` }),
@@ -85,7 +114,7 @@ export const api = createApi({
   }),
 });
 
-export const { useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
+export const { useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */
 export class TicketError extends Error {

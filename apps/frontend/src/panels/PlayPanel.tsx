@@ -1,4 +1,4 @@
-import { GATEWAY_RADIUS, getMove, getSpecies, TICK_HZ, type ToolId } from '@daemonet/rules';
+import { GATEWAY_RADIUS, getMove, getSpecies, NATURES, STAT_KEYS, TICK_HZ, type ToolId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useState } from 'react';
 import { run } from '../components/WorldCanvas.tsx';
@@ -90,6 +90,14 @@ export function PlayPanel({ client }: { client: GameClient }) {
               {Math.round(target.hp)}/{target.maxHp} hp · {target.taggedBy ? (target.taggedBy === client.operatorId ? 'tagged by you' : 'tagged by another operator') : 'untagged'}
               {target.hardened ? ' · hardened' : ''}
             </div>
+            {target.scan && (
+              <div className="mono text-xs text-sky-300" data-testid="scan">
+                {target.scan.nature !== undefined && <span>nature {NATURES[target.scan.nature]?.id ?? target.scan.nature} </span>}
+                {target.scan.ivs
+                  ? STAT_KEYS.map((k, i) => `${k.slice(0, 2)}${target.scan!.ivs![i]}`).join(' ')
+                  : target.scan.ivBuckets && STAT_KEYS.map((k, i) => `${k.slice(0, 2)}${['0-7', '8-15', '16-23', '24-31'][target.scan!.ivBuckets![i]!]}`).join(' ')}
+              </div>
+            )}
             <div className="mt-2 flex items-center gap-2">
               <select className="rounded bg-neutral-800 px-1" value={controls.tool} onChange={(e) => setControls({ tool: e.target.value as ToolId })} data-testid="tool-select">
                 {TOOLS.map((t) => (

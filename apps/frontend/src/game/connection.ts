@@ -37,6 +37,8 @@ export interface ConnectionDeps {
   stopSandbox(): void;
   /** Drops the cached Codex so an open panel refetches (a live discovery reveals a hidden requirement). */
   invalidateCodex(): void;
+  /** Drops the cached ticket board and history (a ticket finished or moved). Optional: tests may omit it. */
+  invalidateTickets?(): void;
 }
 
 /** Backoff for a first connection that failed: doubles from RETRY_MIN_MS up to RETRY_MAX_MS. */
@@ -168,6 +170,11 @@ export function createConnection(deps: ConnectionDeps) {
     on('travelled', (e) => deps.log.push('event', `travelled ${e.from} -> ${e.to}`));
     on('bits', (e) => deps.log.push('event', `${e.delta >= 0 ? '+' : ''}${e.delta} bits (${e.reason}) → ${e.balance}`));
     on('decompiled', (e) => deps.log.push('event', `decompiled ${e.species} into ${Object.entries(e.fragments).map(([k, v]) => `${v} ${k}`).join(', ')}`));
+    on('ticketProgress', (e) => deps.log.push('event', `ticket ${e.ticketId}: ${e.progress}/${e.target}`));
+    on('ticketDone', (e) => {
+      deps.log.push('event', `ticket ${e.ticketId} done: +${e.reward} bits`);
+      deps.invalidateTickets?.();
+    });
     // a snapshot after the first one (travel) swaps the whole world: re-render without waiting for the next tick
     /** The subnet of the last snapshot this store saw (set when the client goes online). */
     let subnet: string | null = null;
@@ -281,6 +288,7 @@ const connection = createConnection({
   capture: appCapture,
   stopSandbox,
   invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
+  invalidateTickets: () => store.dispatch(api.util.invalidateTags(['Tickets'])),
 });
 
 // the sandbox only starts a script on a live socket

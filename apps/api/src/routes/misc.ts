@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@daemonet/db';
-import { ITEMS, MOVES, NATURES, SPECIES, TRAITS, TYPES, getFamily, typeMultiplier } from '@daemonet/rules';
+import { ITEMS, MOVES, NATURES, SPECIES, TRAITS, TYPES, dayKey, getFamily, ticketBoard, ticketKey, typeMultiplier } from '@daemonet/rules';
 import { BESTIARY_WITH_RULES } from '@daemonet/rules/evolution';
 import type { FastifyInstance } from 'fastify';
 import { hashToken, randomToken } from '../auth/session.js';
@@ -7,6 +7,9 @@ import { hashToken, randomToken } from '../auth/session.js';
 export const TICKET_TTL_MS = 60_000;
 /** Readiness must answer even when the database hangs (carry-forward #10: the sim uses 2 s too). */
 export const READY_TIMEOUT_MS = 2_000;
+
+/** Research points at which a line's hidden branches show the kind of their requirement (design 7.2; the sim's `SCAN_HINTS`). */
+export const HINT_RESEARCH = 256;
 
 export interface DiscoveryRow {
   formId: string;
@@ -21,11 +24,18 @@ export interface DiscoveryRow {
  * blanked until someone has discovered the form (SP3a spec §4.3). `species` carries no requirements;
  * `discovered` lists every form that has been evolved into at least once. `challenges` carries each
  * capture family's player-facing rule text (the package is private, so the client cannot read the source).
+ * `research` is the REQUESTING operator's points per line; `hints` come from it alone (carry-forward #24): only
+ * hidden, undiscovered forms of lines at or above HINT_RESEARCH, and only the kind of the first requirement
+ * (never its stat, item or value). The hint data never leaves the server except through this projection.
  */
-export function codexPayload(discoveries: readonly DiscoveryRow[]) {
+export function codexPayload(discoveries: readonly DiscoveryRow[], research: Readonly<Record<string, number>> = {}) {
   const discovered = new Set(discoveries.map((d) => d.formId));
   const mask = <T extends { id: string; hidden: boolean; requirement: unknown }>(row: T): T =>
     row.hidden && !discovered.has(row.id) ? { ...row, requirement: null } : row;
+  const hints = BESTIARY_WITH_RULES.filter((r) => r.hidden && !discovered.has(r.id) && (research[String(r.line)] ?? 0) >= HINT_RESEARCH && r.requirement !== null && r.requirement.length > 0).map((r) => ({
+    formId: r.id,
+    kind: (r.requirement![0] as { kind: string }).kind,
+  }));
   return {
     types: TYPES,
     chart: Object.fromEntries(TYPES.map((a) => [a, Object.fromEntries(TYPES.map((d) => [d, typeMultiplier(a, [d])]))])),
@@ -38,7 +48,15 @@ export function codexPayload(discoveries: readonly DiscoveryRow[]) {
     challenges: TYPES.map((type) => ({ type, rules: getFamily(type).rules })),
     discovered: [...discovered],
     discoveries: discoveries.map((d) => ({ formId: d.formId, operatorName: d.operatorName, discoveredAt: d.discoveredAt })),
+    research,
+    hints,
   };
+}
+
+/** The operator's research points keyed by bestiary line. */
+export async function researchFor(prisma: PrismaClient, operatorId: string): Promise<Record<string, number>> {
+  const rows = await prisma.research.findMany({ where: { operatorId } });
+  return Object.fromEntries(rows.map((r) => [String(r.line), r.points]));
 }
 
 export async function listDiscoveries(prisma: PrismaClient): Promise<DiscoveryRow[]> {
@@ -72,7 +90,28 @@ export function registerMiscRoutes(app: FastifyInstance, prisma: PrismaClient): 
     return reply.code(503).send({ ok: false });
   });
 
-  app.get('/api/codex', auth, async () => codexPayload(await listDiscoveries(prisma)));
+  app.get('/api/codex', auth, async (req) => codexPayload(await listDiscoveries(prisma), await researchFor(prisma, req.operator!.id)));
+
+  /** Today's board for a subnet with the caller's ticket status per entry (the sim generates the same board). */
+  app.get<{ Querystring: { subnet?: string } }>('/api/tickets/board', auth, async (req) => {
+    const subnet = typeof req.query.subnet === 'string' ? req.query.subnet.slice(0, 64) : 'lo';
+    const day = dayKey(new Date().toISOString());
+    let board;
+    try {
+      board = ticketBoard(subnet, day);
+    } catch {
+      return { day, subnet, tickets: [], acceptedToday: 0 };
+    }
+    const mine = await prisma.ticket.findMany({ where: { operatorId: req.operator!.id, day } });
+    const status = new Map(mine.map((t) => [ticketKey(t.day, t.subnet, t.index), t.status]));
+    return { day, subnet, tickets: board.map((t) => ({ ...t, status: status.get(ticketKey(day, subnet, t.index)) ?? null })), acceptedToday: mine.length };
+  });
+
+  /** The caller's last 64 tickets, newest first. */
+  app.get('/api/tickets', auth, async (req) => {
+    const rows = await prisma.ticket.findMany({ where: { operatorId: req.operator!.id }, orderBy: { acceptedAt: 'desc' }, take: 64 });
+    return rows.map((t) => ({ id: t.id, day: t.day, subnet: t.subnet, index: t.index, kind: t.kind, params: t.params, target: t.target, reward: t.reward, progress: t.progress, status: t.status, acceptedAt: t.acceptedAt, completedAt: t.completedAt }));
+  });
 
   app.get('/api/disk', auth, async (req) => {
     const rows = await prisma.daemon.findMany({ where: { operatorId: req.operator!.id, location: 'DISK' }, orderBy: { slot: 'asc' } });
