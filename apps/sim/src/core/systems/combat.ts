@@ -159,10 +159,12 @@ function applyHit(world: World, attacker: Daemon, target: Daemon, move: MoveDef,
   if (target.wild && attacker.ownerId) {
     if (target.wild.tagOwner === null) {
       out.emit({ e: 'battleStart', wild: target.id, operator: attacker.ownerId }, { at: target });
-      // A fresh engagement starts with the tag; the tagging hit has already used up the bitshield.
+      // A fresh engagement starts with the tag.
       target.engagement = freshEngagement();
       target.engagement.lastHitMove = move.id;
-      if (target.trait === 'bitshield') target.engagement.blocked = true;
+      // The tagging hit has already spent bitshield / nullsafe for this engagement.
+      target.engagement.blocked = engagement.blocked;
+      target.engagement.survived = engagement.survived;
     }
     target.wild.tagOwner = attacker.ownerId;
     target.wild.tagUntil = tick + world.ticks(TAG_WINDOW_MS);
@@ -208,9 +210,9 @@ export function executeMove(world: World, attacker: Daemon, moveId: string, aim:
       world.rng,
     );
     const amount = scaleDamage(r.amount, attacker, target, move, tick);
-    applyHit(world, attacker, target, move, amount, r.multiplier, out);
-    if (attacker.trait === 'echo' && isFiller(move) && amount > 0 && target.hp > 0 && world.rng.chance(ECHO_CHANCE)) {
-      applyHit(world, attacker, target, move, Math.max(1, Math.floor(amount / 2)), r.multiplier, out);
+    const dealt = applyHit(world, attacker, target, move, amount, r.multiplier, out);
+    if (attacker.trait === 'echo' && isFiller(move) && dealt > 0 && target.hp > 0 && world.rng.chance(ECHO_CHANCE)) {
+      applyHit(world, attacker, target, move, Math.max(1, Math.floor(dealt / 2)), r.multiplier, out);
     }
   }
 }

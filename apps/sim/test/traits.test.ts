@@ -215,7 +215,22 @@ describe('statuses', () => {
     const { world, mine } = duel('echo');
     const base = cooldownMs(mine, ping, world.tick);
     mine.statuses.throttled = world.tick + 100;
-    expect(cooldownMs(mine, ping, world.tick)).toBeGreaterThan(base);
+    expect(cooldownMs(mine, ping, world.tick)).toBe(Math.floor(base * 1.5));
+  });
+
+  it('stalled daemons do not move; unstalled ones do', () => {
+    const world = makeWorld();
+    world.addOperator(operatorRecord('alice'));
+    step(world, input('alice', { cmd: 'run', actor: self, args: { daemonId: 'alice-d0' } }));
+    const d = world.daemons.get('alice-d0')!;
+    d.path = [{ x: 12.5, y: 5.5 }];
+    d.statuses.stalled = world.tick + 100;
+    const x0 = d.x;
+    idle(world, 3);
+    expect(d.x).toBe(x0);
+    delete d.statuses.stalled;
+    idle(world, 3);
+    expect(d.x).toBeGreaterThan(x0);
   });
 
   it('leaking stops draining once it expires', () => {
@@ -247,3 +262,61 @@ describe('engagement state', () => {
   });
 });
 
+
+describe('trait edge cases', () => {
+  /** Forces every chance roll to succeed so echo always rolls its second hit. */
+  const rigEcho = (world: { rng: { chance: (p: number) => boolean } }) => {
+    world.rng.chance = () => true;
+  };
+
+  it('echo does not repeat a bitshield-blocked hit', () => {
+    const { world, use, hits } = duel('echo', 'bitshield');
+    rigEcho(world);
+    expect(hits(use('ping'))).toHaveLength(1);
+  });
+
+  it('echo does not finish a target nullsafe just saved', () => {
+    const { world, wild, use, hits } = duel('echo', 'nullsafe');
+    rigEcho(world);
+    wild.hp = 1;
+    wild.wild!.aggro = null;
+    expect(hits(use('ping'))).toHaveLength(1);
+    expect(wild.hp).toBe(1);
+  });
+
+  it('echo still repeats a damaging hit when rigged (control)', () => {
+    const { world, use, hits } = duel('echo');
+    rigEcho(world);
+    expect(hits(use('ping'))).toHaveLength(2);
+  });
+
+  it('a lethal tagging hit spends nullsafe; the next lethal hit kills', () => {
+    const { world, mine, wild, use } = duel('lowlatency', 'nullsafe');
+    wild.hp = 1;
+    wild.wild!.aggro = null;
+    use('ping');
+    expect(wild.hp).toBe(1);
+    expect(wild.engagement.survived).toBe(true);
+    mine.cooldowns = {};
+    use('ping');
+    expect(world.daemons.has(wild.id)).toBe(false);
+  });
+
+  it('synburst filler is free only below 25% HP; lazyeval discounts heavy moves only', () => {
+    const { mine } = duel('synburst');
+    mine.hp = mine.stats.hp;
+    expect(energyCost(mine, ping)).toBe(ping.energyCost);
+    mine.trait = 'lazyeval';
+    expect(energyCost(mine, ping)).toBe(ping.energyCost);
+  });
+
+  it('absorb gives more energy than no trait for the same hit', () => {
+    const a = duel('echo', 'absorb');
+    const b = duel('echo', 'lowlatency');
+    a.wild.energy = 50;
+    b.wild.energy = 50;
+    a.use('ping');
+    b.use('ping');
+    expect(a.wild.energy).toBeGreaterThan(b.wild.energy);
+  });
+});
