@@ -1,5 +1,5 @@
 import { ARENA_LEVEL, ENERGY_MAX, computeStats, getSpecies, movesAtLevel, statBlock, statBlockFromArray, statBlockToArray, xpForLevel, type ArenaMode } from '@daemonet/rules';
-import type { OperatorSelf } from '@daemonet/shared';
+import type { ArenaReason, OperatorSelf } from '@daemonet/shared';
 import type { ArenaState, Operator, OperatorRecord, OwnedDaemonRecord } from '../model.js';
 import type { World } from '../world.js';
 
@@ -63,7 +63,7 @@ export function hpFraction(world: World, op: Operator): number {
 
 const wiped = (world: World, op: Operator): boolean => op.ram.every((id) => world.daemons.get(id)!.crashed);
 
-function finish(world: World, arena: ArenaState, winner: string | null, reason: NonNullable<ArenaState['result']>['reason']): void {
+function finish(world: World, arena: ArenaState, winner: string | null, reason: ArenaReason): void {
   arena.phase = 'over';
   arena.result = { winner, reason, atTick: world.tick };
   for (const op of world.operators.values()) {
@@ -76,7 +76,7 @@ function finish(world: World, arena: ArenaState, winner: string | null, reason: 
  * The operator gives up (or its controller has been gone too long): the other side wins. No-op once the match is over,
  * and for an operator that is not one of the two sides.
  */
-export function concede(world: World, loserId: string, reason: 'forfeit' | 'disconnect'): void {
+export function concede(world: World, loserId: string, reason: Extract<ArenaReason, 'forfeit' | 'disconnect'>): void {
   const arena = world.arena;
   if (!arena || arena.phase === 'over' || (loserId !== arena.a && loserId !== arena.b)) return;
   finish(world, arena, loserId === arena.a ? arena.b : arena.a, reason);

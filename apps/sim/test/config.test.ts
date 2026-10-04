@@ -15,6 +15,9 @@ describe('loadConfig', () => {
     for (const bad of ['', ' , ', 'lo,lo', 'lo,nowhere', 'lo,sandbox']) {
       expect(() => loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', SUBNETS: bad })).toThrow();
     }
+    // the arena's sandbox is a real subnet, created per match: not unknown, just never hosted
+    expect(() => loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', SUBNETS: 'lo,sandbox' })).toThrow('SUBNETS: sandbox is not a hostable subnet');
+    expect(() => loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', SUBNETS: 'lo,nowhere' })).toThrow('SUBNETS: nowhere is not a hostable subnet');
   });
 
   it('reads the optional REDIS_URL (unset: in-process bus)', () => {

@@ -1,5 +1,5 @@
 import type { ArenaMode, Behaviour, EvolutionChange, StatBlock, StatusId, TicketKind, TicketParams, ToolId, TypeId, Challenge } from '@daemonet/rules';
-import type { Command, ErrorCode, GameEvent } from '@daemonet/shared';
+import type { ArenaReason, Command, ErrorCode, GameEvent } from '@daemonet/shared';
 import type { Point } from './grid.js';
 
 /** One line of a daemon's life story (SP3a spec §7). `at` is an ISO timestamp. */
@@ -196,7 +196,7 @@ export interface ArenaState {
   ratings: Record<string, number>;
   /** Copies that dealt damage (they earn `arenaWins` on a ranked win). */
   dealt: Set<string>;
-  result: { winner: string | null; reason: 'wipeout' | 'timeout' | 'forfeit' | 'disconnect'; atTick: number } | null;
+  result: { winner: string | null; reason: ArenaReason; atTick: number } | null;
 }
 
 export interface Daemon {

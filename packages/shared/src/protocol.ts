@@ -19,7 +19,9 @@ const Self = z.literal('self');
 /** Operator names (claimStarter, and renames pushed by the api). */
 export const OperatorName = z.string().regex(/^[a-z0-9_-]{3,16}$/);
 const ArenaModeSchema = z.enum(['ranked', 'unranked']);
-const ArenaReason = z.enum(['wipeout', 'timeout', 'forfeit', 'disconnect']);
+/** How an arena match ended (SP6): the single source for the sim's `ArenaState` and the wire. */
+export const ArenaReason = z.enum(['wipeout', 'timeout', 'forfeit', 'disconnect']);
+export type ArenaReason = z.infer<typeof ArenaReason>;
 
 // ---- Commands (client -> server, inside a `cmd` message) ----
 

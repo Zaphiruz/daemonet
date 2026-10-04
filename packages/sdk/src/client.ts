@@ -84,6 +84,11 @@ export interface DaemonScriptContext {
 const BACKOFF_MIN_MS = 256;
 const BACKOFF_MAX_MS = 8192;
 const ENEMY_RADIUS = 16;
+/**
+ * Commands that never use the per-tick budget: chat has its own limit (one line per 2 s, queued by ChatApi) and the
+ * arena commands are handled by the sim outside the tick with their own limits.
+ */
+const OUTSIDE_TICK_COMMANDS: ReadonlySet<Command['cmd']> = new Set<Command['cmd']>(['chat', 'arenaQueue', 'arenaLeave', 'arenaChallenge', 'arenaAccept', 'arenaForfeit']);
 /** Kick reasons after which reconnecting can succeed; every other kick is terminal. */
 export const TRANSIENT_KICKS: ReadonlySet<string> = new Set(['idle', 'auth timeout', 'server shutting down', 'reload required']);
 
@@ -523,10 +528,8 @@ export class GameClient {
   /** Sends a command; resolves with the ack result or rejects with a DaemonetError. */
   command(command: Command): Promise<unknown> {
     const promise = new Promise<unknown>((resolve, reject) => {
-      // Chat has its own limit (one line per 2 s, queued by ChatApi) and arena commands are handled by the sim outside
-      // the tick with their own limits: neither uses the per-tick budget.
-      const chat = command.cmd === 'chat' || command.cmd.startsWith('arena');
-      if (!chat && this.sentThisTick >= COMMANDS_PER_TICK) {
+      const outsideTick = OUTSIDE_TICK_COMMANDS.has(command.cmd);
+      if (!outsideTick && this.sentThisTick >= COMMANDS_PER_TICK) {
         reject(new DaemonetError('E_RATE', `at most ${COMMANDS_PER_TICK} commands per tick`));
         return;
       }
@@ -534,7 +537,7 @@ export class GameClient {
         reject(new DaemonetError('E_STATE', 'not connected'));
         return;
       }
-      if (!chat) this.sentThisTick++;
+      if (!outsideTick) this.sentThisTick++;
       const reqId = `c${++this.reqCounter}`;
       const timer = setTimeout(() => {
         this.pending.delete(reqId);

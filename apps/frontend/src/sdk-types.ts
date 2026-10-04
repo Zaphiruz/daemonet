@@ -96,7 +96,7 @@ declare module '@daemonet/sdk' {
     /** Wait for an opponent: needs two non-crashed daemons in RAM and none running. An arenaMatch event announces the match. */
     queue(mode: 'ranked' | 'unranked'): Promise<unknown>;
     leave(): Promise<unknown>;
-    /** Challenge an operator within reach; they answer with accept(challengeId) within 60 s. */
+    /** Challenge any online operator; they answer with accept(challengeId) within 60 s. */
     challenge(operatorId: string, mode?: 'ranked' | 'unranked'): Promise<unknown>;
     accept(challengeId: string): Promise<unknown>;
     forfeit(): Promise<unknown>;
