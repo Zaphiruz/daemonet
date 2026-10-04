@@ -35,7 +35,7 @@ export interface HeldDef {
 
 /** Held and consumed by a branch that requires it (bestiary §3). */
 export interface EvolutionItemDef {
-  id: string;
+  id: EvolutionItemId;
   kind: 'evolution';
   name: string;
   type: TypeId;
@@ -51,27 +51,29 @@ export interface BitFlipperDef {
 export type ItemDef = ToolDef | RestoreDef | HeldDef | EvolutionItemDef | BitFlipperDef;
 export type ItemId = ItemDef['id'];
 
+const EVOLUTION_ROWS = [
+  ['bootsector', 'Boot Sector', 'kernel'],
+  ['jumboframe', 'Jumbo Frame', 'packet'],
+  ['cipherkey', 'Cipher Key', 'crypto'],
+  ['warmcache', 'Warm Cache', 'cache'],
+  ['spinlock', 'Spinlock', 'thread'],
+  ['sigmask', 'Sigmask', 'signal'],
+  ['keepalive', 'Keepalive', 'socket'],
+  ['ringseal', 'Ring Seal', 'buffer'],
+  ['dotfile', 'Dotfile', 'shell'],
+  ['setuidbit', 'Setuid Bit', 'root'],
+  ['voidshard', 'Void Shard', 'null'],
+  ['cosmicray', 'Cosmic Ray', 'glitch'],
+  ['onionlayer', 'Onion Layer', 'proxy'],
+  ['regiontoken', 'Region Token', 'cloud'],
+  ['guardpage', 'Guard Page', 'stack'],
+  ['arenachunk', 'Arena Chunk', 'heap'],
+] as const satisfies readonly (readonly [string, string, TypeId])[];
+
+export type EvolutionItemId = (typeof EVOLUTION_ROWS)[number][0];
+
 export const EVOLUTION_ITEMS: readonly EvolutionItemDef[] = deepFreeze(
-  (
-    [
-      ['bootsector', 'Boot Sector', 'kernel'],
-      ['jumboframe', 'Jumbo Frame', 'packet'],
-      ['cipherkey', 'Cipher Key', 'crypto'],
-      ['warmcache', 'Warm Cache', 'cache'],
-      ['spinlock', 'Spinlock', 'thread'],
-      ['sigmask', 'Sigmask', 'signal'],
-      ['keepalive', 'Keepalive', 'socket'],
-      ['ringseal', 'Ring Seal', 'buffer'],
-      ['dotfile', 'Dotfile', 'shell'],
-      ['setuidbit', 'Setuid Bit', 'root'],
-      ['voidshard', 'Void Shard', 'null'],
-      ['cosmicray', 'Cosmic Ray', 'glitch'],
-      ['onionlayer', 'Onion Layer', 'proxy'],
-      ['regiontoken', 'Region Token', 'cloud'],
-      ['guardpage', 'Guard Page', 'stack'],
-      ['arenachunk', 'Arena Chunk', 'heap'],
-    ] as const
-  ).map(([id, name, type]) => ({ id, kind: 'evolution' as const, name, type })),
+  EVOLUTION_ROWS.map(([id, name, type]) => ({ id, kind: 'evolution' as const, name, type })),
 );
 
 export const ITEMS: readonly ItemDef[] = deepFreeze([
