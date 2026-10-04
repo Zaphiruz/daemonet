@@ -586,3 +586,38 @@ describe('Incident fix round 1', () => {
     await g.shutdown();
   });
 });
+
+describe('Incident final review', () => {
+  it('eviction waits for an open capture (like the copy despawn) and evicts once it has settled', () => {
+    const { world, advance, hitBoss } = setup(['alice']);
+    const inc = world.incident!;
+    const boss = world.daemons.get(inc.bossId)!;
+    hitBoss('alice', boss);
+    inc.nextPhase = 3;
+    boss.hp = 0;
+    const cleared = world.step([]);
+    for (const i of cleared.intents) world.completeIntent(i.id, { ok: true });
+    const copy = [...world.daemons.values()].find((d) => d.wild?.personal === 'alice')!;
+    const op = world.operators.get('alice')!;
+    world.step([input('alice', { cmd: 'recall', actor: self, args: { daemonId: 'alice-d0' } })]);
+    Object.assign(op, { x: copy.x, y: copy.y, path: [] });
+    Object.assign(copy, { path: [], moves: [] });
+    copy.statuses.stalled = 1_000_000; // it stays in tool range
+    expect(world.step([input('alice', { cmd: 'capture', actor: self, args: { targetId: copy.id, tool: 'sniff' } })]).replies[0]).toMatchObject({ ok: true });
+    const cap = world.captures.get(op.captureId!)!;
+    expect(cap.state).toBe('open');
+    // the copies' lifetime and the grace are over: the copy stays (capture in progress) and so does its capturer
+    advance(COPY_TTL_MS + 6_000);
+    copy.wild!.despawnAtTick = world.tick;
+    for (let i = 0; i < 3; i++) expect(world.step([]).intents.filter((x) => x.kind === 'travel')).toEqual([]);
+    expect(world.captures.get(cap.id)?.state).toBe('open');
+    expect(op.travelling).toBe(false);
+    expect(world.daemons.has(copy.id)).toBe(true);
+    // the capture times out: the next step evicts
+    cap.deadlineTick = world.tick;
+    let evicted: StepResult['intents'] = [];
+    for (let i = 0; i < 3 && evicted.length === 0; i++) evicted = world.step([]).intents.filter((x) => x.kind === 'travel');
+    expect(world.captures.has(cap.id)).toBe(false);
+    expect(evicted).toMatchObject([{ kind: 'travel', operatorId: 'alice', to: 'backbone', gatewayId: 'evict' }]);
+  });
+});

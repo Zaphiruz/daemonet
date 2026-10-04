@@ -24,7 +24,6 @@ import { distance, type Point } from '../grid.js';
 import { incidentRewardId, type Daemon, type IncidentParticipant, type IncidentState } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
-import { failCapture } from './capture.js';
 
 /** Where evicted operators land: the host of the subnet the Incident gateway comes from. */
 export const EVICT_TO = 'backbone';
@@ -214,8 +213,8 @@ function telegraph(world: World, inc: IncidentState, boss: Daemon, out: Out): vo
 /**
  * After the window (and the copies' lifetime) nobody stays in kernelspace: a forced travel to backbone's spawn. It is an
  * ordinary `travel` intent (serialized with the checkpoints, waited for by a leave, skipped by checkpoints while in
- * flight); an operator with anything pending is left for a later tick, and a failed eviction is raised again after a
- * grace period rather than every tick.
+ * flight); an operator with anything pending or a capture in progress (it settles or times out within the tool's
+ * deadline) is left for a later tick, and a failed eviction is raised again after a grace period rather than every tick.
  */
 function evictIdle(world: World, now: number, out: Out): void {
   if (now < world.incidentClosedAtMs + COPY_TTL_MS + EVICT_GRACE_MS) return;
@@ -224,9 +223,9 @@ function evictIdle(world: World, now: number, out: Out): void {
   for (const op of world.operators.values()) {
     if (op.travelling || world.hasPendingFor(op.id)) continue;
     if (world.tick < (world.evictRetryTick.get(op.id) ?? 0)) continue;
+    // A capture in progress (of a personal copy, say) is left to settle or time out first, as the copy's despawn is.
+    if (op.captureId && world.captures.has(op.captureId)) continue;
     for (const id of [...op.running]) world.deactivate(world.daemons.get(id)!);
-    const cap = op.captureId ? world.captures.get(op.captureId) : undefined;
-    if (cap && cap.state === 'open') failCapture(world, cap, 'packet_loss', out);
     op.travelling = true;
     op.path = [];
     op.restoreUntil = null;
