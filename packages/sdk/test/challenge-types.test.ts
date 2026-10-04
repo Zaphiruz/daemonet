@@ -1,0 +1,58 @@
+import type * as Rules from '@daemonet/rules';
+import { describe, expectTypeOf, it } from 'vitest';
+import type * as Sdk from '../src/index.js';
+
+/** Every capture family's wire types (and their helper types) are re-exported from the SDK unchanged. */
+describe('SDK capture challenge types', () => {
+  it('re-exports every family Params/Payload/Answer and the helper types', () => {
+    expectTypeOf<Sdk.KernelParams>().toEqualTypeOf<Rules.KernelParams>();
+    expectTypeOf<Sdk.KernelPayload>().toEqualTypeOf<Rules.KernelPayload>();
+    expectTypeOf<Sdk.KernelAnswer>().toEqualTypeOf<Rules.KernelAnswer>();
+    expectTypeOf<Sdk.KernelProcess>().toEqualTypeOf<Rules.KernelProcess>();
+    expectTypeOf<Sdk.CacheParams>().toEqualTypeOf<Rules.CacheParams>();
+    expectTypeOf<Sdk.CachePayload>().toEqualTypeOf<Rules.CachePayload>();
+    expectTypeOf<Sdk.CacheAnswer>().toEqualTypeOf<Rules.CacheAnswer>();
+    expectTypeOf<Sdk.ThreadParams>().toEqualTypeOf<Rules.ThreadParams>();
+    expectTypeOf<Sdk.ThreadPayload>().toEqualTypeOf<Rules.ThreadPayload>();
+    expectTypeOf<Sdk.ThreadAnswer>().toEqualTypeOf<Rules.ThreadAnswer>();
+    expectTypeOf<Sdk.ThreadEvent>().toEqualTypeOf<Rules.ThreadEvent>();
+    expectTypeOf<Sdk.SignalParams>().toEqualTypeOf<Rules.SignalParams>();
+    expectTypeOf<Sdk.SignalPayload>().toEqualTypeOf<Rules.SignalPayload>();
+    expectTypeOf<Sdk.SignalAnswer>().toEqualTypeOf<Rules.SignalAnswer>();
+    expectTypeOf<Sdk.SignalEvent>().toEqualTypeOf<Rules.SignalEvent>();
+    expectTypeOf<Sdk.SocketParams>().toEqualTypeOf<Rules.SocketParams>();
+    expectTypeOf<Sdk.SocketPayload>().toEqualTypeOf<Rules.SocketPayload>();
+    expectTypeOf<Sdk.SocketAnswer>().toEqualTypeOf<Rules.SocketAnswer>();
+    expectTypeOf<Sdk.SocketState>().toEqualTypeOf<Rules.SocketState>();
+    expectTypeOf<Sdk.SocketFlag>().toEqualTypeOf<Rules.SocketFlag>();
+    expectTypeOf<Sdk.Segment>().toEqualTypeOf<Rules.Segment>();
+    expectTypeOf<Sdk.BufferParams>().toEqualTypeOf<Rules.BufferParams>();
+    expectTypeOf<Sdk.BufferPayload>().toEqualTypeOf<Rules.BufferPayload>();
+    expectTypeOf<Sdk.BufferAnswer>().toEqualTypeOf<Rules.BufferAnswer>();
+    expectTypeOf<Sdk.ShellParams>().toEqualTypeOf<Rules.ShellParams>();
+    expectTypeOf<Sdk.ShellPayload>().toEqualTypeOf<Rules.ShellPayload>();
+    expectTypeOf<Sdk.ShellAnswer>().toEqualTypeOf<Rules.ShellAnswer>();
+    expectTypeOf<Sdk.RootParams>().toEqualTypeOf<Rules.RootParams>();
+    expectTypeOf<Sdk.RootPayload>().toEqualTypeOf<Rules.RootPayload>();
+    expectTypeOf<Sdk.RootAnswer>().toEqualTypeOf<Rules.RootAnswer>();
+    expectTypeOf<Sdk.RootRequest>().toEqualTypeOf<Rules.RootRequest>();
+    expectTypeOf<Sdk.AclEntry>().toEqualTypeOf<Rules.AclEntry>();
+    expectTypeOf<Sdk.ProxyParams>().toEqualTypeOf<Rules.ProxyParams>();
+    expectTypeOf<Sdk.ProxyPayload>().toEqualTypeOf<Rules.ProxyPayload>();
+    expectTypeOf<Sdk.ProxyAnswer>().toEqualTypeOf<Rules.ProxyAnswer>();
+    expectTypeOf<Sdk.CloudParams>().toEqualTypeOf<Rules.CloudParams>();
+    expectTypeOf<Sdk.CloudPayload>().toEqualTypeOf<Rules.CloudPayload>();
+    expectTypeOf<Sdk.CloudAnswer>().toEqualTypeOf<Rules.CloudAnswer>();
+    expectTypeOf<Sdk.StackParams>().toEqualTypeOf<Rules.StackParams>();
+    expectTypeOf<Sdk.StackPayload>().toEqualTypeOf<Rules.StackPayload>();
+    expectTypeOf<Sdk.StackAnswer>().toEqualTypeOf<Rules.StackAnswer>();
+    expectTypeOf<Sdk.HeapParams>().toEqualTypeOf<Rules.HeapParams>();
+    expectTypeOf<Sdk.HeapPayload>().toEqualTypeOf<Rules.HeapPayload>();
+    expectTypeOf<Sdk.HeapAnswer>().toEqualTypeOf<Rules.HeapAnswer>();
+    expectTypeOf<Sdk.HeapEvent>().toEqualTypeOf<Rules.HeapEvent>();
+    expectTypeOf<Sdk.PacketParams>().toEqualTypeOf<Rules.PacketParams>();
+    expectTypeOf<Sdk.CryptoAnswer>().toEqualTypeOf<Rules.CryptoAnswer>();
+    expectTypeOf<Sdk.GlitchPayload>().toEqualTypeOf<Rules.GlitchPayload>();
+    expectTypeOf<Sdk.NullAnswer>().toEqualTypeOf<Rules.NullAnswer>();
+  });
+});
