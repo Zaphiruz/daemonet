@@ -794,6 +794,9 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(await prisma!.org.count()).toBe(1);
     expect(await prisma!.bitsLedger.count({ where: { operatorId: a.id, reason: 'org' } })).toBe(1);
     expect(await balance(a.id)).toBe(40_000 - 8192);
+    // whichever create took the operator lock first won (request order is not lock order)
+    const won = tries.find((r) => r.statusCode === 200)!.json() as { tag: string };
+    expect(await prisma!.org.findFirst({ select: { tag: true } })).toEqual({ tag: won.tag });
 
     // two operators race for one name, then for one tag: the loser pays nothing
     const b = await devOperator('bea', 10_000);
@@ -805,9 +808,21 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(await prisma!.bitsLedger.count({ where: { operatorId: loser.id, reason: 'org' } })).toBe(0);
     // the name is taken whatever its case; a tag already taken too
     expect((await postAs(loser, '/api/orgs', { name: 'same name', tag: 'ZZZZ' })).json()).toMatchObject({ error: 'validation_error', message: 'that name is taken' });
-    expect((await postAs(loser, '/api/orgs', { name: 'Other', tag: 'TAG0' })).json()).toMatchObject({ error: 'validation_error', message: 'that tag is taken' });
+    expect((await postAs(loser, '/api/orgs', { name: 'Other', tag: won.tag })).json()).toMatchObject({ error: 'validation_error', message: 'that tag is taken' });
     expect(await balance(loser.id)).toBe(10_000);
     expect(await prisma!.bitsLedger.count({ where: { operatorId: loser.id } })).toBe(0);
+    // two creates racing for one tag (different names): one org holds it, the loser's charge rolls back
+    const tia = await devOperator('tia', 10_000);
+    const uma = await devOperator('uma', 10_000);
+    const createTagRace = await Promise.all([postAs(tia, '/api/orgs', { name: 'Tia Org', tag: 'SAME' }), postAs(uma, '/api/orgs', { name: 'Uma Org', tag: 'SAME' })]);
+    expect(createTagRace.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+    expect(createTagRace.find((r) => r.statusCode === 400)!.json()).toMatchObject({ error: 'validation_error', message: 'that tag is taken' });
+    expect(await prisma!.org.count({ where: { tag: 'SAME' } })).toBe(1);
+    const tagWinner = createTagRace[0]!.statusCode === 200 ? tia : uma;
+    const tagRaceLoser = tagWinner === tia ? uma : tia;
+    expect(await balance(tagWinner.id)).toBe(10_000 - 8192);
+    expect(await balance(tagRaceLoser.id)).toBe(10_000);
+    expect(await prisma!.bitsLedger.count({ where: { operatorId: tagRaceLoser.id } })).toBe(0);
     // ...and the loser's tag change race against the winner's org tag
     await postAs(loser, '/api/orgs', { name: 'Loser Org', tag: 'LOSR' });
     const winner = loser === b ? c : b;
