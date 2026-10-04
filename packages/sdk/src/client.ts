@@ -1,4 +1,4 @@
-import { dayKey, getMove, getSubnet, ticketBoard, typeMultiplier, type GatewayDef, type StatKey, type TicketDef, type ToolId, type TypeId } from '@daemonet/rules';
+import { CHAT_INTERVAL_MS, dayKey, getMove, getSubnet, ticketBoard, typeMultiplier, type GatewayDef, type StatKey, type TicketDef, type ToolId, type TypeId } from '@daemonet/rules';
 import {
   COMMANDS_PER_TICK,
   HEARTBEAT_MS,
@@ -312,11 +312,18 @@ export class DaemonsApi {
   }
 }
 
-/** Chat (SP4): one message every 2 s; `send` queues locally so scripts never hit E_RATE. */
+/**
+ * Chat (SP4): one message every 2 s; `send` queues locally so scripts never hit E_RATE. The server measures the 2 s
+ * from when it accepted the previous line, so the next send waits CHAT_INTERVAL_MS after the previous line's reply
+ * arrived (never earlier than the server can accept it, whatever the latency); an E_RATE that still happens (another
+ * client of the same operator) is retried once after the interval.
+ */
 export class ChatApi {
   private queue: Array<{ channel: string; text: string; resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private lastSent = -Infinity;
+  private inFlight = false;
+  /** Earliest local time the next line may be sent. */
+  private readyAt = -Infinity;
   constructor(private readonly client: GameClient) {}
 
   /** Channels this operator can post to right now. */
@@ -329,28 +336,52 @@ export class ChatApi {
   }
 
   send(channel: string, text: string): Promise<unknown> {
-    return new Promise((resolve, reject) => {
+    const promise = new Promise<unknown>((resolve, reject) => {
       this.queue.push({ channel, text, resolve, reject });
       this.pump();
     });
+    // Scripts often fire-and-forget; avoid unhandled-rejection noise while still letting callers await.
+    promise.catch(() => {});
+    return promise;
   }
 
-  /** Direct message to an operator id. */
+  /** Direct message to an operator id. Replies to a received line go to `line.channel`. */
   dm(operatorId: string, text: string): Promise<unknown> {
     return this.send(`dm:${operatorId}`, text);
   }
 
   private pump(): void {
-    if (this.timer || this.queue.length === 0) return;
-    const wait = Math.max(0, this.lastSent + 2000 - Date.now());
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      const next = this.queue.shift();
-      if (!next) return;
-      this.lastSent = Date.now();
-      this.client.command({ cmd: 'chat', actor: 'self', args: { channel: next.channel, text: next.text } }).then(next.resolve, next.reject);
-      this.pump();
-    }, wait);
+    if (this.timer || this.inFlight || this.queue.length === 0) return;
+    this.timer = setTimeout(
+      () => {
+        this.timer = null;
+        const next = this.queue.shift();
+        if (!next) return;
+        this.inFlight = true;
+        this.deliver(next.channel, next.text, true)
+          .then(next.resolve, next.reject)
+          .finally(() => {
+            this.inFlight = false;
+            this.pump();
+          });
+      },
+      Math.max(0, this.readyAt - Date.now()),
+    );
+  }
+
+  private async deliver(channel: string, text: string, retry: boolean): Promise<unknown> {
+    try {
+      return await this.client.command({ cmd: 'chat', actor: 'self', args: { channel, text } });
+    } catch (err) {
+      if (retry && err instanceof DaemonetError && err.code === 'E_RATE') {
+        this.readyAt = Date.now() + CHAT_INTERVAL_MS;
+        await new Promise((r) => setTimeout(r, CHAT_INTERVAL_MS));
+        return this.deliver(channel, text, false);
+      }
+      throw err;
+    } finally {
+      this.readyAt = Date.now() + CHAT_INTERVAL_MS;
+    }
   }
 }
 

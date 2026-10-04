@@ -1,5 +1,5 @@
 import { ticketBoard } from '@daemonet/rules';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GameClient } from '../src/client.js';
 import { connect, type TokenSource } from '../src/index.js';
 
@@ -164,5 +164,91 @@ describe('serverDay', () => {
   it('falls back to the local clock before any snapshot', () => {
     const client = new GameClient({ url: 'ws://x', auth, WebSocket: Ws as never });
     expect(client.serverDay).toBe(new Date().toISOString().slice(0, 10));
+  });
+});
+
+describe('chat', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function online() {
+    FakeWs.instances = [];
+    const p = connect({ url: 'ws://x', auth, WebSocket: Ws });
+    await tick();
+    const ws = last();
+    snapshot(ws);
+    const client = await p;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    return { client, ws };
+  }
+  const chats = (ws: FakeWs) => ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'cmd' && m.d.cmd === 'chat');
+  const reply = (ws: FakeWs, reqId: string, err?: 'E_RATE' | 'E_STATE') =>
+    ws.serverSend(err ? { t: 'err', seq: 9, d: { reqId, code: err, message: 'x' } } : { t: 'ack', seq: 9, d: { reqId } });
+
+  it('spaces queued lines 2 s after the previous reply, so network delay can never make the server refuse one', async () => {
+    const { client, ws } = await online();
+    const a = client.chat.send('subnet:s1', 'one');
+    const b = client.chat.dm('op2', 'two');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(chats(ws).map((m) => m.d.args)).toEqual([{ channel: 'subnet:s1', text: 'one' }]);
+    // the ack takes 700 ms to come back: the next line waits 2 s from the ack, not from the send
+    await vi.advanceTimersByTimeAsync(700);
+    reply(ws, chats(ws)[0].d.reqId);
+    await expect(a).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(chats(ws)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(chats(ws).map((m) => m.d.args)).toEqual([
+      { channel: 'subnet:s1', text: 'one' },
+      { channel: 'dm:op2', text: 'two' },
+    ]);
+    reply(ws, chats(ws)[1].d.reqId);
+    await expect(b).resolves.toBeUndefined();
+    client.close();
+  });
+
+  it('retries once on E_RATE after the interval, then gives up; other errors are not retried', async () => {
+    const { client, ws } = await online();
+    const a = client.chat.send('subnet:s1', 'hi');
+    await vi.advanceTimersByTimeAsync(0);
+    reply(ws, chats(ws)[0].d.reqId, 'E_RATE');
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(chats(ws)).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(chats(ws)).toHaveLength(2);
+    reply(ws, chats(ws)[1].d.reqId, 'E_RATE');
+    await expect(a).rejects.toMatchObject({ code: 'E_RATE' });
+    const b = client.chat.send('subnet:s1', 'again');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(chats(ws)).toHaveLength(3);
+    reply(ws, chats(ws)[2].d.reqId, 'E_STATE');
+    await expect(b).rejects.toMatchObject({ code: 'E_STATE' });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(chats(ws)).toHaveLength(3);
+    client.close();
+  });
+
+  it('does not use the per-tick command budget', async () => {
+    const { client, ws } = await online();
+    for (let i = 0; i < 8; i++) void client.operator.stop();
+    await expect(client.operator.stop()).rejects.toMatchObject({ code: 'E_RATE' });
+    void client.chat.send('subnet:s1', 'still fine');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(chats(ws)).toHaveLength(1);
+    client.close();
+  });
+
+  it('emits chat, chatDeleted and muted', async () => {
+    const { client, ws } = await online();
+    const got: unknown[] = [];
+    client.on('chat', (d) => got.push(['chat', d.text]));
+    client.on('chatDeleted', (d) => got.push(['chatDeleted', d.id]));
+    client.on('muted', (d) => got.push(['muted', d.until]));
+    ws.serverSend({ t: 'chat', seq: 3, d: { id: 'm1', channel: 'subnet:s1', from: 'op2', name: 'bob', tag: null, text: 'hey', at: '2026-09-30T00:00:00.000Z' } });
+    ws.serverSend({ t: 'chatDeleted', seq: 4, d: { id: 'm1', channel: 'subnet:s1' } });
+    ws.serverSend({ t: 'muted', seq: 5, d: { until: null } });
+    expect(got).toEqual([['chat', 'hey'], ['chatDeleted', 'm1'], ['muted', null]]);
+    client.close();
   });
 });
