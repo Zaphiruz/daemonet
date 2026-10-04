@@ -4,21 +4,25 @@ import type { TypeId } from '../types.js';
 import { fromHex, fromUtf8, toHex, utf8, type ChallengeFamily } from './common.js';
 import { bufferFamily } from './buffer.js';
 import { cacheFamily } from './cache.js';
+import { cloudFamily } from './cloud.js';
 import { cryptoFamily } from './crypto.js';
 import { glitchFamily } from './glitch.js';
+import { heapFamily } from './heap.js';
 import { kernelFamily } from './kernel.js';
 import { nullFamily } from './null.js';
 import { packetFamily } from './packet.js';
+import { proxyFamily } from './proxy.js';
 import { sha256 } from './sha256.js';
 import { rootFamily } from './root.js';
 import { shellFamily } from './shell.js';
 import { signalFamily } from './signal.js';
 import { socketFamily } from './socket.js';
+import { stackFamily } from './stack.js';
 import { threadFamily } from './thread.js';
 
 export { sha256 };
 
-const FAMILIES: Partial<Record<TypeId, ChallengeFamily>> = {
+const FAMILIES: Record<TypeId, ChallengeFamily> = {
   packet: packetFamily as ChallengeFamily,
   crypto: cryptoFamily as ChallengeFamily,
   glitch: glitchFamily as ChallengeFamily,
@@ -31,6 +35,10 @@ const FAMILIES: Partial<Record<TypeId, ChallengeFamily>> = {
   buffer: bufferFamily as ChallengeFamily,
   shell: shellFamily as ChallengeFamily,
   root: rootFamily as ChallengeFamily,
+  proxy: proxyFamily as ChallengeFamily,
+  cloud: cloudFamily as ChallengeFamily,
+  stack: stackFamily as ChallengeFamily,
+  heap: heapFamily as ChallengeFamily,
 };
 
 export function getFamily(type: TypeId): ChallengeFamily {

@@ -26,3 +26,7 @@ export type { SocketParams, SocketPayload, SocketAnswer, SocketState, SocketFlag
 export type { BufferParams, BufferPayload, BufferAnswer } from './capture/buffer.js';
 export type { ShellParams, ShellPayload, ShellAnswer } from './capture/shell.js';
 export type { RootParams, RootPayload, RootAnswer, RootRequest, AclEntry } from './capture/root.js';
+export type { ProxyParams, ProxyPayload, ProxyAnswer } from './capture/proxy.js';
+export type { CloudParams, CloudPayload, CloudAnswer } from './capture/cloud.js';
+export type { StackParams, StackPayload, StackAnswer } from './capture/stack.js';
+export type { HeapParams, HeapPayload, HeapAnswer, HeapEvent } from './capture/heap.js';

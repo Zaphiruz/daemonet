@@ -5,7 +5,11 @@
 import { fnv1a32Hex, fromHex, fromUtf8, utf8, xorRepeating } from '../src/capture/common.js';
 import type { CryptoParams, CryptoPayload } from '../src/capture/crypto.js';
 import type { CacheParams, CachePayload } from '../src/capture/cache.js';
+import type { CloudParams, CloudPayload } from '../src/capture/cloud.js';
 import type { GlitchPayload } from '../src/capture/glitch.js';
+import type { HeapPayload } from '../src/capture/heap.js';
+import type { ProxyParams, ProxyPayload } from '../src/capture/proxy.js';
+import type { StackParams, StackPayload } from '../src/capture/stack.js';
 import type { KernelParams, KernelPayload } from '../src/capture/kernel.js';
 import type { BufferParams, BufferPayload } from '../src/capture/buffer.js';
 import type { RootParams, RootPayload } from '../src/capture/root.js';
@@ -206,7 +210,74 @@ export function solveRoot(params: RootParams, payload: RootPayload): { allowed: 
   };
 }
 
-const SOLVERS: Partial<Record<TypeId, (params: never, payload: never) => unknown>> = {
+export function solveProxy(params: ProxyParams, payload: ProxyPayload): { inner: string } {
+  let text = payload.payload;
+  for (const layer of [...params.layers].reverse()) {
+    if (layer === 'hex') text = fromUtf8(fromHex(text));
+    else if (layer === 'base64') text = fromUtf8(Uint8Array.from(atob(text), (c) => c.charCodeAt(0)));
+    else if (layer === 'lenprefix') text = text.slice(text.indexOf(':') + 1);
+    else if (layer.startsWith('xor:')) text = fromUtf8(fromHex(text).map((b) => b ^ Number(layer.slice(4))));
+  }
+  return { inner: text };
+}
+
+export function solveCloud(params: CloudParams, payload: CloudPayload): { placement: Record<string, string> } {
+  const h = (s: string) => parseInt(fnv1a32Hex(utf8(s)), 16);
+  const ring: Array<{ pos: number; node: string }> = [];
+  for (const node of params.nodes) for (let i = 0; i < params.vnodes; i++) ring.push({ pos: h(`${node}#${i}`), node });
+  ring.sort((a, b) => a.pos - b.pos || (a.node < b.node ? -1 : a.node > b.node ? 1 : 0));
+  const placement: Record<string, string> = {};
+  for (const key of payload.keys) {
+    if (key.startsWith('#')) continue;
+    const pos = h(key);
+    placement[key] = (ring.find((r) => r.pos >= pos) ?? ring[0]!).node;
+  }
+  return { placement };
+}
+
+export function solveStack(params: StackParams, payload: StackPayload): { top: number } {
+  const st: number[] = [];
+  const pop = () => st.pop() ?? 0;
+  let pc = 0;
+  for (let steps = 0; pc >= 0 && pc < payload.program.length && steps < params.maxSteps; steps++) {
+    const [op, arg] = payload.program[pc]!.split(' ');
+    const k = Number(arg);
+    pc++;
+    if (op === 'push') st.push(k | 0);
+    else if (op === 'add') {
+      const b = pop();
+      st.push((pop() + b) | 0);
+    } else if (op === 'sub') {
+      const b = pop();
+      st.push((pop() - b) | 0);
+    } else if (op === 'mul') {
+      const b = pop();
+      st.push(Math.imul(pop(), b));
+    } else if (op === 'dup') {
+      const a = pop();
+      st.push(a, a);
+    } else if (op === 'swap') {
+      const b = pop();
+      const a = pop();
+      st.push(b, a);
+    } else if (op === 'drop') pop();
+    else if (op === 'jz') {
+      if (pop() === 0) pc = k;
+    } else if (op === 'jmp') pc = k;
+  }
+  return { top: st[st.length - 1] ?? 0 };
+}
+
+export function solveHeap(_params: unknown, payload: HeapPayload): { leaked: number[] } {
+  const live = new Set<number>();
+  for (const e of payload.events) {
+    if (e.op === 'alloc') live.add(e.id);
+    else live.delete(e.id);
+  }
+  return { leaked: [...live].sort((a, b) => a - b) };
+}
+
+const SOLVERS: Record<TypeId, (params: never, payload: never) => unknown> = {
   packet: solvePacket,
   crypto: solveCrypto,
   glitch: solveGlitch,
@@ -219,6 +290,10 @@ const SOLVERS: Partial<Record<TypeId, (params: never, payload: never) => unknown
   buffer: solveBuffer,
   shell: solveShell,
   root: solveRoot,
+  proxy: solveProxy,
+  cloud: solveCloud,
+  stack: solveStack,
+  heap: solveHeap,
 };
 
 export function solve(challenge: PublicChallenge): unknown {

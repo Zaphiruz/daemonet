@@ -4,6 +4,10 @@ import { fromHex, fromUtf8, utf8 } from '../src/capture/common.js';
 import { lruHits } from '../src/capture/cache.js';
 import { hammingEncode } from '../src/capture/glitch.js';
 import { ringContents } from '../src/capture/buffer.js';
+import { placeKeys } from '../src/capture/cloud.js';
+import { leaked, type HeapEvent } from '../src/capture/heap.js';
+import { wrap } from '../src/capture/proxy.js';
+import { runStack } from '../src/capture/stack.js';
 import { roundRobin } from '../src/capture/kernel.js';
 import { checkAccess, type RootParams, type RootRequest } from '../src/capture/root.js';
 import { runPipeline } from '../src/capture/shell.js';
@@ -22,9 +26,23 @@ import { challengeSize, type ChallengeTarget } from '../src/capture/size.js';
 import { getTool, type Noise } from '../src/content/items.js';
 import { createRng } from '../src/rng.js';
 import { TYPES, type TypeId } from '../src/types.js';
-import { solve, solveBuffer, solveCache, solveKernel, solveRoot, solveShell, solveSignal, solveSocket, solveThread } from './solvers.js';
+import {
+  solve,
+  solveBuffer,
+  solveCache,
+  solveCloud,
+  solveHeap,
+  solveKernel,
+  solveProxy,
+  solveRoot,
+  solveShell,
+  solveSignal,
+  solveSocket,
+  solveStack,
+  solveThread,
+} from './solvers.js';
 
-const FAMILIES: TypeId[] = ['packet', 'crypto', 'glitch', 'null', 'kernel', 'cache', 'thread', 'signal', 'socket', 'buffer', 'shell', 'root'];
+const FAMILIES: TypeId[] = [...TYPES];
 
 /** Change the answer so it is still schema-valid but wrong (every family's answer shape is covered). */
 function mutate(answer: Record<string, unknown>): Record<string, unknown> {
@@ -36,6 +54,7 @@ function mutate(answer: Record<string, unknown>): Record<string, unknown> {
     return { [key]: value + 'x' };
   }
   if (Array.isArray(value)) {
+    if (key === 'leaked') return { [key]: [...value, 0] }; // ids start at 1, so 0 is never leaked
     if (key === 'race') return { [key]: [value[0] === -1 ? 0 : -1, value[1]] };
     return { [key]: [...value, typeof value[0] === 'number' ? 1 : 'x'] };
   }
@@ -343,5 +362,123 @@ describe('hand-computed family fixtures', () => {
     for (const [r, want] of cases) expect(checkAccess(params, r), JSON.stringify(r)).toBe(want);
     const requests = cases.map(([r]) => r);
     expect(solveRoot(params, { requests })).toEqual({ allowed: '1101001110101' });
+  });
+
+  it('proxy', () => {
+    // single layers, inner "hi" = bytes 68 69
+    expect(wrap('hex', 'hi')).toBe('6869');
+    expect(wrap('base64', 'hi')).toBe('aGk=');
+    expect(wrap('lenprefix', 'hi')).toBe('2:hi');
+    expect(wrap('xor:1', 'hi')).toBe('6968'); // 68^01=69, 69^01=68
+    // the length prefix counts UTF-8 BYTES, and the first ':' ends it even when the data holds ':'
+    expect(wrap('lenprefix', 'é')).toBe('2:é');
+    expect(wrap('lenprefix', 'a:b')).toBe('3:a:b');
+    expect(wrap('lenprefix', '')).toBe('0:');
+    expect(wrap('hex', 'é')).toBe('c3a9');
+    expect(wrap('base64', 'é')).toBe('w6k=');
+    expect(wrap('xor:255', 'é')).toBe('3c56'); // c3^ff=3c, a9^ff=56
+    // layers[0] is applied first, so the payload is the LAST layer and unwrapping runs last to first:
+    // hex("hi") = "6869"; lenprefix -> "4:6869"; base64 -> "NDo2ODY5"
+    expect(solveProxy({ layers: ['hex', 'lenprefix', 'base64'] }, { payload: 'NDo2ODY5' })).toEqual({ inner: 'hi' });
+    // a different order gives a different payload: base64 first -> "aGk="; then hex -> "61476b3d"
+    expect(wrap('hex', wrap('base64', 'hi'))).toBe('61476b3d');
+    expect(solveProxy({ layers: ['base64', 'hex'] }, { payload: '61476b3d' })).toEqual({ inner: 'hi' });
+    expect(solveProxy({ layers: ['xor:1'] }, { payload: '6968' })).toEqual({ inner: 'hi' });
+    expect(solveProxy({ layers: ['lenprefix'] }, { payload: '0:' })).toEqual({ inner: '' });
+    expect(solveProxy({ layers: ['lenprefix'] }, { payload: '3:a:b' })).toEqual({ inner: 'a:b' });
+    expect(solveProxy({ layers: ['xor:255'] }, { payload: '3c56' })).toEqual({ inner: 'é' });
+    expect(solveProxy({ layers: ['base64'] }, { payload: 'w6k=' })).toEqual({ inner: 'é' });
+    expect(() => wrap('rot13', 'hi')).toThrow(RangeError);
+  });
+
+  it('cloud', () => {
+    // FNV-1a-32 positions (computed with an independent implementation, not the code under test):
+    // b#0 559601318, b#1 576378937, c#1 906885526, c#0 923663145, a#1 4021032132, a#0 4037809751
+    // keys: key228 494113184, key4 843735688, key1 927623783, x 4245442695, m 3893112696
+    const params = { nodes: ['a', 'b', 'c'], vnodes: 2 };
+    const keys = ['key228', 'key4', 'key1', 'x', 'b#1', 'c#0', '#k2', 'm', 'key1'];
+    const expected = {
+      key228: 'b', // below the smallest point -> first point (b#0)
+      key4: 'c', // between b#1 and c#1 -> c#1
+      key1: 'a', // between c#0 and a#1 -> a#1 (a duplicate key yields a single entry)
+      x: 'b', // above the largest point -> wraps to the smallest (b#0)
+      'b#1': 'b', // hash equals a ring point exactly: >= means that point (a strict > would give c)
+      'c#0': 'c', // exactly c#0 (a strict > would give a)
+      m: 'a', // 3893112696 -> a#1; '#k2' is a comment and is not a key
+    };
+    expect(placeKeys(params, keys)).toEqual(expected);
+    expect(solveCloud(params, { keys })).toEqual({ placement: expected });
+    // empty or comment-only key lists -> empty placement
+    expect(placeKeys(params, [])).toEqual({});
+    expect(solveCloud(params, { keys: ['#only', '#comments'] })).toEqual({ placement: {} });
+    // two nodes whose only point collides at 3386837016 ("n512789#0" and "n749192#0"): the node that sorts
+    // first by name wins, whatever the order of the nodes list
+    const tie = { nodes: ['n749192', 'n512789'], vnodes: 1 };
+    expect(placeKeys(tie, ['key1'])).toEqual({ key1: 'n512789' });
+    expect(solveCloud(tie, { keys: ['key1', 'x'] })).toEqual({ placement: { key1: 'n512789', x: 'n512789' } });
+  });
+
+  it('stack', () => {
+    const run = (program: string[], maxSteps?: number) => {
+      const want = runStack(program, maxSteps);
+      if (maxSteps === undefined) expect(solveStack({ maxSteps: 4096 }, { program })).toEqual({ top: want });
+      return want;
+    };
+    expect(run([])).toBe(0); // empty program -> empty stack -> 0
+    expect(run(['push 5', 'push 3', 'sub'])).toBe(2); // second-from-top minus top
+    expect(run(['push 1', 'push 2', 'swap'])).toBe(1); // stack becomes [2, 1]
+    expect(run(['push 7', 'push 9', 'drop'])).toBe(7);
+    expect(run(['push 4', 'dup', 'mul'])).toBe(16);
+    expect(run(['push -7', 'push 3', 'add'])).toBe(-4);
+    // 32-bit signed wraparound
+    expect(run(['push 2147483647', 'push 1', 'add'])).toBe(-2147483648);
+    expect(run(['push -2147483648', 'push 1', 'sub'])).toBe(2147483647);
+    expect(run(['push 65536', 'push 65536', 'mul'])).toBe(0);
+    expect(run(['push 46341', 'dup', 'mul'])).toBe(-2147479015); // 46341^2 = 2147488281 = 2^31 + 4633
+    expect(run(['push 4294967297'])).toBe(1); // push arguments reduce to 32-bit signed
+    // popping an empty stack yields 0
+    expect(run(['add'])).toBe(0);
+    expect(run(['push 5', 'add'])).toBe(5); // 0 + 5
+    expect(run(['push 5', 'sub'])).toBe(-5); // 0 - 5
+    expect(run(['push 5', 'mul'])).toBe(0);
+    expect(run(['dup'])).toBe(0); // pushes 0, 0
+    expect(run(['push 7', 'swap'])).toBe(0); // [0, 7] swapped -> [7, 0]
+    expect(run(['drop', 'push 2'])).toBe(2);
+    // jz pops its operand whether or not it jumps
+    expect(run(['push 0', 'jz 3', 'push 9', 'nop'])).toBe(0); // jumped over push 9; stack empty
+    expect(run(['push 1', 'jz 3', 'push 9', 'nop'])).toBe(9); // not zero: falls through
+    expect(run(['jz 2', 'push 9', 'push 4'])).toBe(4); // empty pop is 0 -> jump
+    expect(run(['jmp 2', 'push 9', 'push 4'])).toBe(4);
+    expect(run(['nop', 'nop'])).toBe(0);
+    // a jump outside 0..length-1 ends execution
+    expect(run(['push 3', 'jmp 99', 'push 8'])).toBe(3);
+    expect(run(['push 3', 'jmp -1', 'push 8'])).toBe(3);
+    expect(run(['push 3', 'jmp 3', 'push 8'])).toBe(3);
+    // the step limit: every executed op counts (jmp and nop included). program: push 0; loop { push 1; add; jmp 1 }
+    // takes 1 + 3n steps; with 4096 steps n = 1365 whole iterations -> 1365 (a 4095 or 4097 limit would differ)
+    const loop = ['push 0', 'push 1', 'add', 'jmp 1'];
+    expect(run(loop)).toBe(1365);
+    expect(run(loop, 7)).toBe(2); // 1 + 3*2 steps
+    expect(run(loop, 8)).toBe(1); // the 8th step (push 1) leaves 1 on top
+    expect(runStack(loop, 0)).toBe(0);
+  });
+
+  it('heap', () => {
+    const alloc = (id: number): HeapEvent => ({ op: 'alloc', id, size: 8 });
+    const free = (id: number): HeapEvent => ({ op: 'free', id });
+    const run = (events: HeapEvent[]) => {
+      expect(solveHeap({ events: events.length }, { events })).toEqual({ leaked: leaked(events) });
+      return leaked(events);
+    };
+    expect(run([])).toEqual([]);
+    expect(run([alloc(1), free(1)])).toEqual([]);
+    // double free and free of an unknown id are ignored; re-alloc of a live id is a no-op (one allocation)
+    expect(run([alloc(1), alloc(2), free(1), free(1), free(9), alloc(3), alloc(2), free(3), alloc(3)])).toEqual([2, 3]);
+    // free before alloc is ignored, so the later alloc still leaks
+    expect(run([free(5), alloc(5)])).toEqual([5]);
+    // ids are sorted numerically, not as text
+    expect(run([alloc(100), alloc(9), alloc(10), alloc(2), free(2)])).toEqual([9, 10, 100]);
+    // an id freed and allocated again is live again; the size is irrelevant
+    expect(run([alloc(4), free(4), { op: 'alloc', id: 4, size: 4096 }])).toEqual([4]);
   });
 });
