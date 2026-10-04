@@ -150,7 +150,21 @@ describe('ChatPanel', () => {
     expect(mocks.history).toHaveBeenCalledWith({ channel: 'subnet:lo' });
   });
 
-  it('loads older lines with the (at, id) cursor of the oldest line held, until a page comes back empty', async () => {
+  it('refetches the active channel’s history after a transparent reconnect (lines sent meanwhile), without duplicates', async () => {
+    mocks.history.mockImplementation(() => ok([line({ id: 'h1', text: 'before' })]));
+    const { client } = fakeClient();
+    render(<ChatPanel client={client} isAdmin={false} />);
+    await waitFor(() => expect(screen.getByTestId('chat-lines').textContent).toContain('before'));
+    expect(mocks.history).toHaveBeenCalledTimes(1);
+    mocks.history.mockImplementation(() => ok([line({ id: 'h1', text: 'before' }), line({ id: 'h2', text: 'while away', at: '2026-09-30T00:00:09.000Z' })]));
+    act(() => chatStore.reconnected());
+    await waitFor(() => expect(screen.getByTestId('chat-lines').textContent).toContain('while away'));
+    expect(mocks.history).toHaveBeenCalledTimes(2);
+    expect(mocks.history).toHaveBeenLastCalledWith({ channel: 'subnet:lo' });
+    expect(chatStore.get().lines.get('subnet:lo')!.map((l) => l.id)).toEqual(['h1', 'h2']);
+  });
+
+    it('loads older lines with the (at, id) cursor of the oldest line held, until a page comes back empty', async () => {
     chatStore.history('subnet:lo', [line({ id: 'sb', text: 'b' }), line({ id: 'sc', text: 'c' })]);
     const { client } = fakeClient();
     render(<ChatPanel client={client} isAdmin={false} />);

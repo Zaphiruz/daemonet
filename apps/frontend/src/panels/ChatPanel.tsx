@@ -90,7 +90,8 @@ export function ChatPanel({ client, isAdmin }: { client: GameClient; isAdmin: bo
     return () => {
       stale = true;
     };
-  }, [active, loadHistory]);
+    // a transparent reconnect refetches too: lines sent while the socket was down only exist in the history
+  }, [active, loadHistory, chat.reconnects]);
   // lines only count as unread while the panel is closed or on another channel
   useEffect(() => () => chatStore.setActive(''), []);
   // follow the newest line (loading older lines must not jump to the bottom)

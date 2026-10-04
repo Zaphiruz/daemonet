@@ -74,7 +74,22 @@ describe('chat events in the connection (captured before any panel mounts)', () 
     expect(me).toBe('me');
   });
 
-  it('ignores chat from a replaced client and forgets chat when the connection closes or is kicked', async () => {
+  it('marks a transparent reconnect in the chat store (history refetch) and lets the server re-send a running mute', async () => {
+    const { conn, clients, chat } = setup();
+    await conn.open('controller');
+    const c = clients[0]!;
+    c.emit('muted', { until: '2099-01-01T00:00:00.000Z' });
+    const before = chat.get().reconnects;
+    c.emit('disconnect');
+    c.emit('reconnect');
+    expect(chat.get().reconnects).toBe(before + 1);
+    // the mute may have been lifted while away: the server sends a running one right after the snapshot
+    expect(chat.get().mutedUntil).toBeNull();
+    c.emit('muted', { until: '2099-01-01T00:00:00.000Z' });
+    expect(chat.get().mutedUntil).toBe('2099-01-01T00:00:00.000Z');
+  });
+
+    it('ignores chat from a replaced client and forgets chat when the connection closes or is kicked', async () => {
     const { conn, clients, chat } = setup();
     await conn.open('controller');
     const old = clients[0]!;

@@ -24,13 +24,22 @@ export function createChatStore() {
   let unread = new Map<string, number>();
   let active = '';
   let mutedUntil: string | null = null;
+  /** Transparent reconnects of the game connection: history effects refetch on change (lines sent while away). */
+  let reconnects = 0;
   const listeners = new Set<() => void>();
   let version = 0;
   // useSyncExternalStore needs a stable snapshot between changes: rebuilt only in notify()
-  let snapshot: { lines: Map<string, ChatLine[]>; unread: Map<string, number>; active: string; mutedUntil: string | null; version: number } = { lines, unread, active, mutedUntil, version };
+  let snapshot: { lines: Map<string, ChatLine[]>; unread: Map<string, number>; active: string; mutedUntil: string | null; reconnects: number; version: number } = {
+    lines,
+    unread,
+    active,
+    mutedUntil,
+    reconnects,
+    version,
+  };
   const notify = () => {
     version++;
-    snapshot = { lines, unread, active, mutedUntil, version };
+    snapshot = { lines, unread, active, mutedUntil, reconnects, version };
     listeners.forEach((l) => l());
   };
   /** Merges lines into a channel (time order, no duplicate ids); returns how many were new. */
@@ -72,6 +81,15 @@ export function createChatStore() {
     },
     setMuted(until: string | null) {
       mutedUntil = until;
+      notify();
+    },
+    /**
+     * The connection came back without a new client: history is refetched (`put` dedupes by id), and the mute is
+     * forgotten because the server re-sends a running one right after its snapshot (a lift while away would be lost).
+     */
+    reconnected() {
+      reconnects++;
+      mutedUntil = null;
       notify();
     },
     get: () => snapshot,

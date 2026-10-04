@@ -168,6 +168,8 @@ export function createConnection(deps: ConnectionDeps) {
       if (state.status === 'online') set({ status: 'reconnecting' });
     });
     on('reconnect', () => {
+      // before the snapshot and the server's re-sent mute: chat refetches the history it may have missed
+      deps.chat?.reconnected();
       set({ status: 'online' });
       deps.log.push('system', 'reconnected');
     });
