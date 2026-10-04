@@ -1,4 +1,4 @@
-import type { Behaviour, EvolutionChange, StatBlock, StatusId, TicketKind, TicketParams, ToolId, TypeId, Challenge } from '@daemonet/rules';
+import type { ArenaMode, Behaviour, EvolutionChange, StatBlock, StatusId, TicketKind, TicketParams, ToolId, TypeId, Challenge } from '@daemonet/rules';
 import type { Command, ErrorCode, GameEvent } from '@daemonet/shared';
 import type { Point } from './grid.js';
 
@@ -181,6 +181,22 @@ export interface IncidentState {
   damage: Map<string, number>;
   nextTelegraphTick: number;
   telegraph: { x: number; y: number; radius: number; atTick: number } | null;
+}
+
+/** A match world's state (SP6 spec §4–§5). The runtime's ArenaService creates it; the core runs the rules. */
+export interface ArenaState {
+  id: string;
+  mode: ArenaMode;
+  a: string;
+  b: string;
+  phase: 'countdown' | 'live' | 'over';
+  liveAtTick: number;
+  endsAtTick: number;
+  /** Rating of each operator when the match started (shown to the opponent). */
+  ratings: Record<string, number>;
+  /** Copies that dealt damage (they earn `arenaWins` on a ranked win). */
+  dealt: Set<string>;
+  result: { winner: string | null; reason: 'wipeout' | 'timeout' | 'forfeit' | 'disconnect'; atTick: number } | null;
 }
 
 export interface Daemon {

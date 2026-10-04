@@ -19,6 +19,7 @@ import { distance, type Point } from '../grid.js';
 import { Rejection, type Daemon, type Input, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
+import { ARENA_COMMANDS } from './arena.js';
 import { startCapture, submitCapture } from './capture.js';
 import { buy, craft, decompile, vaultMove } from './economy.js';
 import { evolve } from './evolve.js';
@@ -78,6 +79,12 @@ function handle(world: World, input: Input, out: Out): void {
     throw new Rejection('E_STATE', 'claim a starter first');
   }
   if (op.travelling) throw new Rejection('E_STATE', 'travelling');
+  if (world.arena) {
+    if (world.arena.phase === 'over') throw new Rejection('E_STATE', 'the match is over');
+    if (!ARENA_COMMANDS.has(c.cmd)) throw new Rejection('E_STATE', 'not available in an arena match');
+    const operatorMove = (c.cmd === 'moveTo' || c.cmd === 'stop') && c.actor === 'self';
+    if (world.arena.phase === 'countdown' && !operatorMove) throw new Rejection('E_STATE', 'the match has not started');
+  }
   switch (c.cmd) {
     case 'moveTo':
       return moveTo(world, op, c, input, out);
@@ -184,6 +191,13 @@ function handle(world: World, input: Input, out: Out): void {
     case 'clusterKick':
       // Clusters are handled by the runtime's cluster service, outside the tick; they never reach a world.
       throw new Rejection('E_STATE', 'clusters are not a world command');
+    case 'arenaQueue':
+    case 'arenaLeave':
+    case 'arenaChallenge':
+    case 'arenaAccept':
+    case 'arenaForfeit':
+      // The arena is handled by the runtime's arena service, outside the tick; it never reaches a world.
+      throw new Rejection('E_STATE', 'the arena is not a world command');
     case 'use': {
       const d = runningDaemon(world, op, c.actor);
       if (!d.moves.includes(c.args.move)) throw new Rejection('E_INVALID', `daemon does not know ${c.args.move}`);

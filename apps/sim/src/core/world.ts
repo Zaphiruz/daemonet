@@ -19,9 +19,10 @@ import {
   type SubnetDef,
 } from '@daemonet/rules';
 import { Grid, type Point } from './grid.js';
-import { DISK_SLOT_TAKEN, freshEngagement, isEconomyIntent, partyKey, isInventoryIntent, type Capture, type Daemon, type IncidentState, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
+import { DISK_SLOT_TAKEN, freshEngagement, isEconomyIntent, partyKey, isInventoryIntent, type ArenaState, type Capture, type Daemon, type IncidentState, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
 import { Out } from './out.js';
 import { planWild } from './systems/ai.js';
+import { stepArena } from './systems/arena.js';
 import { executeQueuedUses, type QueuedUse } from './systems/combat.js';
 import { handleCommands } from './systems/commands.js';
 import { completeCaptureIntent, progressCaptures } from './systems/capture.js';
@@ -92,6 +93,8 @@ export class World {
    */
   nameFilter: CompiledFilter = DEFAULT_FILTER;
   queuedUses: QueuedUse[] = [];
+  /** Set on arena match worlds (SP6): PvP targeting, the command whitelist and the win conditions apply. */
+  arena: ArenaState | null = null;
   /** Incident state (kernelspace world only). */
   incident: IncidentState | null = null;
   /** ms timestamp of the next scheduled Incident. */
@@ -611,6 +614,7 @@ export class World {
     this.queuedUses = [];
     stepIncident(this, out);
     resolveDefeats(this, out);
+    stepArena(this);
     progressCaptures(this, out);
     if (this.spawnerEnabled) runSpawner(this, out, false);
     upkeep(this, out);

@@ -1,4 +1,4 @@
-import { HOSTED_SUBNET_IDS, getSubnet } from '@daemonet/rules';
+import { HOSTED_SUBNET_IDS } from '@daemonet/rules';
 import { z } from 'zod';
 
 const Env = z.object({
@@ -41,7 +41,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const subnets = e.SUBNETS.split(',').map((s) => s.trim()).filter(Boolean);
   if (subnets.length === 0) throw new Error('SUBNETS must name at least one subnet');
   if (new Set(subnets).size !== subnets.length) throw new Error('SUBNETS must not repeat a subnet');
-  for (const id of subnets) getSubnet(id); // throws on an unknown id
+  // only persistent worlds: the sandbox (SP6) resolves through getSubnet but is created per arena match, never hosted
+  for (const id of subnets) if (!HOSTED_SUBNET_IDS.includes(id)) throw new Error(`SUBNETS names an unknown subnet: ${id}`);
   const oidc = e.AUTHENTIK_ISSUER_URL && e.AUTHENTIK_BOT_CLIENT_ID ? { issuer: e.AUTHENTIK_ISSUER_URL, clientId: e.AUTHENTIK_BOT_CLIENT_ID } : null;
   if (!oidc && !devBypass) throw new Error('set AUTHENTIK_ISSUER_URL and AUTHENTIK_BOT_CLIENT_ID (or AUTH_DEV_BYPASS=true outside production)');
   return {

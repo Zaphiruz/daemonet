@@ -1,5 +1,6 @@
 import { deepFreeze } from '../freeze.js';
 import type { TypeId } from '../types.js';
+import { SANDBOX } from './arena.js';
 import { BESTIARY } from './bestiary.js';
 
 export interface Rect {
@@ -200,12 +201,16 @@ export const KERNELSPACE: SubnetDef = deepFreeze<SubnetDef>({
 export const SUBNETS: readonly SubnetDef[] = deepFreeze([LO, LAN, DMZ, BACKBONE, DARKNET, CLOUDNET, KERNELSPACE]);
 /** Open-world subnets (those with spawn regions: tickets, wild spawns). */
 export const OPEN_SUBNET_IDS: readonly string[] = deepFreeze(SUBNETS.filter((s) => s.regions.length > 0).map((s) => s.id));
-/** What one sim process hosts by default: the open subnets plus kernelspace (the sandbox comes with SP6). */
+/**
+ * What one sim process hosts as persistent worlds: the open subnets plus kernelspace. The SP6 sandbox is not among
+ * them (nor in `SUBNETS` / `SUBNET_IDS`): the runtime creates a sandbox world per arena match.
+ */
 export const HOSTED_SUBNET_IDS: readonly string[] = deepFreeze(SUBNETS.map((s) => s.id));
 /** Every subnet id that exists in the rules (an evolution `subnet` requirement must name one of these). */
 export const SUBNET_IDS: readonly string[] = HOSTED_SUBNET_IDS;
 
 export function getSubnet(id: string): SubnetDef {
+  if (id === SANDBOX.id) return SANDBOX;
   const s = SUBNETS.find((x) => x.id === id);
   if (!s) throw new RangeError(`unknown subnet ${id}`);
   return s;

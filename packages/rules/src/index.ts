@@ -13,6 +13,7 @@ export * from './content/traits.js';
 export * from './content/species.js';
 export * from './content/items.js';
 export * from './content/subnets.js';
+export * from './content/arena.js';
 export * from './content/economy.js';
 export * from './content/tickets.js';
 export * from './content/incidents.js';

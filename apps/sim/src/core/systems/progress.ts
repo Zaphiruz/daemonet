@@ -76,6 +76,8 @@ export function resolveDefeats(world: World, out: Out): void {
     d.crashed = true;
     d.crashes++;
     world.deactivate(d);
+    // in a match the wipe-out is a win condition, not a trip back to the spawn point
+    if (world.arena) continue;
     knockedOut.add(d.ownerId!);
   }
   for (const d of down) {

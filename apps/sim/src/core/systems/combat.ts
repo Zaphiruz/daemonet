@@ -57,6 +57,13 @@ function attackerKey(world: World, attacker: Daemon): string {
  * side they are fighting.
  */
 function candidates(world: World, attacker: Daemon): Victim[] {
+  if (attacker.ownerId && world.arena) {
+    // arena match: the other operator's running daemons, and nothing else (no operators, no tags)
+    const out: Victim[] = [];
+    if (world.arena.phase !== 'live') return out;
+    for (const d of world.daemons.values()) if (d.active && d.hp > 0 && d.ownerId !== null && d.ownerId !== attacker.ownerId) out.push({ kind: 'daemon', d });
+    return out;
+  }
   if (attacker.ownerId) {
     const key = attackerKey(world, attacker);
     const out: Victim[] = [];
@@ -174,6 +181,7 @@ function applyHit(world: World, attacker: Daemon, target: Daemon, move: MoveDef,
   if (attacker.trait === 'decay') target.energy = Math.max(0, target.energy - DECAY_ENERGY);
   if (target.trait === 'absorb') target.energy = Math.min(ENERGY_MAX, target.energy + amount * 0.1);
   out.emit({ e: 'hit', source: attacker.id, target: target.id, move: move.id, amount, multiplier }, { at: attacker });
+  if (world.arena && amount > 0) world.arena.dealt.add(attacker.id);
   // Contribution is the boss HP actually removed (adds, shielded hits and overkill count for nothing).
   if (target.wild?.boss && attacker.ownerId) noteBossHit(world, attacker.ownerId, hpBefore - target.hp, out);
   if (target.wild && attacker.ownerId && (target.wild.open || target.wild.personal !== undefined)) {

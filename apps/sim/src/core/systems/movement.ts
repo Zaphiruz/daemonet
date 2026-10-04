@@ -39,7 +39,8 @@ export function advance(mover: Point & { path: Point[] }, tilesPerSecond: number
 export function hostileNear(world: World, d: Daemon, radius: number): boolean {
   for (const other of world.daemons.values()) {
     if (!other.active || other.hp <= 0 || other === d) continue;
-    if ((other.ownerId === null) === (d.ownerId === null)) continue;
+    // in a match the opponent's daemons are the other side
+    if (world.arena ? other.ownerId === d.ownerId : (other.ownerId === null) === (d.ownerId === null)) continue;
     if (distance(d, other) <= radius) return true;
   }
   if (d.ownerId === null) for (const op of world.operators.values()) if (distance(d, op) <= radius) return true;

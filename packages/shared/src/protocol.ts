@@ -18,6 +18,8 @@ const TypeIdSchema = z.enum(TYPES);
 const Self = z.literal('self');
 /** Operator names (claimStarter, and renames pushed by the api). */
 export const OperatorName = z.string().regex(/^[a-z0-9_-]{3,16}$/);
+const ArenaModeSchema = z.enum(['ranked', 'unranked']);
+const ArenaReason = z.enum(['wipeout', 'timeout', 'forfeit', 'disconnect']);
 
 // ---- Commands (client -> server, inside a `cmd` message) ----
 
@@ -55,6 +57,11 @@ export const Command = z.discriminatedUnion('cmd', [
   z.object({ cmd: z.literal('clusterJoin'), actor: Self, args: z.object({ code: z.string().regex(/^[A-Za-z0-9]{6}$/) }) }),
   z.object({ cmd: z.literal('clusterLeave'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('clusterKick'), actor: Self, args: z.object({ operatorId: Id }) }),
+  z.object({ cmd: z.literal('arenaQueue'), actor: Self, args: z.object({ mode: ArenaModeSchema }) }),
+  z.object({ cmd: z.literal('arenaLeave'), actor: Self, args: z.object({}) }),
+  z.object({ cmd: z.literal('arenaChallenge'), actor: Self, args: z.object({ operatorId: Id, mode: ArenaModeSchema }) }),
+  z.object({ cmd: z.literal('arenaAccept'), actor: Self, args: z.object({ challengeId: Id }) }),
+  z.object({ cmd: z.literal('arenaForfeit'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('chat'), actor: Self, args: z.object({ channel: z.string().min(3).max(80), text: z.string().min(1).max(512) }) }),
   z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
@@ -234,6 +241,24 @@ export const OperatorSelf = z.object({
   inventory: z.record(z.string(), z.number().int().nonnegative()),
   swapReadyTick: z.number().int(),
   capture: z.object({ captureId: Id, targetId: Id, deadlineTick: z.number().int() }).nullable(),
+  /** The arena match this operator is in (SP6), or null. `ram` holds the copies while it lasts. */
+  arena: z
+    .object({
+      id: Id,
+      mode: ArenaModeSchema,
+      phase: z.enum(['countdown', 'live', 'over']),
+      liveAtTick: z.number().int(),
+      endsAtTick: z.number().int(),
+      opponent: z.object({
+        id: Id,
+        name: z.string().nullable(),
+        tag: z.string().nullable(),
+        rating: z.number(),
+        team: z.array(z.object({ id: Id, species: Id, level: z.number().int(), hp: z.number(), maxHp: z.number(), crashed: z.boolean(), running: z.boolean() })).max(8),
+      }),
+      result: z.object({ winner: Id.nullable(), reason: ArenaReason }).nullable(),
+    })
+    .nullable(),
 });
 export type OperatorSelf = z.infer<typeof OperatorSelf>;
 
@@ -293,6 +318,27 @@ export const GameEvent = z.discriminatedUnion('e', [
   /** A blast lands on this circle at `atTick`: move your daemons (and yourself) out. */
   z.object({ e: z.literal('telegraph'), x: Coord, y: Coord, radius: z.number(), atTick: z.number().int() }),
   z.object({ e: z.literal('incidentReward'), incidentId: Id, reward: z.number().int(), share: z.number() }),
+  /** Arena (SP6): queue state (`mode` null = no longer waiting), a match starting (ticks are the match world's), and its result. */
+  z.object({ e: z.literal('arenaQueued'), mode: ArenaModeSchema.nullable(), reason: z.string().optional() }),
+  z.object({
+    e: z.literal('arenaMatch'),
+    id: Id,
+    mode: ArenaModeSchema,
+    opponent: z.object({ id: Id, name: z.string().nullable(), tag: z.string().nullable(), rating: z.number() }),
+    startsAtTick: z.number().int(),
+    endsAtTick: z.number().int(),
+  }),
+  z.object({
+    e: z.literal('arenaResult'),
+    id: Id,
+    mode: ArenaModeSchema,
+    outcome: z.enum(['win', 'loss', 'draw']),
+    reason: ArenaReason,
+    ratingBefore: z.number(),
+    ratingAfter: z.number(),
+    reward: z.number().int(),
+    counted: z.boolean(),
+  }),
 ]);
 export type GameEvent = z.infer<typeof GameEvent>;
 
@@ -309,6 +355,8 @@ export const ServerMessage = z.discriminatedUnion('t', [
   z.object({ t: z.literal('muted'), seq: Seq, d: z.object({ until: z.string().nullable() }) }),
   /** An invite to a cluster (SP4): accept with `clusterAccept { clusterId }` before `expiresAt`. */
   z.object({ t: z.literal('clusterInvite'), seq: Seq, d: z.object({ clusterId: Id, from: Id, name: z.string().nullable(), expiresAt: z.string() }) }),
+  /** An arena challenge (SP6): accept with `arenaAccept { challengeId }` before `expiresAt`. */
+  z.object({ t: z.literal('arenaChallenge'), seq: Seq, d: z.object({ challengeId: Id, from: Id, name: z.string().nullable(), mode: ArenaModeSchema, expiresAt: z.string() }) }),
   z.object({
     t: z.literal('authOk'),
     seq: Seq,

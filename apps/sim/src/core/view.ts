@@ -3,6 +3,7 @@ import { evolutionOptions } from '@daemonet/rules/evolution';
 import type { Entity, OperatorSelf, RamDaemon } from '@daemonet/shared';
 import { distance } from './grid.js';
 import { partyKey, type Daemon, type Operator } from './model.js';
+import { arenaSelf } from './systems/arena.js';
 import { evolutionContext } from './systems/evolve.js';
 import { boardTicket } from './systems/tickets.js';
 import type { World } from './world.js';
@@ -144,6 +145,7 @@ export function toSelf(world: World, op: Operator): OperatorSelf {
     inventory: { ...op.inventory },
     swapReadyTick: op.swapReadyTick,
     capture: cap ? { captureId: cap.id, targetId: cap.targetId, deadlineTick: cap.deadlineTick } : null,
+    arena: arenaSelf(world, op),
   };
 }
 

@@ -12,7 +12,7 @@ describe('loadConfig', () => {
 
   it('reads and validates SUBNETS', () => {
     expect(loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', SUBNETS: ' lan, lo ,' }).subnets).toEqual(['lan', 'lo']);
-    for (const bad of ['', ' , ', 'lo,lo', 'lo,nowhere']) {
+    for (const bad of ['', ' , ', 'lo,lo', 'lo,nowhere', 'lo,sandbox']) {
       expect(() => loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', SUBNETS: bad })).toThrow();
     }
   });
