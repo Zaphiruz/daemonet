@@ -49,6 +49,10 @@ type ClientEvents = {
   scriptError: unknown;
   /** Every raw frame received from the server (used by the sandbox bridge). */
   frame: string;
+  /** Chat (SP4): a line for a channel you are in; an admin deletion; your mute state changed. */
+  chat: Extract<ServerMessage, { t: 'chat' }>['d'];
+  chatDeleted: Extract<ServerMessage, { t: 'chatDeleted' }>['d'];
+  muted: Extract<ServerMessage, { t: 'muted' }>['d'];
 };
 
 export interface Target extends Positioned {
@@ -308,6 +312,48 @@ export class DaemonsApi {
   }
 }
 
+/** Chat (SP4): one message every 2 s; `send` queues locally so scripts never hit E_RATE. */
+export class ChatApi {
+  private queue: Array<{ channel: string; text: string; resolve: (v: unknown) => void; reject: (e: unknown) => void }> = [];
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private lastSent = -Infinity;
+  constructor(private readonly client: GameClient) {}
+
+  /** Channels this operator can post to right now. */
+  get channels(): string[] {
+    const out = [`subnet:${this.client.subnet}`];
+    const self = this.client.self as { cluster?: { id: string } | null; org?: { id: string } | null } | undefined;
+    if (self?.cluster) out.push(`cluster:${self.cluster.id}`);
+    if (self?.org) out.push(`org:${self.org.id}`);
+    return out;
+  }
+
+  send(channel: string, text: string): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ channel, text, resolve, reject });
+      this.pump();
+    });
+  }
+
+  /** Direct message to an operator id. */
+  dm(operatorId: string, text: string): Promise<unknown> {
+    return this.send(`dm:${operatorId}`, text);
+  }
+
+  private pump(): void {
+    if (this.timer || this.queue.length === 0) return;
+    const wait = Math.max(0, this.lastSent + 2000 - Date.now());
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      const next = this.queue.shift();
+      if (!next) return;
+      this.lastSent = Date.now();
+      this.client.command({ cmd: 'chat', actor: 'self', args: { channel: next.channel, text: next.text } }).then(next.resolve, next.reject);
+      this.pump();
+    }, wait);
+  }
+}
+
 export class GameClient {
   tick = 0;
   operatorId = '';
@@ -325,6 +371,7 @@ export class GameClient {
   readonly world = new WorldView(this);
   readonly operator = new OperatorApi(this);
   readonly daemons = new DaemonsApi(this);
+  readonly chat = new ChatApi(this);
 
   private ws: WebSocketLike | null = null;
   private readonly Ws: WebSocketCtor;
@@ -376,7 +423,9 @@ export class GameClient {
   /** Sends a command; resolves with the ack result or rejects with a DaemonetError. */
   command(command: Command): Promise<unknown> {
     const promise = new Promise<unknown>((resolve, reject) => {
-      if (this.sentThisTick >= COMMANDS_PER_TICK) {
+      // Chat has its own limit (one line per 2 s, queued by ChatApi) and does not use the per-tick budget.
+      const chat = command.cmd === 'chat';
+      if (!chat && this.sentThisTick >= COMMANDS_PER_TICK) {
         reject(new DaemonetError('E_RATE', `at most ${COMMANDS_PER_TICK} commands per tick`));
         return;
       }
@@ -384,7 +433,7 @@ export class GameClient {
         reject(new DaemonetError('E_STATE', 'not connected'));
         return;
       }
-      this.sentThisTick++;
+      if (!chat) this.sentThisTick++;
       const reqId = `c${++this.reqCounter}`;
       const timer = setTimeout(() => {
         this.pending.delete(reqId);
@@ -574,6 +623,15 @@ export class GameClient {
         this.emit('kick', msg.d.reason);
         return;
       case 'pong':
+        return;
+      case 'chat':
+        this.emit('chat', msg.d);
+        return;
+      case 'chatDeleted':
+        this.emit('chatDeleted', msg.d);
+        return;
+      case 'muted':
+        this.emit('muted', msg.d);
         return;
     }
   }

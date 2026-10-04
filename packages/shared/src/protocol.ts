@@ -46,6 +46,7 @@ export const Command = z.discriminatedUnion('cmd', [
   z.object({ cmd: z.literal('decompile'), actor: Self, args: z.object({ daemonId: Id, confirm: z.boolean().default(false) }) }),
   z.object({ cmd: z.literal('acceptTicket'), actor: Self, args: z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), subnet: Id, index: z.number().int().min(0).max(BOARD_SIZE - 1) }) }),
   z.object({ cmd: z.literal('abandonTicket'), actor: Self, args: z.object({ ticketId: Id }) }),
+  z.object({ cmd: z.literal('chat'), actor: Self, args: z.object({ channel: z.string().min(3).max(80), text: z.string().min(1).max(512) }) }),
   z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
   z.object({ cmd: z.literal('store'), actor: Self, args: z.object({ daemonId: Id }) }),
@@ -254,6 +255,14 @@ export type GameEvent = z.infer<typeof GameEvent>;
 // ---- Server messages ----
 
 export const ServerMessage = z.discriminatedUnion('t', [
+  /** A chat line for a channel the receiver is in (SP4). */
+  z.object({
+    t: z.literal('chat'),
+    seq: Seq,
+    d: z.object({ id: Id, channel: z.string(), from: Id, name: z.string().nullable(), tag: z.string().nullable(), text: z.string(), at: z.string() }),
+  }),
+  z.object({ t: z.literal('chatDeleted'), seq: Seq, d: z.object({ id: Id, channel: z.string() }) }),
+  z.object({ t: z.literal('muted'), seq: Seq, d: z.object({ until: z.string().nullable() }) }),
   z.object({
     t: z.literal('authOk'),
     seq: Seq,
