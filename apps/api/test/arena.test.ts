@@ -74,8 +74,24 @@ describe.skipIf(!url)('Arena api (needs DATABASE_URL)', () => {
     expect((await veteran.get('/me')).body).toMatchObject({ rating: 1700, rd: 200, wins: 0, band: { min: 1600, payout: 4096 } });
 
     const active = await player('active', { rating: 1812.5, wins: 6, losses: 3, draws: 1 });
-    await prisma!.bitsLedger.createMany({ data: [1, 2, 3].map((i) => ({ operatorId: active.id, delta: 32n, reason: 'arena', ref: `m${i}` })) });
-    await prisma!.bitsLedger.create({ data: { operatorId: active.id, delta: 32n, reason: 'arena', ref: 'old', at: new Date(Date.now() - 2 * 86_400_000) } });
+    // the store's daily cap: matches ENDED today in which the caller's side was paid, on either side
+    const ended = (i: string, at: Date, side: 'a' | 'b', reward: number) => ({
+      id: `rw-${i}`, seasonId: seasonIdOf(at), mode: 'ranked', aId: side === 'a' ? active.id : fresh.id, bId: side === 'a' ? fresh.id : active.id,
+      winnerId: active.id, reason: 'forfeit', aBefore: 1500, aAfter: 1500, bBefore: 1500, bAfter: 1500,
+      aReward: side === 'a' ? reward : 0, bReward: side === 'b' ? reward : 0, counted: true, durationMs: 1000, endedAt: at,
+    });
+    const todayStart = new Date(new Date().toISOString().slice(0, 10));
+    await prisma!.arenaMatch.createMany({
+      data: [
+        ended('1', todayStart, 'a', 32), // the first instant of today counts
+        ended('2', new Date(), 'b', 32),
+        ended('3', new Date(), 'a', 32),
+        ended('4', new Date(), 'a', 0), // a win past the cap: not rewarded
+        ended('5', new Date(todayStart.getTime() - 1), 'a', 32), // ended yesterday
+      ],
+    });
+    // ledger rows are not what counts (a late commit of yesterday's match lands today)
+    await prisma!.bitsLedger.create({ data: { operatorId: active.id, delta: 32n, reason: 'arena', ref: 'rw-5' } });
     expect((await active.get('/me')).body).toMatchObject({ rating: 1812.5, wins: 6, losses: 3, draws: 1, band: { min: 1800, payout: 8192 }, payoutEligible: true, rewardedWinsToday: 3 });
     expect((await app.inject({ method: 'GET', url: '/api/arena/me' })).statusCode).toBe(401);
   });

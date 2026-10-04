@@ -54,6 +54,10 @@ export async function closeSeasons(prisma: PrismaClient, bus: Bus, now = new Dat
       // Read again under the locks: the records are final now (a result that had not taken its locks yet sees closedAt).
       const rows = await played();
       // A first counted match committed between the two reads: lock its operator too before writing its ledger row.
+      // Grace-protected: the close runs ARENA_SEASON_CLOSE_GRACE_MS (1 h) after the month ended, longer than the sim
+      // retries an unknown result (10 min), so this branch and a first counted match racing the close are practically
+      // unreachable. Should one happen anyway, the result either commits before our locks (and is paid here) or waits
+      // for them and then reads closedAt (recorded uncounted).
       const late = rows.map((r) => r.operatorId).filter((id) => !locked.has(id));
       if (late.length > 0) await lockOperators(tx, late);
       if (rows.length > 0) {

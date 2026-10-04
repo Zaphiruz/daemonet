@@ -36,7 +36,10 @@ export function registerArenaRoutes(app: FastifyInstance, prisma: PrismaClient):
     const [row, previous, rewardedWinsToday] = await Promise.all([
       prisma.arenaRating.findUnique({ where: { operatorId_seasonId: { operatorId, seasonId: season } } }),
       prisma.arenaRating.findUnique({ where: { operatorId_seasonId: { operatorId, seasonId: previousSeasonId(season) } } }),
-      prisma.bitsLedger.count({ where: { operatorId, reason: 'arena', at: { gte: dayStart } } }),
+      // The store's daily cap: matches ENDED today (UTC) in which the caller's side was paid (not ledger commit times).
+      prisma.arenaMatch.count({
+        where: { endedAt: { gte: dayStart, lt: new Date(dayStart.getTime() + 86_400_000) }, OR: [{ aId: operatorId, aReward: { gt: 0 } }, { bId: operatorId, bReward: { gt: 0 } }] },
+      }),
     ]);
     const r = row ?? { ...seedRating(previous), wins: 0, losses: 0, draws: 0 };
     const matches = r.wins + r.losses + r.draws;
