@@ -29,6 +29,17 @@ export function partyRecipients(world: World, key: string, damagedBy: ReadonlySe
   });
 }
 
+/**
+ * The damaging daemons of a personal boss copy's owner (in this world, not crashed): a copy credits its owner alone,
+ * never the owner's cluster.
+ */
+export function personalRecipients(world: World, ownerId: string, damagedBy: ReadonlySet<string>): string[] {
+  return [...damagedBy].filter((id) => {
+    const d = world.daemons.get(id);
+    return d !== undefined && d.ownerId === ownerId && !d.crashed;
+  });
+}
+
 /** Split `total` XP across owned daemons; level them up (stats, HP delta, moves). */
 export function awardXp(world: World, daemonIds: readonly string[], total: number, out: Out): void {
   const shares = splitXp(total, daemonIds.length);
@@ -70,7 +81,14 @@ export function resolveDefeats(world: World, out: Out): void {
   for (const d of down) {
     if (!d.wild) continue;
     out.emit({ e: 'crash', daemon: d.id }, { at: d });
-    if (d.wild.tagOwner) {
+    // The Incident boss and its adds are open (no tag): no XP and no clear for anyone.
+    const owner = d.wild.personal !== undefined ? world.operators.get(d.wild.personal) : undefined;
+    if (d.wild.personal !== undefined) {
+      if (owner) {
+        awardXp(world, personalRecipients(world, owner.id, d.wild.damagedBy), xpYield(getSpecies(d.species).baseYield, d.level), out);
+        advanceTickets(world, owner, { kind: 'clear', type: d.types[0]! }, out);
+      }
+    } else if (d.wild.tagOwner) {
       awardXp(world, partyRecipients(world, d.wild.tagOwner, d.wild.damagedBy, d), xpYield(getSpecies(d.species).baseYield, d.level), out);
       // A clear counts for every member of the tagging party who is present (see partyPresent).
       for (const member of partyPresent(world, d.wild.tagOwner, d)) advanceTickets(world, member, { kind: 'clear', type: d.types[0]! }, out);

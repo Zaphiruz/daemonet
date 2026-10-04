@@ -25,7 +25,14 @@ export function restoreDaemon(d: Daemon): void {
 export function upkeep(world: World, out: Out): void {
   const tick = world.tick;
   const captured = new Set([...world.captures.values()].map((c) => c.targetId));
+  const expired: string[] = [];
   for (const d of world.daemons.values()) {
+    // A personal boss copy despawns at its tick, unless a capture of it is in progress.
+    const despawn = d.wild?.despawnAtTick;
+    if (despawn !== undefined && tick >= despawn && !captured.has(d.id)) {
+      expired.push(d.id);
+      continue;
+    }
     if (d.crashed) continue;
     d.energy = regenEnergy(d.energy, d.stats.energy, d.heldItem === 'battery' ? BATTERY_REGEN : 1);
     if ((d.statuses.leaking ?? 0) > tick) d.energy = Math.max(0, d.energy - LEAK_PER_SECOND / TICK_HZ);
@@ -35,6 +42,7 @@ export function upkeep(world: World, out: Out): void {
     const w = d.wild;
     if (w && w.tagOwner !== null && tick > w.tagUntil && !captured.has(d.id)) world.releaseTag(d);
   }
+  for (const id of expired) world.removeDaemon(id);
 
   for (const op of world.operators.values()) {
     if (op.restoreUntil === null) continue;

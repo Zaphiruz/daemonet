@@ -198,6 +198,11 @@ function travel(world: World, op: Operator, c: Cmd<'travel'>, input: Input, out:
   // Checked here, in the world that runs the travel: a command queued before a hand-off runs in the destination.
   if (!world.hosted(gate.to)) throw new Rejection('E_STATE', `${gate.to} is not available`);
   if (distance(op, gate.at) > GATEWAY_RADIUS) throw new Rejection('E_RANGE', 'move onto the gateway first');
+  // An Incident gateway opens only while an Incident runs there with room: checked live (not only the runtime's
+  // per-tick `closedGateways`), so the 17th operator of one tick, or a command queued before the Incident closed, fails.
+  if (world.closedGateways.has(gate.id) || (gate.incidentOnly && !world.incidentRoom(gate.to))) {
+    throw new Rejection('E_STATE', gate.incidentOnly ? 'no Incident is open (or kernelspace is full)' : 'that gateway is closed');
+  }
   if (op.running.length > 0) throw new Rejection('E_STATE', 'recall running daemons first');
   if (op.captureId) throw new Rejection('E_STATE', 'a capture is in progress');
   if (world.hasPendingFor(op.id)) throw new Rejection('E_STATE', 'wait for pending actions');

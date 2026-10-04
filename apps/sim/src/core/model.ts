@@ -129,6 +129,47 @@ export interface WildState {
   fleeUntil: number;
   /** Owned daemon ids that damaged it while tagged (for XP). */
   damagedBy: Set<string>;
+  /** Incident boss. */
+  boss?: boolean;
+  /** Anyone may hit it and nobody owns its tag (boss and its adds); immune to capture. */
+  open?: boolean;
+  /**
+   * A personal boss copy: only this operator may hit or capture it (never its cluster mates). Its `tagOwner` is the
+   * unmatchable key `personal:<id>`, so no party key ever holds, releases or re-keys it.
+   */
+  personal?: string;
+  /** Removed at this tick unless a capture is in progress. */
+  despawnAtTick?: number;
+}
+
+/** One contributor of a cleared Incident, as recorded on the Incident row and carried by every reward intent. */
+export interface IncidentParticipant {
+  operatorId: string;
+  name: string | null;
+  /** Damage dealt to the boss (whole HP). */
+  damage: number;
+  share: number;
+  reward: number;
+}
+
+/** A running Incident (kernelspace world only). */
+export interface IncidentState {
+  id: string;
+  n: number;
+  species: string;
+  phase: 'open' | 'fighting';
+  bossId: string;
+  openedAtMs: number;
+  endsAtMs: number;
+  /** Boss immune until its adds are cleared. */
+  shield: boolean;
+  /** Index into BOSS_PHASES of the next threshold. */
+  nextPhase: number;
+  adds: string[];
+  /** operator id -> damage dealt to the boss. */
+  damage: Map<string, number>;
+  nextTelegraphTick: number;
+  telegraph: { x: number; y: number; radius: number; atTick: number } | null;
 }
 
 export interface Daemon {
@@ -306,7 +347,31 @@ export type Intent =
     }
   | { id: string; kind: 'abandonTicket'; operatorId: string; reqId: string; ticketId: string }
   /** Raised by the sim itself (no reqId): pays the reward and closes the row. */
-  | { id: string; kind: 'completeTicket'; operatorId: string; ticketId: string; reward: number };
+  | { id: string; kind: 'completeTicket'; operatorId: string; ticketId: string; reward: number }
+  /**
+   * Raised by the sim itself when an Incident is cleared: pays one contributor. The id is derived from the incident and
+   * the operator (`incidentRewardId`), and every intent of one Incident carries the whole payout list, so the store can
+   * record the Incident row with its participants in the same transaction and re-derive the reward from the rules.
+   */
+  | {
+      id: string;
+      kind: 'incidentReward';
+      operatorId: string;
+      incidentId: string;
+      n: number;
+      species: string;
+      /** ISO end of the Incident window (the row is created from the intent when it is missing). */
+      endsAt: string;
+      reward: number;
+      damage: number;
+      share: number;
+      participants: IncidentParticipant[];
+    };
+
+/** The one intent id of an Incident payout to `operatorId`: a replay, a retry or a resumed payout all carry it. */
+export function incidentRewardId(incidentId: string, operatorId: string): string {
+  return `${incidentId}:reward:${operatorId}`;
+}
 
 /** Shop, crafting and decompile: intents that spend bits or rewrite the operator's inventory in the store. */
 export const SHOP_INTENTS = ['buy', 'craft', 'decompile'] as const;
@@ -316,7 +381,7 @@ export type ShopIntent = Extract<Intent, { kind: (typeof SHOP_INTENTS)[number] }
  * Intent kinds that move bits, the inventory or tickets in the store (SP3b economy contract). Each is serialized behind
  * every earlier store write, retried (same id) until the store answers definitively, and awaited by a leave.
  */
-export const ECONOMY_INTENTS = [...SHOP_INTENTS, 'acceptTicket', 'abandonTicket', 'completeTicket'] as const;
+export const ECONOMY_INTENTS = [...SHOP_INTENTS, 'acceptTicket', 'abandonTicket', 'completeTicket', 'incidentReward'] as const;
 export type EconomyIntent = Extract<Intent, { kind: (typeof ECONOMY_INTENTS)[number] }>;
 
 export function isEconomyIntent(intent: Intent): intent is EconomyIntent {
@@ -342,7 +407,19 @@ export function isTicketIntent(intent: Intent): intent is TicketIntent {
  * the daemon's line's research points in the store after the commit (also on a replay), so a replayed completion never
  * counts the point twice.
  */
-export type IntentResult = { ok: true; daemon?: OwnedDaemonRecord; discovered?: boolean; research?: number } | { ok: false; reason: string };
+export type IntentResult =
+  | {
+      ok: true;
+      daemon?: OwnedDaemonRecord;
+      discovered?: boolean;
+      research?: number;
+      /**
+       * incidentReward: seq of the payout's ledger row (also on a replay), so the runtime can tell whether a balance it
+       * loaded already contains it.
+       */
+      ledgerSeq?: number;
+    }
+  | { ok: false; reason: string };
 
 export interface Input {
   operatorId: string;

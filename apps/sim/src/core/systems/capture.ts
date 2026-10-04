@@ -19,7 +19,7 @@ import type { Out } from '../out.js';
 import { toRamDaemon } from '../view.js';
 import { addResearch, type World } from '../world.js';
 import { FLEE_MS } from './ai.js';
-import { awardXp, partyRecipients } from './progress.js';
+import { awardXp, partyRecipients, personalRecipients } from './progress.js';
 import { advanceTickets } from './tickets.js';
 
 export function startCapture(world: World, op: Operator, args: { targetId: string; tool: ToolId }, out: Out): string {
@@ -28,7 +28,11 @@ export function startCapture(world: World, op: Operator, args: { targetId: strin
   if ((op.inventory[tool.id] ?? 0) <= 0) throw new Rejection('E_STATE', `no ${tool.id} left`);
   const target = world.daemons.get(args.targetId);
   if (!target || !target.wild || !target.active || target.hp <= 0) throw new Rejection('E_STATE', 'not a wild daemon');
-  if (target.wild.tagOwner !== null && target.wild.tagOwner !== partyKey(op)) throw new Rejection('E_STATE', 'tagged by another operator');
+  // The Incident boss and its adds cannot be captured; a personal copy only by its owner (never by a cluster mate).
+  if (target.wild.open) throw new Rejection('E_STATE', 'immune to capture');
+  const personal = target.wild.personal !== undefined;
+  if (personal && target.wild.personal !== op.id) throw new Rejection('E_STATE', 'tagged by another operator');
+  if (!personal && target.wild.tagOwner !== null && target.wild.tagOwner !== partyKey(op)) throw new Rejection('E_STATE', 'tagged by another operator');
   if (distance(op, target) > tool.range) throw new Rejection('E_RANGE', 'target out of tool range');
   if (op.ram.length + op.reservedSlots.size >= RAM_SLOTS && op.diskSlots.size >= op.diskCapacity) {
     throw new Rejection('E_STATE', 'RAM and Disk are full');
@@ -36,8 +40,11 @@ export function startCapture(world: World, op: Operator, args: { targetId: strin
 
   op.inventory[tool.id] = (op.inventory[tool.id] ?? 0) - 1;
   const tick = world.tick;
-  target.wild.tagOwner = partyKey(op);
-  target.wild.tagUntil = tick + world.ticks(TAG_WINDOW_MS);
+  // A personal copy keeps its owner-only key (and never-expiring tag).
+  if (!personal) {
+    target.wild.tagOwner = partyKey(op);
+    target.wild.tagUntil = tick + world.ticks(TAG_WINDOW_MS);
+  }
   const size = challengeSize(
     {
       stage: getSpecies(target.species).stage,
@@ -98,7 +105,9 @@ function commitCapture(world: World, op: Operator, cap: Capture, out: Out): void
   const wild = target.wild!;
   const sp = getSpecies(target.species);
   // XP to the damaging daemons of every present member of the tagging party (SP4 spec §6).
-  awardXp(world, partyRecipients(world, wild.tagOwner ?? partyKey(op), wild.damagedBy, target), xpYield(sp.baseYield, target.level), out);
+  // (A personal copy credits its owner, the capturer, alone.)
+  const recipients = wild.personal !== undefined ? personalRecipients(world, op.id, wild.damagedBy) : partyRecipients(world, wild.tagOwner ?? partyKey(op), wild.damagedBy, target);
+  awardXp(world, recipients, xpYield(sp.baseYield, target.level), out);
 
   let location: 'RAM' | 'DISK' = 'RAM';
   let slot = world.freeRamSlot(op);

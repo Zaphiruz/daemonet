@@ -8,6 +8,7 @@ import {
   getSpecies,
   msToTicks,
   movesAtLevel,
+  nextIncidentStart,
   statBlockFromArray,
   statBlockToArray,
   xpForLevel,
@@ -18,7 +19,7 @@ import {
   type SubnetDef,
 } from '@daemonet/rules';
 import { Grid, type Point } from './grid.js';
-import { freshEngagement, isEconomyIntent, partyKey, isInventoryIntent, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
+import { freshEngagement, isEconomyIntent, partyKey, isInventoryIntent, type Capture, type Daemon, type IncidentState, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
 import { Out } from './out.js';
 import { planWild } from './systems/ai.js';
 import { executeQueuedUses, type QueuedUse } from './systems/combat.js';
@@ -26,6 +27,7 @@ import { handleCommands } from './systems/commands.js';
 import { completeCaptureIntent, progressCaptures } from './systems/capture.js';
 import { completeEconomyIntent } from './systems/economy.js';
 import { completeEvolveIntent } from './systems/evolve.js';
+import { stepIncident } from './systems/incident.js';
 import { moveAll } from './systems/movement.js';
 import { resolveDefeats } from './systems/progress.js';
 import { runSpawner } from './systems/spawner.js';
@@ -90,7 +92,30 @@ export class World {
    */
   nameFilter: CompiledFilter = DEFAULT_FILTER;
   queuedUses: QueuedUse[] = [];
+  /** Incident state (kernelspace world only). */
+  incident: IncidentState | null = null;
+  /** ms timestamp of the next scheduled Incident. */
+  nextIncidentAt: number;
+  /** Set by the runtime when an admin starts one. */
+  incidentRequested = false;
+  incidentCount = 0;
+  incidentClosedAtMs = 0;
+  /** Gateways the runtime has closed (Incident gateways while none is open, or kernelspace is full). */
+  readonly closedGateways = new Set<string>();
+  /**
+   * Whether an Incident-only gateway into `subnet` admits one more operator right now (an Incident runs there and it has
+   * room, counting travels already on their way). The runtime sets it; checked by `travel` where it executes, so a
+   * command queued before the gateway closed is still refused.
+   */
+  incidentRoom: (subnet: string) => boolean = () => true;
+  /** Operator id -> tick before which no new eviction is raised for it (a refused or failed one is retried later). */
+  readonly evictRetryTick = new Map<string, number>();
   private readonly pending = new Map<string, Intent>();
+  /**
+   * Pending Incident payouts whose operator was not in this world when it was raised, or left it since (travel, leave):
+   * this world never credits them; the runtime credits the operator wherever it is now (`Game`), once.
+   */
+  private readonly rewardsElsewhere = new Set<string>();
   private counter = 0;
   private carry = new Out();
 
@@ -106,6 +131,7 @@ export class World {
     this.discovered = new Set(opts.discovered ?? []);
     this.now = opts.clock ?? (() => new Date().toISOString());
     this.hosted = opts.hosted ?? (() => true);
+    this.nextIncidentAt = nextIncidentStart(this.nowMs());
     if (this.spawnerEnabled) runSpawner(this, this.carry, true);
   }
 
@@ -115,6 +141,11 @@ export class World {
 
   ticks(ms: number): number {
     return msToTicks(ms);
+  }
+
+  /** The wall clock (`now`) in ms. */
+  nowMs(): number {
+    return Date.parse(this.now());
   }
 
   // ---- operators ----
@@ -160,6 +191,10 @@ export class World {
     if (!op) return;
     if (op.captureId) this.captures.delete(op.captureId);
     for (const d of op.ram) this.daemons.delete(d);
+    // A personal boss copy goes when its owner leaves the subnet (leave or travel).
+    for (const d of [...this.daemons.values()]) if (d.wild?.personal === id) this.removeDaemon(d.id);
+    this.evictRetryTick.delete(id);
+    for (const i of this.pending.values()) if (i.kind === 'incidentReward' && i.operatorId === id) this.rewardsElsewhere.add(i.id);
     const key = partyKey(op);
     this.operators.delete(id);
     // Wilds its party tagged would stay locked to a party with nobody left here (leave or travel) until the tag window
@@ -438,6 +473,13 @@ export class World {
     return false;
   }
 
+  /** Travel intents into `subnet` still waiting for the store (operators on their way in). */
+  pendingTravelsTo(subnet: string): number {
+    let n = 0;
+    for (const i of this.pending.values()) if (i.kind === 'travel' && i.to === subnet && i.from !== subnet) n++;
+    return n;
+  }
+
   /** Intents of `operatorId` still waiting for the store. */
   pendingIntents(operatorId: string): Intent[] {
     return [...this.pending.values()].filter((i) => i.operatorId === operatorId);
@@ -449,6 +491,17 @@ export class World {
    */
   abandonIntent(id: string): void {
     this.pending.delete(id);
+    this.rewardsElsewhere.delete(id);
+  }
+
+  /** A pending Incident payout this world must not credit (its operator is not here). */
+  markRewardElsewhere(id: string): void {
+    this.rewardsElsewhere.add(id);
+  }
+
+  /** True when the pending payout `id` will not be credited by this world (see `rewardsElsewhere`). */
+  isRewardElsewhere(id: string): boolean {
+    return this.rewardsElsewhere.has(id);
   }
 
   /** Queue an event for the next step (the runtime uses it when it hands an operator over between worlds). */
@@ -460,6 +513,7 @@ export class World {
     const intent = this.pending.get(id);
     if (!intent) throw new RangeError(`unknown intent ${id}`);
     this.pending.delete(id);
+    const elsewhere = this.rewardsElsewhere.delete(id);
     const out = this.carry;
     const op = this.operators.get(intent.operatorId);
     // An evolve still records its discovery when the operator has left meanwhile.
@@ -509,7 +563,19 @@ export class World {
       case 'abandonTicket':
       case 'completeTicket':
         return completeTicketIntent(this, op, intent, result, out);
+      case 'incidentReward':
+        // Credited on commit only; a refusal (already paid, or the payout does not match) credits nothing.
+        if (!result.ok || elsewhere) return;
+        this.creditIncidentReward(op, intent);
+        return;
     }
+  }
+
+  /** A committed Incident payout lands in the live balance (also used by the runtime when the operator moved worlds). */
+  creditIncidentReward(op: Operator, intent: Extract<Intent, { kind: 'incidentReward' }>): void {
+    op.bits += intent.reward;
+    this.carry.emit({ e: 'incidentReward', incidentId: intent.incidentId, reward: intent.reward, share: intent.share }, { to: op.id });
+    this.carry.emit({ e: 'bits', delta: intent.reward, reason: 'incident', balance: op.bits }, { to: op.id });
   }
 
   // ---- the tick ----
@@ -523,6 +589,7 @@ export class World {
     const wildUses = planWild(this);
     executeQueuedUses(this, [...this.queuedUses, ...wildUses], out);
     this.queuedUses = [];
+    stepIncident(this, out);
     resolveDefeats(this, out);
     progressCaptures(this, out);
     if (this.spawnerEnabled) runSpawner(this, out, false);

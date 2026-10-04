@@ -36,6 +36,8 @@ function scanFor(viewer: Operator | undefined, d: Daemon): Scan | undefined {
 function taggedByFor(viewer: Operator | undefined, d: Daemon): string | null {
   const key = d.wild?.tagOwner ?? null;
   if (key === null) return null;
+  // a personal boss copy reads as its owner's own tag (only to the owner: never to a cluster mate)
+  if (d.wild?.personal !== undefined) return viewer && d.wild.personal === viewer.id ? viewer.id : key;
   return viewer && key === partyKey(viewer) ? viewer.id : key;
 }
 
@@ -61,6 +63,7 @@ export function toDaemonEntity(world: World, d: Daemon, viewer?: Operator): Enti
     signature: d.signature,
     statuses: activeStatuses(world, d),
     hardened: (d.wild?.hardenedUntil ?? 0) > world.tick,
+    ...(d.wild?.boss ? { boss: true, shielded: world.incident?.shield ?? false } : {}),
     ...(scan ? { scan } : {}),
   };
 }

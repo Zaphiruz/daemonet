@@ -3,6 +3,7 @@ import { distance, type Point } from '../grid.js';
 import { Rejection, freshEngagement, partyKey, type Daemon, type Input, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
+import { noteBossHit } from './incident.js';
 
 /** Trait thresholds (SP3a spec section 3.5). */
 export const FILLER_COOLDOWN_MS = 512;
@@ -60,7 +61,11 @@ function candidates(world: World, attacker: Daemon): Victim[] {
     const key = attackerKey(world, attacker);
     const out: Victim[] = [];
     for (const d of world.daemons.values()) {
-      if (d.wild && d.active && d.hp > 0 && (d.wild.tagOwner === null || d.wild.tagOwner === key)) out.push({ kind: 'daemon', d });
+      if (!d.wild || !d.active || d.hp <= 0) continue;
+      // Incident targets (boss, adds) are open to everyone; a personal boss copy belongs to exactly one operator (never
+      // to its cluster: the owner id is compared, not the party key).
+      const allowed = d.wild.personal !== undefined ? d.wild.personal === attacker.ownerId : d.wild.open === true || d.wild.tagOwner === null || d.wild.tagOwner === key;
+      if (allowed) out.push({ kind: 'daemon', d });
     }
     return out;
   }
@@ -152,6 +157,8 @@ export function scaleDamage(amount: number, attacker: Daemon, target: Daemon, mo
 function applyHit(world: World, attacker: Daemon, target: Daemon, move: MoveDef, amount: number, multiplier: number, out: Out): number {
   const tick = world.tick;
   const engagement = target.engagement;
+  // The Incident boss takes nothing while its adds are alive.
+  if (target.wild?.boss && world.incident?.shield) amount = 0;
   if (target.trait === 'bitshield' && !engagement.blocked) {
     engagement.blocked = true;
     amount = 0;
@@ -160,13 +167,20 @@ function applyHit(world: World, attacker: Daemon, target: Daemon, move: MoveDef,
     engagement.survived = true;
     amount = Math.max(0, target.hp - 1);
   }
+  const hpBefore = target.hp;
   target.hp = Math.max(0, target.hp - amount);
   target.lastCombatTick = tick;
   engagement.lastHitMove = move.id;
   if (attacker.trait === 'decay') target.energy = Math.max(0, target.energy - DECAY_ENERGY);
   if (target.trait === 'absorb') target.energy = Math.min(ENERGY_MAX, target.energy + amount * 0.1);
   out.emit({ e: 'hit', source: attacker.id, target: target.id, move: move.id, amount, multiplier }, { at: attacker });
-  if (target.wild && attacker.ownerId) {
+  // Contribution is the boss HP actually removed (adds, shielded hits and overkill count for nothing).
+  if (target.wild?.boss && attacker.ownerId) noteBossHit(world, attacker.ownerId, hpBefore - target.hp, out);
+  if (target.wild && attacker.ownerId && (target.wild.open || target.wild.personal !== undefined)) {
+    // Open (boss, adds) and personal targets never change hands: no tag, no battleStart.
+    target.wild.damagedBy.add(attacker.id);
+    target.wild.aggro ??= attacker.id;
+  } else if (target.wild && attacker.ownerId) {
     if (target.wild.tagOwner === null) {
       out.emit({ e: 'battleStart', wild: target.id, operator: attacker.ownerId }, { at: target });
       // A fresh engagement starts with the tag.
