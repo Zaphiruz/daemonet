@@ -8,10 +8,15 @@ import { advanceTickets } from './tickets.js';
 /** XP and ticket credit reach party members within this many tiles of the defeated / captured daemon. */
 export const PARTY_RADIUS = 32;
 
-/** Operators of the party `key` that are in this world and near `at`. */
+/**
+ * Operators of the party `key` that are in this world and count as present: a solo tag owner always does (as before
+ * clusters, SP4 spec §6); cluster members only within PARTY_RADIUS of `at`.
+ */
 export function partyPresent(world: World, key: string, at: Point): Operator[] {
   const out: Operator[] = [];
-  for (const op of world.operators.values()) if (partyKey(op) === key && distance(op, at) <= PARTY_RADIUS) out.push(op);
+  for (const op of world.operators.values()) {
+    if (partyKey(op) === key && (op.cluster === null || distance(op, at) <= PARTY_RADIUS)) out.push(op);
+  }
   return out;
 }
 
@@ -46,25 +51,35 @@ export function awardXp(world: World, daemonIds: readonly string[], total: numbe
 /**
  * Crash owned daemons at 0 HP; defeat wild daemons at 0 HP: XP to the damaging daemons of the tagging party's present
  * members, and a clear for each present member (per-member ticket credit, SP4 plan 2).
+ *
+ * Three passes, so the outcome does not depend on daemon order: owned daemons crash first (a crashed daemon earns no
+ * XP), then wild defeats are credited while every operator is still where the fight happened, and only then is an
+ * operator whose RAM is all crashed sent back to spawn (a same-tick knockout still counts as present).
  */
 export function resolveDefeats(world: World, out: Out): void {
-  for (const d of [...world.daemons.values()]) {
-    if (!d.active || d.hp > 0) continue;
+  const down = [...world.daemons.values()].filter((d) => d.active && d.hp <= 0);
+  const knockedOut = new Set<string>();
+  for (const d of down) {
+    if (d.wild) continue;
     out.emit({ e: 'crash', daemon: d.id }, { at: d });
-    if (d.wild) {
-      if (d.wild.tagOwner) {
-        awardXp(world, partyRecipients(world, d.wild.tagOwner, d.wild.damagedBy, d), xpYield(getSpecies(d.species).baseYield, d.level), out);
-        // A clear counts for every member of the tagging party who is present (same world, within PARTY_RADIUS).
-        for (const member of partyPresent(world, d.wild.tagOwner, d)) advanceTickets(world, member, { kind: 'clear', type: d.types[0]! }, out);
-      }
-      world.removeDaemon(d.id);
-      continue;
-    }
     d.crashed = true;
     d.crashes++;
     world.deactivate(d);
-    const op = world.operators.get(d.ownerId!)!;
-    if (op.ram.every((id) => world.daemons.get(id)!.crashed)) {
+    knockedOut.add(d.ownerId!);
+  }
+  for (const d of down) {
+    if (!d.wild) continue;
+    out.emit({ e: 'crash', daemon: d.id }, { at: d });
+    if (d.wild.tagOwner) {
+      awardXp(world, partyRecipients(world, d.wild.tagOwner, d.wild.damagedBy, d), xpYield(getSpecies(d.species).baseYield, d.level), out);
+      // A clear counts for every member of the tagging party who is present (see partyPresent).
+      for (const member of partyPresent(world, d.wild.tagOwner, d)) advanceTickets(world, member, { kind: 'clear', type: d.types[0]! }, out);
+    }
+    world.removeDaemon(d.id);
+  }
+  for (const id of knockedOut) {
+    const op = world.operators.get(id)!;
+    if (op.ram.every((rid) => world.daemons.get(rid)!.crashed)) {
       op.x = world.subnet.spawn.x;
       op.y = world.subnet.spawn.y;
       op.path = [];

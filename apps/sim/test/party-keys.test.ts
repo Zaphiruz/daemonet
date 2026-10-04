@@ -134,6 +134,52 @@ describe('party keys', () => {
     expect(world.operators.get('bob')!.tickets[0]!.progress).toBe(2);
   });
 
+  it('a solo tag owner gets its XP and clear credit at any distance (no party radius when solo)', () => {
+    const world = party();
+    const carol = world.operators.get('carol')!;
+    carol.tickets.push({ id: 't-carol', day: '2026-09-30', subnet: 'test', index: 0, kind: 'clear', params: { kind: 'clear', type: 'glitch', count: 2 }, target: 2, reward: 64, progress: 0, pending: false, completing: false });
+    const wild = placeWild(world, 'bitrot', 20, 2.5, 2.5);
+    wild.wild!.tagOwner = 'carol';
+    wild.wild!.tagUntil = world.tick + 10_000;
+    wild.wild!.damagedBy.add('carol-d0');
+    Object.assign(carol, { x: 29.5, y: 29.5, path: [] });
+    expect(partyPresent(world, 'carol', wild).map((o) => o.id)).toEqual(['carol']);
+    const c = world.daemons.get('carol-d0')!;
+    const before = c.xp;
+    wild.hp = 0;
+    step(world);
+    expect(world.daemons.has(wild.id)).toBe(false);
+    expect(c.xp).toBeGreaterThan(before);
+    expect(carol.tickets[0]!.progress).toBe(1);
+  });
+
+  it('a member knocked out in the same tick as the defeat still counts as present (credit before the spawn teleport)', () => {
+    const world = party();
+    const alice = world.operators.get('alice')!;
+    alice.tickets.push({ id: 't-alice', day: '2026-09-30', subnet: 'test', index: 0, kind: 'clear', params: { kind: 'clear', type: 'glitch', count: 2 }, target: 2, reward: 64, progress: 0, pending: false, completing: false });
+    // far from spawn (5.5, 4.5): the fight is > PARTY_RADIUS away from where a knocked-out operator lands
+    const wild = placeWild(world, 'bitrot', 20, 30.5, 26.5);
+    Object.assign(alice, { x: 30.5, y: 25.5, path: [] });
+    Object.assign(world.operators.get('bob')!, { x: 29.5, y: 26.5, path: [] });
+    const a = world.daemons.get('alice-d0')!;
+    const b = world.daemons.get('bob-d0')!;
+    Object.assign(a, { x: 30.5, y: 24.5, path: [] });
+    Object.assign(b, { x: 29.5, y: 25.5, path: [] });
+    wild.wild!.tagOwner = KEY;
+    wild.wild!.tagUntil = world.tick + 10_000;
+    wild.wild!.damagedBy.add('alice-d0').add('bob-d0');
+    const xp = [a.xp, b.xp];
+    a.hp = 0;
+    wild.hp = 0;
+    step(world);
+    expect(world.daemons.has(wild.id)).toBe(false);
+    expect(a.crashed).toBe(true);
+    expect(alice).toMatchObject({ x: 5.5, y: 4.5 });
+    expect(a.xp).toBe(xp[0]); // crashed daemons earn nothing
+    expect(b.xp).toBeGreaterThan(xp[1]!);
+    expect(alice.tickets[0]!.progress).toBe(1);
+  });
+
   it('an outsider never gets XP or ticket credit from a party defeat', () => {
     const world = party();
     world.operators.get('carol')!.tickets.push({ id: 't-carol', day: '2026-09-30', subnet: 'test', index: 0, kind: 'clear', params: { kind: 'clear', type: 'glitch', count: 2 }, target: 2, reward: 64, progress: 0, pending: false, completing: false });
