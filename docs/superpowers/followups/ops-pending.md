@@ -86,3 +86,8 @@ sandbox. Nothing new is needed in Vault or Authentik; the checks below happen af
 - [ ] Shared Redis on S2: create ACL user `daemonet` restricted to the `daemonet:*` key/channel pattern (see OPERATIONS for the exact ACL line), store its password in `/root/.daemonet-redis-pw` on S2, publish Redis on the LAN for S1 and add the firewall rule.
 - [ ] Vault: add `REDIS_URL` (`redis://daemonet:<password>@<S2 LAN address>:6379/4`), re-run provisioning/fetch-secrets, restart sim and api.
 - [ ] Production migration `20260930000005` runs with the next deploy (`migrate deploy`).
+
+## SP4 plan 4 (incidents)
+
+- [ ] Vault: `vault kv patch secret/daemonet SUBNETS=lo,lan,dmz,backbone,darknet,cloudnet,kernelspace`, re-run fetch-secrets and restart the sim (the default now hosts kernelspace).
+- [ ] Production migration for the Incident table runs with the next deploy (`migrate deploy`).
