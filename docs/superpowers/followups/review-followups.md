@@ -126,3 +126,17 @@ Task F: minor (deferred): wild AI ignores new cost/cooldown/reach modifiers (son
 Task F: minor (deferred): useItem.stat optional on the wire but required for bitflipper — discriminated union would sharpen Monaco types
 Task F: minor (deferred): inventory outside the evolve transaction (hold is checkpoint-persisted; crash between hold and checkpoint returns the consumed item) — carry inventory on the evolve intent before SP3b
 Task F: minor (deferred): owned-daemon engagement resets on every activation, so swap A↔B↔A refreshes bitshield/nullsafe/lowlatency
+
+## 2026-09-30-daemonet-sp3a-plan4-codex-evolve-ui
+
+Fixed before merge: hidden evolution requirements moved to server-only @daemonet/rules/evolution with check:bundles in CI; held slot item names; live discovery refreshes the Codex
+
+- T1: capture family text exists twice (doc comment + `rules`) and can drift; test checks only non-empty/no links
+- T1: dev seeding slot allocation read-then-insert (concurrent 500, dev-only)
+- T2: no RAM-card render test; CodexPanel rows.find(...)! throws on a rootless line (ErrorBoundary catches)
+- T2: ESLint restriction misses relative imports of rules/dist/evolution; frontend Docker build doesn't run check:bundles (CI does); single-kind hidden requirement markers (collider [{kind:'clean'}]) can false-positive (fails closed)
+- T3: evolve e2e doesn't collect CSP violations (evolve section + codex trees uncovered under strict CSP on the Caddy run); evolve-1 / log assertions use default 5 s timeouts
+- T3: manual look at the Codex trees tab not done
+Task F: minor (deferred): evolve button has no in-flight state (RamDaemon carries no `pending`; double-click → 'daemon is busy' in Log) — SP3b should put `pending` on the wire for load/store/evolve
+Task F: minor (deferred): a11y — evolve buttons lack aria-label with the form name, held-item select unlabelled, ✓ discovery only a title tooltip, ??? has no text alternative
+Task F: minor (deferred): /api/codex refetched on every Codex tab mount (few hundred KB) — add ETag/cache headers when SP3b widens it; pin a drift test between capture doc comments and `rules`
