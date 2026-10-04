@@ -64,6 +64,32 @@ export const RenamePush = z.object({ kind: z.literal('rename'), operatorId: Id, 
  */
 export const IncidentStartPush = z.object({ kind: z.literal('incident:start'), origin: Origin });
 
-export type OrgMembershipPush = z.infer<typeof OrgMembershipPush>;
+/**
+ * `exchange` channel: something happened to these operators on the Exchange (SP5 spec §8; today `kind: 'fill'`). Only
+ * the listed, online operators get an `exchange` event, each with its own view (`exchangeView`); bits are NOT applied
+ * from it (the matching `admin` BitsPush rows do that). `detail` is bounded: it reaches clients and sandbox scripts.
+ */
+export const ExchangePush = z.object({
+  kind: z.string().min(1).max(32),
+  operators: z.array(Id).min(1).max(8),
+  detail: z
+    .record(z.string(), z.unknown())
+    .refine((d) => JSON.stringify(d).length <= 2048, 'detail too large')
+    .optional(),
+});
+
+/**
+ * One operator's view of an Exchange detail: a fill names the buyer and seller (api rows), but an operator must never
+ * learn the counterparty's id, so both ids become `side`, and the fee (taken from the seller's proceeds) is only the
+ * seller's.
+ */
+export function exchangeView(detail: Record<string, unknown>, operatorId: string): Record<string, unknown> {
+  if (!('buyerId' in detail) && !('sellerId' in detail)) return detail;
+  const { buyerId, sellerId, fee, ...rest } = detail;
+  const side = buyerId === operatorId ? 'buy' : sellerId === operatorId ? 'sell' : undefined;
+  return { ...rest, ...(side ? { side } : {}), ...(side === 'sell' && fee !== undefined ? { fee } : {}) };
+}
+
+export type OrgMembershipPush =z.infer<typeof OrgMembershipPush>;
 export type BitsPush = z.infer<typeof BitsPush>;
 export type RenamePush = z.infer<typeof RenamePush>;

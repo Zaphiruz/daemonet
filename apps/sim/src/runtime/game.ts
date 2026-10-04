@@ -22,7 +22,7 @@ import type { TokenVerifier } from './auth.js';
 import { ChatService } from './chat.js';
 import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
 import { diffEntities } from './interest.js';
-import { BitsPush, IncidentStartPush, OrgMembershipPush, RenamePush } from './pushes.js';
+import { BitsPush, ExchangePush, exchangeView, IncidentStartPush, OrgMembershipPush, RenamePush } from './pushes.js';
 import { randomHex, withItems, type IncidentRow, type Store } from './store.js';
 
 /** Transport-independent connection. */
@@ -273,7 +273,21 @@ export class Game {
       opts.bus,
       this.log,
     );
-    this.unsubscribe = [opts.bus.subscribe('org', (m) => this.onOrgPush(m)), opts.bus.subscribe('admin', (m) => this.onAdminPush(m))];
+    this.unsubscribe = [opts.bus.subscribe('org', (m) => this.onOrgPush(m)), opts.bus.subscribe('admin', (m) => this.onAdminPush(m)), opts.bus.subscribe('exchange', (m) => this.onExchange(m))];
+  }
+
+  /**
+   * `exchange` channel (SP5): delivered as an `exchange` event to each listed operator that is online, in whatever
+   * world it is. Each gets its own view; offline operators get nothing (the api history covers it).
+   */
+  private onExchange(raw: unknown): void {
+    const parsed = ExchangePush.safeParse(raw);
+    if (!parsed.success) return this.log.warn({ kind: (raw as { kind?: unknown } | null)?.kind === 'fill' ? 'fill' : 'unknown' }, 'dropped a malformed exchange message');
+    const m = parsed.data;
+    for (const id of new Set(m.operators)) {
+      const live = this.live(id);
+      if (live) live.session.world.emitCarry({ e: 'exchange', kind: m.kind, detail: exchangeView(m.detail ?? {}, id) }, { to: id });
+    }
   }
 
   // ---- operator state pushed by the api (SP4 spec §7) ----

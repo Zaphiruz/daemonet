@@ -273,6 +273,8 @@ export const GameEvent = z.discriminatedUnion('e', [
   z.object({ e: z.literal('discovery'), form: Id, operator: Id, operatorName: z.string().nullable() }),
   z.object({ e: z.literal('travelled'), from: z.string(), to: z.string() }),
   z.object({ e: z.literal('bits'), delta: z.number().int(), reason: z.string(), balance: z.number().int() }),
+  /** Something happened to you on the Exchange (a fill, a sale, a trade update); `detail` depends on `kind`. */
+  z.object({ e: z.literal('exchange'), kind: z.string(), detail: z.record(z.string(), z.unknown()) }),
   z.object({ e: z.literal('decompiled'), daemon: Id, species: z.string(), fragments: z.record(z.string(), z.number().int()) }),
   z.object({ e: z.literal('ticketProgress'), ticketId: Id, progress: z.number().int(), target: z.number().int() }),
   /** `unpaid`: the store refused the payout (the row was no longer open); the ticket is closed with reward 0. */
