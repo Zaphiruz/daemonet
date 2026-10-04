@@ -40,7 +40,8 @@ export function ExchangePanel({ client }: { client: GameClient }) {
   const [result, setResult] = useState<string | null>(null);
 
   const me = client.self;
-  const have = vault.data?.[item] ?? 0;
+  // undefined while the vault has not loaded yet (shown as …, never as an empty vault)
+  const have = vault.data === undefined ? undefined : (vault.data[item] ?? 0);
   const mine = orders.data ?? [];
   // the api's cap counts OPEN orders that have not expired yet (expired ones are swept within five minutes)
   const now = Date.now();
@@ -54,9 +55,11 @@ export function ExchangePanel({ client }: { client: GameClient }) {
       ? `at most ${MAX_OPEN_ORDERS} open orders: cancel one first`
       : side === 'BUY' && me.bits < full.total
         ? `not enough bits: the order escrows ${full.total}`
-        : side === 'SELL' && have < qty
-          ? `only ${have} in your vault: deposit items at a host first (Host → vault)`
-          : null;
+        : side === 'SELL' && have === undefined
+          ? 'reading your vault…'
+          : side === 'SELL' && have !== undefined && have < qty
+            ? `only ${have} in your vault: deposit items at a host first (Host → vault)`
+            : null;
 
   const pick = (next: string) => {
     setItem(next);
@@ -115,7 +118,7 @@ export function ExchangePanel({ client }: { client: GameClient }) {
           ))}
         </select>
         <span className="mono text-neutral-500" data-testid="exchange-vault">
-          vault ×{have} · {me.bits} bits
+          vault ×{have ?? '…'} · {me.bits} bits
         </span>
       </div>
 
@@ -175,7 +178,8 @@ export function ExchangePanel({ client }: { client: GameClient }) {
             <>
               {' · '}fills {sim.filled} now{sim.average !== null ? ` at ~${sim.average.toFixed(1)}` : ''}
               {side === 'BUY' && sim.filled > 0 ? ` · spend ${sim.spent} · refund ${sim.refund}` : ''}
-              {side === 'SELL' && sim.filled > 0 ? ` · fee ${sim.fee} · receive ${sim.spent - sim.fee}` : ''}
+              {/* the book shows one row per price; the engine floors the fee per resting order, so it can come out lower */}
+              {side === 'SELL' && sim.filled > 0 ? ` · fee up to ${sim.fee} · receive at least ${sim.spent - sim.fee}` : ''}
               {sim.resting > 0 ? ` · ${sim.resting} rests${side === 'SELL' ? `, ${orderPreview('SELL', price, sim.resting).net} bits after the 1/16 fee if it fills` : ''}` : ''}
             </>
           )}

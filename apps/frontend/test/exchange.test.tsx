@@ -216,7 +216,7 @@ describe('ExchangePanel', () => {
     expect(screen.getByTestId('side-BUY').className).toContain('emerald');
   });
 
-  it('previews exactly what the engine would do: fills at resting prices, the refund, the per-fill fee', () => {
+  it('previews what the engine would do: fills at resting prices and the refund; a SELL`s fee is an upper bound (the engine floors it per resting order)', () => {
     render(<ExchangePanel client={client(1000)} />);
     setInput('order-price', '60');
     setInput('order-qty', '5');
@@ -229,8 +229,18 @@ describe('ExchangePanel', () => {
     setInput('order-qty', '5');
     const sell = screen.getByTestId('order-preview').textContent!;
     expect(sell).toContain('fills 5 now');
-    expect(sell).toContain('fee 12'); // 200 / 16
-    expect(sell).toContain('receive 188');
+    expect(sell).toContain('fee up to 12'); // 200 / 16 for the level; per resting order it can floor lower
+    expect(sell).toContain('receive at least 188');
+  });
+
+  it('says the vault is loading instead of claiming it is empty', () => {
+    q.vault.data = undefined;
+    render(<ExchangePanel client={client(1000)} />);
+    fireEvent.click(screen.getByTestId('side-SELL'));
+    expect(screen.getByTestId('exchange-vault').textContent).toContain('vault ×…');
+    expect((screen.getByTestId('order-place') as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId('order-why').textContent).toContain('…');
+    expect(screen.getByTestId('order-why').textContent).not.toContain('only 0');
   });
 
   it('notes when the player`s own resting order would be skipped', () => {

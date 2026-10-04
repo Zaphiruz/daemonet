@@ -55,7 +55,7 @@ const prune = () =>
 void prune();
 const pruneTimer = setInterval(() => void prune(), 6 * 3_600_000);
 
-// Exchange orders past their 7 days: escrow back to their owners (one run at a time).
+// Exchange orders past their 7 days: escrow back to their owners (at boot, then every five minutes; one run at a time).
 let expiring = false;
 const expire = () => {
   if (expiring) return;
@@ -69,6 +69,7 @@ const expire = () => {
       expiring = false;
     });
 };
+expire();
 const expireTimer = setInterval(expire, 5 * 60_000);
 
 let stopping = false;

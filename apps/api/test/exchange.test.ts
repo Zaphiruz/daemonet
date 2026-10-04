@@ -187,6 +187,32 @@ describe.skipIf(!url)('Exchange order book (needs DATABASE_URL)', () => {
     expect((await prisma!.order.findMany()).map((o) => o.status)).toEqual(['EXPIRED', 'EXPIRED']);
   });
 
+  it('expiry logs and skips an order whose release fails, and still expires the rest', async () => {
+    const buyer = await trader('xf-b', 1000);
+    const seller = await trader('xf-s', 0, { 'frag:packet': 5 });
+    await buyer.order('BUY', 10, 10); // expires first
+    await seller.order('SELL', 500, 5);
+    let calls = 0;
+    // the first expiry transaction fails (a transient database error, say)
+    const flaky = new Proxy(prisma!, {
+      get(target, prop, receiver) {
+        if (prop !== '$transaction') return Reflect.get(target, prop, receiver);
+        return (...args: Parameters<typeof target.$transaction>) => (++calls === 1 ? Promise.reject(new Error('boom')) : target.$transaction(...args));
+      },
+    });
+    const warnings: Array<{ obj: object; msg: string }> = [];
+    const log = { warn: (obj: object, msg: string) => warnings.push({ obj, msg }) };
+    const later = new Date(Date.now() + ORDER_TTL_MS + 60_000);
+    expect(await expireOrders(flaky, bus, later, log)).toBe(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.msg).toBe('order expiry failed');
+    expect(await seller.vault()).toEqual({ 'frag:packet': 5 });
+    expect(await buyer.bits()).toBe(900);
+    // the next run picks it up
+    expect(await expireOrders(prisma!, bus, later)).toBe(1);
+    expect(await buyer.bits()).toBe(1000);
+  });
+
   it('conserves bits and items over random order flow: only fees leave the system', async () => {
     const rng = createRng('exchange-conservation');
     const traders = [await trader('r0', 20_000, { 'frag:packet': 200 }), await trader('r1', 20_000, { 'frag:packet': 200 }), await trader('r2', 20_000, { 'frag:packet': 200 })];

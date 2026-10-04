@@ -161,23 +161,40 @@ export async function cancelOrder(prisma: PrismaClient, bus: Bus, operatorId: st
   announce(bus, log, out);
 }
 
-/** Expires open orders past their time; run by the api every five minutes. Returns how many were closed. */
+/**
+ * Expires open orders past their time; run by the api at boot and every five minutes. Returns how many were closed. An
+ * order whose transaction fails is logged and skipped (the next run retries it), so one bad row never blocks the rest.
+ */
 export async function expireOrders(prisma: PrismaClient, bus: Bus, now = new Date(), log: PublishLog = consoleBusLogger): Promise<number> {
   const BATCH = 256;
   let closed = 0;
+  const failed: string[] = [];
   for (;;) {
-    const due = await prisma.order.findMany({ where: { status: 'OPEN', expiresAt: { lte: now } }, select: { id: true, item: true, operatorId: true }, orderBy: { expiresAt: 'asc' }, take: BATCH });
+    const due = await prisma.order.findMany({
+      where: { status: 'OPEN', expiresAt: { lte: now }, ...(failed.length ? { id: { notIn: failed } } : {}) },
+      select: { id: true, item: true, operatorId: true },
+      orderBy: { expiresAt: 'asc' },
+      take: BATCH,
+    });
     for (const d of due) {
       const out = new Outbox();
-      await prisma.$transaction(async (tx) => {
-        await lockBook(tx, d.item);
-        await lockOperators(tx, [d.operatorId]);
-        // re-read under the locks: a fill or a cancel may have closed it since
-        const order = await tx.order.findUniqueOrThrow({ where: { id: d.id } });
-        if (order.status !== 'OPEN' || order.expiresAt > now) return;
-        await release(tx, out, order, 'EXPIRED');
-        closed++;
-      }, TX_OPTIONS);
+      try {
+        const expired = await prisma.$transaction(async (tx) => {
+          await lockBook(tx, d.item);
+          await lockOperators(tx, [d.operatorId]);
+          // re-read under the locks: a fill or a cancel may have closed it since
+          const order = await tx.order.findUniqueOrThrow({ where: { id: d.id } });
+          if (order.status !== 'OPEN' || order.expiresAt > now) return false;
+          await release(tx, out, order, 'EXPIRED');
+          return true;
+        }, TX_OPTIONS);
+        if (expired) closed++;
+      } catch (err) {
+        failed.push(d.id);
+        const e = err as { name?: unknown; code?: unknown };
+        log.warn({ orderId: d.id, err: { name: String(e?.name ?? 'Error'), code: e?.code === undefined ? undefined : String(e.code) } }, 'order expiry failed');
+        continue;
+      }
       announce(bus, log, out);
     }
     if (due.length < BATCH) return closed;

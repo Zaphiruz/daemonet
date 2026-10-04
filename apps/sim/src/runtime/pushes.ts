@@ -90,6 +90,6 @@ export function exchangeView(detail: Record<string, unknown>, operatorId: string
   return { ...rest, ...(side ? { side } : {}), ...(side === 'sell' && fee !== undefined ? { fee } : {}) };
 }
 
-export type OrgMembershipPush =z.infer<typeof OrgMembershipPush>;
+export type OrgMembershipPush = z.infer<typeof OrgMembershipPush>;
 export type BitsPush = z.infer<typeof BitsPush>;
 export type RenamePush = z.infer<typeof RenamePush>;
