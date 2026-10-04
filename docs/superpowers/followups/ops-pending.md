@@ -76,3 +76,7 @@ sandbox. Nothing new is needed in Vault or Authentik; the checks below happen af
       policy and `X-Frame-Options: SAMEORIGIN`, reachable without logging in. If a Cloudflare rule or the nginx
       server block on LC2 adds its own `Content-Security-Policy`, remove it for `/sandbox.html` (two policies would
       both apply).
+
+## SP3b plan 1 (subnets and travel)
+
+- [ ] The sim's Vault key `SUBNET` is replaced by `SUBNETS` (comma-separated subnet ids; default all six). On LC3: `vault kv patch secret/daemonet SUBNETS=lo,lan,dmz,backbone,darknet,cloudnet` (and remove the old `SUBNET` key once the new sim is deployed), then re-run fetch-secrets and restart the sim.
