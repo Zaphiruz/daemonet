@@ -9,9 +9,11 @@ declare module '@daemonet/sdk' {
   export interface DaemonView extends DaemonEntity { hpPct: number }
   export interface OperatorEntity extends Positioned { kind: 'operator'; id: string; name: string | null }
   export type Entity = OperatorEntity | DaemonEntity;
+  export interface EvolutionOption { form: string; name: string; level: number; hidden: boolean; revealed: boolean; met: boolean; requirement: unknown[] | null }
   export interface RamDaemon {
-    id: string; species: string; level: number; xp: number; ivs: number[]; bonus: number[]; clean: boolean; signature: number;
+    id: string; species: string; level: number; xp: number; nature: number; traitSlot: 0 | 1; ivs: number[]; bonus: number[]; clean: boolean; signature: number;
     hp: number; maxHp: number; energy: number; moves: string[]; crashed: boolean; slot: number; cooldowns: Record<string, number>;
+    heldItem: string | null; patched: boolean; moveTypeUses: number[]; crashes: number; evolutions: EvolutionOption[];
   }
   export interface OperatorSelf extends Positioned {
     id: string; name: string | null; starterClaimed: boolean; bits: number; ram: RamDaemon[]; running: string[];
@@ -35,6 +37,8 @@ declare module '@daemonet/sdk' {
     swap(outId: string, inId: string): Promise<unknown>; capture(target: { id: string } | string, tool: 'sniff' | 'tap' | 'mirror' | 'dump'): Promise<unknown>;
     submitCapture(captureId: string, answer: unknown): Promise<unknown>; useRestore(daemonId: string): Promise<unknown>; restoreAll(): Promise<unknown>;
     claimStarter(species: string, operatorName: string): Promise<unknown>; store(daemonId: string): Promise<unknown>; load(daemonId: string): Promise<unknown>;
+    evolve(daemonId: string, formId: string): Promise<unknown>; hold(daemonId: string, itemId: string): Promise<unknown>; unhold(daemonId: string): Promise<unknown>;
+    useBitFlipper(daemonId: string, stat: 'hp' | 'attack' | 'defense' | 'focus' | 'resolve' | 'speed' | 'haste' | 'energy'): Promise<unknown>;
     script(fn: (ctx: OperatorScriptContext) => void): () => void;
   }
   export class DaemonsApi { get(id: string): DaemonHandle; script(fn: (ctx: DaemonScriptContext) => void): () => void }
@@ -44,6 +48,8 @@ declare module '@daemonet/sdk' {
     on(name: 'captureStart', handler: (ev: CaptureStartEvent) => void): () => void;
     on(name: 'captureResult', handler: (ev: { captureId: string; ok: boolean; reason?: string }) => void): () => void;
     on(name: 'tick', handler: (tick: number) => void): () => void;
+    on(name: 'evolved', handler: (ev: { daemon: string; from: string; to: string; changes: unknown[] }) => void): () => void;
+    on(name: 'discovery', handler: (ev: { form: string; operator: string; operatorName: string | null }) => void): () => void;
     on(name: string, handler: (value: any) => void): () => void;
   }
 }
