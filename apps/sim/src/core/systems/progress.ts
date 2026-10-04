@@ -36,6 +36,7 @@ export function resolveDefeats(world: World, out: Out): void {
       continue;
     }
     d.crashed = true;
+    d.crashes++;
     world.deactivate(d);
     const op = world.operators.get(d.ownerId!)!;
     if (op.ram.every((id) => world.daemons.get(id)!.crashed)) {

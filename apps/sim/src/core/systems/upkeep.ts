@@ -1,9 +1,14 @@
-import { ENERGY_MAX, regenEnergy, type StatusId } from '@daemonet/rules';
-import type { Daemon } from '../model.js';
+import { ENERGY_MAX, TICK_HZ, getItem, regenEnergy, type StatusId } from '@daemonet/rules';
+import { freshEngagement, type Daemon } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
 
 export const SP1_SNIFF_REFILL = 8;
+/** leaking: energy lost per second. */
+export const LEAK_PER_SECOND = 2;
+const batteryItem = getItem('battery');
+/** battery: energy regen multiplier, read from the item table (regenEnergy's tick count scales linearly). */
+const BATTERY_REGEN = batteryItem.kind === 'held' ? batteryItem.multiplier : 1;
 
 export function restoreDaemon(d: Daemon): void {
   d.hp = d.stats.hp;
@@ -18,7 +23,8 @@ export function upkeep(world: World, out: Out): void {
   const captured = new Set([...world.captures.values()].map((c) => c.targetId));
   for (const d of world.daemons.values()) {
     if (d.crashed) continue;
-    d.energy = regenEnergy(d.energy, d.stats.energy);
+    d.energy = regenEnergy(d.energy, d.stats.energy, d.heldItem === 'battery' ? BATTERY_REGEN : 1);
+    if ((d.statuses.leaking ?? 0) > tick) d.energy = Math.max(0, d.energy - LEAK_PER_SECOND / TICK_HZ);
     for (const [status, until] of Object.entries(d.statuses) as Array<[StatusId, number]>) {
       if (until <= tick) delete d.statuses[status];
     }
@@ -28,6 +34,7 @@ export function upkeep(world: World, out: Out): void {
       w.aggro = null;
       w.damagedBy.clear();
       d.hp = d.stats.hp;
+      d.engagement = freshEngagement();
     }
   }
 

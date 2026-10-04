@@ -1,10 +1,13 @@
 import { TICK_HZ } from '@daemonet/rules';
 import { distance, type Point } from '../grid.js';
+import type { Daemon } from '../model.js';
 import type { World } from '../world.js';
 import { LEASH_TILES } from './commands.js';
 
 export const OPERATOR_SPEED = 4;
 export const FOLLOW_TILES = 3;
+/** voidstep: +50% speed with no hostile within this many tiles. */
+export const VOIDSTEP_RADIUS = 8;
 const LEASH_REPATH_TICKS = 4;
 
 export function daemonSpeed(speedStat: number): number {
@@ -32,6 +35,17 @@ export function advance(mover: Point & { path: Point[] }, tilesPerSecond: number
   }
 }
 
+/** Any active daemon of the other side (or an operator, for wild daemons) within `radius`. */
+export function hostileNear(world: World, d: Daemon, radius: number): boolean {
+  for (const other of world.daemons.values()) {
+    if (!other.active || other.hp <= 0 || other === d) continue;
+    if ((other.ownerId === null) === (d.ownerId === null)) continue;
+    if (distance(d, other) <= radius) return true;
+  }
+  if (d.ownerId === null) for (const op of world.operators.values()) if (distance(d, op) <= radius) return true;
+  return false;
+}
+
 export function moveAll(world: World): void {
   for (const op of world.operators.values()) advance(op, OPERATOR_SPEED);
   for (const d of world.daemons.values()) {
@@ -46,6 +60,7 @@ export function moveAll(world: World): void {
         d.path = world.grid.findPath(d, op) ?? [];
       }
     }
-    advance(d, daemonSpeed(d.stats.speed));
+    const boost = d.trait === 'voidstep' && !hostileNear(world, d, VOIDSTEP_RADIUS) ? 1.5 : 1;
+    advance(d, daemonSpeed(d.stats.speed) * boost);
   }
 }

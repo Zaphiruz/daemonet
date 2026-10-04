@@ -1,4 +1,4 @@
-import { getSpecies, statBlock, statBlockToArray } from '@daemonet/rules';
+import { getSpecies, statBlock, statBlockToArray, typeIndex } from '@daemonet/rules';
 import { describe, expect, it } from 'vitest';
 import { toRamDaemon, type Intent } from '../src/core/index.js';
 import { MemoryStore } from '../src/runtime/store.js';
@@ -299,5 +299,21 @@ describe('item command guards', () => {
     expect(useItem(world, { item: 'bitflipper', stat: 'hp' })).toMatchObject({ ok: true });
     expect(d.ivs.hp).toBe(22);
     expect(d.hp).toBe(0);
+  });
+});
+
+describe('lifetime counters', () => {
+  it('counts move uses per type and crashes', () => {
+    const world = setup();
+    world.addOperator(operatorRecord('bob'));
+    step(world, input('bob', { cmd: 'run', actor: self, args: { daemonId: 'bob-d0' } }));
+    const wild = world.spawnWild('bitrot', 5, { x: 7.5, y: 5.5 }, -1, { ...world.daemons.get('bob-d0')!, ivs: statBlock(10), clean: false, signature: 0 });
+    step(world, input('bob', { cmd: 'use', actor: 'bob-d0', args: { move: 'ping', targetId: wild.id } }));
+    const mine = world.daemons.get('bob-d0')!;
+    expect(mine.moveTypeUses[typeIndex('packet')]).toBe(1);
+    mine.hp = 0;
+    step(world);
+    expect(mine.crashes).toBe(1);
+    expect(world.checkpoint('bob').ram[0]).toMatchObject({ crashes: 1, moveTypeUses: mine.moveTypeUses });
   });
 });

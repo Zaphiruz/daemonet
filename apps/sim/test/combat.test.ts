@@ -50,7 +50,7 @@ describe('player moves', () => {
     const far = placeWild(world, 'voidlet', 5, 12.5, 12.5);
     const r = step(world, input('alice', { cmd: 'use', actor: 'alice-d0', args: { move: 'broadcast', x: 9, y: 6 } }));
     expect(r.replies[0]).toMatchObject({ ok: true });
-    const hits = r.events.filter((e) => e.event.e === 'hit').map((e) => (e.event as { target: string }).target);
+    const hits = r.events.filter((e) => e.event.e === 'hit' && (e.event as { source: string }).source === 'alice-d0').map((e) => (e.event as { target: string }).target);
     expect(hits.sort()).toEqual([a.id, b.id].sort());
     expect(far.hp).toBe(far.stats.hp);
   });
