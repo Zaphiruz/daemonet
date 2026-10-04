@@ -1,5 +1,12 @@
+import { MAX_ANSWER_BYTES } from '@daemonet/rules';
 import { describe, expect, it } from 'vitest';
-import { MAX_MESSAGE_BYTES, ServerMessage, parseClientMessage } from '../src/protocol.js';
+import { MAX_MESSAGE_BYTES, MAX_SUBMIT_BYTES, ServerMessage, parseClientMessage } from '../src/protocol.js';
+
+describe('submit limits', () => {
+  it('every capture answer fits a submitCapture message with room for the envelope', () => {
+    expect(MAX_ANSWER_BYTES + 1024).toBeLessThan(MAX_SUBMIT_BYTES);
+  });
+});
 
 const cmd = (d: Record<string, unknown>) => JSON.stringify({ t: 'cmd', seq: 1, d: { reqId: 'r1', ...d } });
 

@@ -9,6 +9,8 @@ import { fnv1a32Hex, utf8, type ChallengeFamily } from './common.js';
  * A key maps to the node of the first ring point (in that order) whose position is >= FNV-1a-32(UTF-8 key)
  * (equal counts), and when the key's hash is above every point it wraps to the first point of the ring.
  * Keys starting with '#' are comments to ignore (noise). A key listed twice is one entry.
+ * A generated challenge has at most {@link CLOUD_MAX_KEYS} real keys (so the answer stays small enough to submit);
+ * larger sizes add nodes to the ring instead (3-8 nodes, plus one per 128 of size).
  * Answer: key -> node for every real key.
  */
 export interface CloudParams {
@@ -38,21 +40,23 @@ export function placeKeys(params: CloudParams, keys: readonly string[]): Record<
   return out;
 }
 
-const MAX_PLACEMENTS = 16384;
+/** Most real keys (and so answer entries) a generated cloud challenge has. */
+export const CLOUD_MAX_KEYS = 256;
 
 export const cloudFamily: ChallengeFamily<CloudParams, CloudPayload, CloudAnswer> = {
   type: 'cloud',
   answerSchema: z.object({
     placement: z
       .record(z.string().max(256), z.string().max(256))
-      .refine((p) => Object.keys(p).length <= MAX_PLACEMENTS, { message: 'too many entries' }),
+      .refine((p) => Object.keys(p).length <= CLOUD_MAX_KEYS, { message: 'too many entries' }),
   }),
   generate(size, noise, rng) {
-    const nodes = Array.from({ length: rng.int(3, 8) }, (_, i) => `node-${i}`);
+    const nodes = Array.from({ length: rng.int(3, 8) + Math.floor(size / 128) }, (_, i) => `node-${i}`);
     const vnodes = 2 ** rng.int(3, 6);
+    const count = Math.min(size, CLOUD_MAX_KEYS);
     const keys: string[] = [];
-    for (let i = 0; i < size; i++) keys.push(`key-${rng.int(0, 1_000_000)}`);
-    const decoys = [0, Math.floor(size / 8), Math.floor(size / 4)][noise]!;
+    for (let i = 0; i < count; i++) keys.push(`key-${rng.int(0, 1_000_000)}`);
+    const decoys = [0, Math.floor(count / 8), Math.floor(count / 4)][noise]!;
     for (let i = 0; i < decoys; i++) keys.splice(rng.int(0, keys.length), 0, `#key-${rng.int(0, 1_000_000)}`);
     const params = { nodes, vnodes };
     return { params, payload: { keys }, answer: { placement: placeKeys(params, keys) } };

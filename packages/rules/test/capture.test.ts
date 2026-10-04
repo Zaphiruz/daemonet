@@ -4,13 +4,13 @@ import { fromHex, fromUtf8, utf8 } from '../src/capture/common.js';
 import { lruHits } from '../src/capture/cache.js';
 import { hammingEncode } from '../src/capture/glitch.js';
 import { ringContents } from '../src/capture/buffer.js';
-import { placeKeys } from '../src/capture/cloud.js';
+import { CLOUD_MAX_KEYS, placeKeys } from '../src/capture/cloud.js';
 import { leaked, type HeapEvent } from '../src/capture/heap.js';
 import { wrap } from '../src/capture/proxy.js';
 import { runStack } from '../src/capture/stack.js';
 import { roundRobin } from '../src/capture/kernel.js';
 import { checkAccess, type RootParams, type RootRequest } from '../src/capture/root.js';
-import { runPipeline } from '../src/capture/shell.js';
+import { runPipeline, SHELL_UNREDUCED_MAX_LINES } from '../src/capture/shell.js';
 import { finalStates, type Segment } from '../src/capture/socket.js';
 import { deliveryOrder, type SignalParams } from '../src/capture/signal.js';
 import { firstRace, type ThreadEvent } from '../src/capture/thread.js';
@@ -22,7 +22,7 @@ import {
   publicChallenge,
   type ChainPayload,
 } from '../src/capture/index.js';
-import { challengeSize, MAX_CHALLENGE_SIZE, type ChallengeTarget } from '../src/capture/size.js';
+import { challengeSize, MAX_ANSWER_BYTES, MAX_CHALLENGE_SIZE, type ChallengeTarget } from '../src/capture/size.js';
 import { getTool, type Noise } from '../src/content/items.js';
 import { createRng } from '../src/rng.js';
 import { TYPES, type TypeId } from '../src/types.js';
@@ -103,6 +103,47 @@ describe('payload cap', () => {
         }),
         { numRuns: 40 },
       );
+  });
+
+  it('every answer fits MAX_ANSWER_BYTES at the maximum size, singles and chains, every noise', () => {
+    const answerBytes = (c: ReturnType<typeof generateChallenge>) => utf8(JSON.stringify(c.answer)).length;
+    expect(MAX_ANSWER_BYTES).toBe(12_288);
+    for (const type of TYPES)
+      for (const noise of [0, 1, 2] as const)
+        fc.assert(
+          fc.property(fc.integer(), (seed) => {
+            expect(answerBytes(generateChallenge([type], MAX_CHALLENGE_SIZE, noise, createRng(seed)))).toBeLessThanOrEqual(MAX_ANSWER_BYTES);
+          }),
+          { numRuns: 40 },
+        );
+    for (const a of TYPES)
+      for (const b of TYPES)
+        for (const noise of [0, 1, 2] as const)
+          fc.assert(
+            fc.property(fc.integer(), (seed) => {
+              expect(answerBytes(generateChallenge([a, b], MAX_CHALLENGE_SIZE, noise, createRng(seed)))).toBeLessThanOrEqual(MAX_ANSWER_BYTES);
+            }),
+            { numRuns: 2 },
+          );
+  });
+
+  it('cloud caps its real keys and shell caps the input of a pipeline that keeps every line', () => {
+    let unreduced = 0;
+    for (let seed = 0; seed < 200; seed++) {
+      const cloud = generateChallenge(['cloud'], MAX_CHALLENGE_SIZE, 2, createRng(seed));
+      const keys = (cloud.payload as { keys: string[] }).keys;
+      expect(new Set(keys.filter((k) => !k.startsWith('#'))).size).toBeLessThanOrEqual(CLOUD_MAX_KEYS);
+      expect((cloud.params as { nodes: string[] }).nodes.length).toBeGreaterThanOrEqual(3 + 8);
+      const shell = generateChallenge(['shell'], MAX_CHALLENGE_SIZE, 2, createRng(seed));
+      const { pipeline } = shell.params as { pipeline: string };
+      const lines = (shell.payload as { lines: string[] }).lines.filter((l) => l !== '');
+      if (/grep|cut|wc/.test(pipeline)) expect(lines.length).toBe(MAX_CHALLENGE_SIZE);
+      else {
+        unreduced++;
+        expect(lines.length).toBe(SHELL_UNREDUCED_MAX_LINES);
+      }
+    }
+    expect(unreduced).toBeGreaterThan(0);
   });
 
   it('every ordered pair as a chain stays under 64 KiB at the maximum size', () => {

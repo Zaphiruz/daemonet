@@ -8,6 +8,8 @@ import { WORDS } from './crypto.js';
  * (code-point order); `uniq` drops consecutive duplicates; `cut -d<c> -f<n>` keeps the n-th
  * (1-based) field split by the single character c (lines with fewer fields become ""); `wc -l`
  * replaces the output with one line holding the count. Blank lines in the input are ignored (noise).
+ * A generated pipeline with no `grep`, `cut` or `wc` stage gets at most {@link SHELL_UNREDUCED_MAX_LINES} input lines
+ * (blank lines not counted), so the answer stays small enough to submit.
  * Answer: the output lines.
  */
 export interface ShellParams {
@@ -27,6 +29,9 @@ function compareCodePoints(a: string, b: string): number {
   for (let i = 0; i < Math.min(x.length, y.length); i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
   return x.length - y.length;
 }
+
+/** Input-line cap for a generated pipeline that keeps every line (no `grep`, `cut` or `wc` stage). */
+export const SHELL_UNREDUCED_MAX_LINES = 512;
 
 export function runPipeline(pipeline: string, lines: readonly string[]): string[] {
   let out = lines.filter((l) => l !== '');
@@ -60,10 +65,6 @@ export const shellFamily: ChallengeFamily<ShellParams, ShellPayload, ShellAnswer
   type: 'shell',
   answerSchema: z.object({ output: z.array(z.string()).max(16384) }),
   generate(size, noise, rng) {
-    const lines: string[] = [];
-    for (let i = 0; i < size; i++) lines.push(`${rng.pick(WORDS)},${rng.int(0, 99)},${rng.pick(WORDS)}`);
-    const blanks = [0, Math.floor(size / 8), Math.floor(size / 4)][noise]!;
-    for (let i = 0; i < blanks; i++) lines.splice(rng.int(0, lines.length), 0, '');
     const stages: string[] = [];
     if (rng.chance(0.7)) stages.push(`grep ${rng.pick(WORDS)}`);
     if (rng.chance(0.5)) stages.push(`cut -d, -f${rng.int(1, 3)}`);
@@ -72,6 +73,13 @@ export const shellFamily: ChallengeFamily<ShellParams, ShellPayload, ShellAnswer
     if (rng.chance(0.3)) stages.push('wc -l');
     if (stages.length === 0) stages.push('sort');
     const pipeline = stages.join(' | ');
+    // sort/uniq alone keep every (up to 16-character) line; cap the input so the output stays under MAX_ANSWER_BYTES
+    const reduces = stages.some((s) => s.startsWith('grep') || s.startsWith('cut') || s.startsWith('wc'));
+    const count = reduces ? size : Math.min(size, SHELL_UNREDUCED_MAX_LINES);
+    const lines: string[] = [];
+    for (let i = 0; i < count; i++) lines.push(`${rng.pick(WORDS)},${rng.int(0, 99)},${rng.pick(WORDS)}`);
+    const blanks = [0, Math.floor(count / 8), Math.floor(count / 4)][noise]!;
+    for (let i = 0; i < blanks; i++) lines.splice(rng.int(0, lines.length), 0, '');
     return { params: { pipeline }, payload: { lines }, answer: { output: runPipeline(pipeline, lines) } };
   },
   check: (e, s) => e.output.length === s.output.length && e.output.every((v, i) => v === s.output[i]),

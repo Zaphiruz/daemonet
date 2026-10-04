@@ -18,6 +18,13 @@ export interface ChallengeTarget {
 /** Upper bound on a challenge's size parameter; keeps every public challenge (single or chain) under 64 KiB. */
 export const MAX_CHALLENGE_SIZE = 1024;
 
+/**
+ * Upper bound on `JSON.stringify(answer)` in UTF-8 bytes for every generated challenge (single or chain) at any size
+ * up to {@link MAX_CHALLENGE_SIZE}. It leaves room for the `submitCapture` envelope under the transport's
+ * `MAX_SUBMIT_BYTES` (16384), so every correct answer can be submitted.
+ */
+export const MAX_ANSWER_BYTES = 12_288;
+
 export function challengeSize(target: ChallengeTarget, tool: ToolDef): number {
   const hp = Math.min(1, Math.max(0, target.hpFraction));
   let size = 16 * 2 ** target.stage * (1 + hp);
