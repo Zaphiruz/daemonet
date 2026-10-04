@@ -30,6 +30,8 @@ export interface GatewayDef {
   arrive: { x: number; y: number };
   /** The highest level in RAM must reach this. */
   requires: { level: number };
+  /** Only usable while an Incident is open in the destination (SP4 plan 4 enforces it in `travel`). */
+  incidentOnly?: boolean;
 }
 
 export interface SubnetDef {
@@ -46,6 +48,8 @@ export interface SubnetDef {
   spawn: { x: number; y: number };
   regions: readonly RegionDef[];
   gateways: readonly GatewayDef[];
+  /** Boss arena (kernelspace only): centre and radius in tiles. */
+  arena?: { x: number; y: number; radius: number };
 }
 
 export const GATEWAY_RADIUS = 2;
@@ -167,6 +171,7 @@ export const BACKBONE = subnet('backbone', 3, ['packet', 'socket', 'cloud', 'buf
   gate('backbone-dmz', CORNER_NW, 'dmz', ARRIVE_SE, 0),
   gate('backbone-darknet', CORNER_NE, 'darknet', ARRIVE_NW, 32),
   gate('backbone-cloudnet', CORNER_SE, 'cloudnet', ARRIVE_NW, 40),
+  { ...gate('backbone-kernelspace', { x: 122.5, y: 64.5 }, 'kernelspace', { x: 66.5, y: 112.5 }, 32), incidentOnly: true },
 ]);
 export const DARKNET = subnet('darknet', 4, ['null', 'glitch', 'proxy', 'crypto'], [2, 3], [[32, 38], [36, 42], [40, 46], [44, 50]], [
   gate('darknet-backbone', CORNER_NW, 'backbone', ARRIVE_NE, 0),
@@ -175,11 +180,30 @@ export const CLOUDNET = subnet('cloudnet', 4, ['cloud', 'cache', 'heap', 'stack'
   gate('cloudnet-backbone', CORNER_NW, 'backbone', ARRIVE_SE, 0),
 ]);
 
-export const SUBNETS: readonly SubnetDef[] = deepFreeze([LO, LAN, DMZ, BACKBONE, DARKNET, CLOUDNET]);
-/** The subnets one sim process hosts by default (sandbox and kernelspace come with SP6 / SP4). */
-export const OPEN_SUBNET_IDS: readonly string[] = deepFreeze(SUBNETS.map((s) => s.id));
-/** Every subnet id that exists in the rules (an evolution `subnet` requirement must name one of these or a reserved later id). */
-export const SUBNET_IDS: readonly string[] = OPEN_SUBNET_IDS;
+/**
+ * Incidents (SP4 spec 8): 128 x 128 open floor, boss arena in the north, host in the south; nothing spawns on its own.
+ * Reached only through the Incident-only `backbone-kernelspace` gateway.
+ */
+export const KERNELSPACE: SubnetDef = deepFreeze<SubnetDef>({
+  id: 'kernelspace',
+  tier: 5,
+  width: 128,
+  height: 128,
+  walls: [],
+  host: { x: 64.5, y: 112.5 },
+  spawn: { x: 66.5, y: 112.5 },
+  regions: [],
+  gateways: [gate('kernelspace-backbone', { x: 64.5, y: 122.5 }, 'backbone', { x: 120.5, y: 64.5 }, 0)],
+  arena: { x: 64.5, y: 40.5, radius: 24 },
+});
+
+export const SUBNETS: readonly SubnetDef[] = deepFreeze([LO, LAN, DMZ, BACKBONE, DARKNET, CLOUDNET, KERNELSPACE]);
+/** Open-world subnets (those with spawn regions: tickets, wild spawns). */
+export const OPEN_SUBNET_IDS: readonly string[] = deepFreeze(SUBNETS.filter((s) => s.regions.length > 0).map((s) => s.id));
+/** What one sim process hosts by default: the open subnets plus kernelspace (the sandbox comes with SP6). */
+export const HOSTED_SUBNET_IDS: readonly string[] = deepFreeze(SUBNETS.map((s) => s.id));
+/** Every subnet id that exists in the rules (an evolution `subnet` requirement must name one of these). */
+export const SUBNET_IDS: readonly string[] = HOSTED_SUBNET_IDS;
 
 export function getSubnet(id: string): SubnetDef {
   const s = SUBNETS.find((x) => x.id === id);

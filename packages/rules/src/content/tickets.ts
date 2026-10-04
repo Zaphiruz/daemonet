@@ -88,7 +88,8 @@ function makeTicket(index: number, kind: TicketKind, subnetId: string, tier: num
       };
     }
     case 'deliver': {
-      const to = rng.pick(getSubnet(subnetId).gateways.map((g) => g.to));
+      // Incident gateways are not ordinary destinations: a ticket must always be completable.
+      const to = rng.pick(getSubnet(subnetId).gateways.filter((g) => !g.incidentOnly).map((g) => g.to));
       const reward = Math.min(DELIVER_MAX, 128 + 64 * Math.max(tier, getSubnet(to).tier));
       return { index, kind, params: { kind, to }, target: 1, reward, title: `Deliver a token to the host of ${to}` };
     }
@@ -103,6 +104,7 @@ function makeTicket(index: number, kind: TicketKind, subnetId: string, tier: num
  */
 export function ticketBoard(subnetId: string, day: string): TicketDef[] {
   const subnet = getSubnet(subnetId);
+  if (subnet.regions.length === 0) return []; // kernelspace: no spawns to clear or capture, no board
   const rng = createRng(`tickets:${subnetId}:${day}`);
   const pool = subnetPool(subnetId);
   const kinds: readonly TicketKind[] = subnet.tier === 0 ? ['clear', 'capture', 'deliver'] : ['clear', 'capture', 'deliver', 'evolve'];

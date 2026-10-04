@@ -1,20 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { getSpecies } from '../src/content/species.js';
-import { LO, OPEN_SUBNET_IDS, SUBNETS, SUBNET_IDS, getGateway, getSubnet, spawnTable, type Rect } from '../src/content/subnets.js';
+import { HOSTED_SUBNET_IDS, LO, OPEN_SUBNET_IDS, SUBNETS, SUBNET_IDS, getGateway, getSubnet, spawnTable, type Rect } from '../src/content/subnets.js';
 import { EVOLUTION_RULES } from '../src/evolution/rules.js';
 
 const inside = (p: { x: number; y: number }, s: { width: number; height: number }) => p.x > 1 && p.y > 1 && p.x < s.width - 1 && p.y < s.height - 1;
 const inWall = (p: { x: number; y: number }, walls: readonly Rect[]) => walls.some((w) => p.x >= w.x && p.x < w.x + w.w && p.y >= w.y && p.y < w.y + w.h);
 const rectInside = (r: Rect, w: number, h: number) => r.x >= 1 && r.y >= 1 && r.x + r.w <= w - 1 && r.y + r.h <= h - 1;
 
-/** Subnets later plans add; evolution requirements may already name them. */
-const RESERVED_SUBNET_IDS = ['kernelspace'];
-
 describe('subnets', () => {
-  it('hosts six open subnets with lo first', () => {
+  it('hosts six open subnets with lo first, plus kernelspace (hosted, no spawns)', () => {
     expect(OPEN_SUBNET_IDS).toEqual(['lo', 'lan', 'dmz', 'backbone', 'darknet', 'cloudnet']);
-    expect(SUBNET_IDS).toBe(OPEN_SUBNET_IDS);
+    expect(HOSTED_SUBNET_IDS).toEqual([...OPEN_SUBNET_IDS, 'kernelspace']);
+    expect(SUBNET_IDS).toBe(HOSTED_SUBNET_IDS);
     expect(SUBNETS[0]).toBe(LO);
     expect(() => getSubnet('nope')).toThrow(RangeError);
   });
@@ -37,8 +35,11 @@ describe('subnets', () => {
       cloudnet: [[40, 46], [44, 50], [48, 54], [52, 58]],
     };
     expect(Object.keys(SPEC)).toEqual([...OPEN_SUBNET_IDS]);
-    for (const s of SUBNETS) expect(s.regions.map((r) => r.levels), s.id).toEqual(SPEC[s.id]);
-    for (const s of SUBNETS) expect(Object.isFrozen(s.regions[3]!.levels), s.id).toBe(true);
+    const open = SUBNETS.filter((s) => s.regions.length > 0);
+    expect(open.map((s) => s.id)).toEqual([...OPEN_SUBNET_IDS]);
+    for (const s of open) expect(s.regions.map((r) => r.levels), s.id).toEqual(SPEC[s.id]);
+    for (const s of open) expect(Object.isFrozen(s.regions[3]!.levels), s.id).toBe(true);
+    expect(getSubnet('kernelspace').regions).toEqual([]);
   });
 
   it('every gateway leads to a hosted subnet that has a way back, with points inside the map and off the walls', () => {
@@ -71,6 +72,7 @@ describe('subnets', () => {
       ['dmz', 0],
       ['darknet', 32],
       ['cloudnet', 40],
+      ['kernelspace', 32],
     ]);
   });
 
@@ -109,7 +111,7 @@ describe('subnets', () => {
   });
 
   it('every subnet requirement in the evolution rules names a hosted or reserved subnet', () => {
-    const known = new Set<string>([...SUBNET_IDS, ...RESERVED_SUBNET_IDS]);
+    const known = new Set<string>(SUBNET_IDS);
     let seen = 0;
     for (const rule of Object.values(EVOLUTION_RULES)) {
       for (const req of rule.requirement ?? []) {
@@ -119,6 +121,22 @@ describe('subnets', () => {
       }
     }
     expect(seen).toBeGreaterThan(0);
-    for (const id of SUBNET_IDS) expect(RESERVED_SUBNET_IDS).not.toContain(id);
+    expect(known.has('kernelspace')).toBe(true);
+  });
+
+  it('kernelspace: tier 5, open floor, boss arena inside the map and clear of the host, one way back', () => {
+    const ks = getSubnet('kernelspace');
+    expect(ks.tier).toBe(5);
+    expect(ks.walls).toEqual([]);
+    const a = ks.arena!;
+    expect(rectInside({ x: a.x - a.radius, y: a.y - a.radius, w: 2 * a.radius, h: 2 * a.radius }, ks.width, ks.height)).toBe(true);
+    expect(Math.hypot(ks.host.x - a.x, ks.host.y - a.y)).toBeGreaterThan(a.radius);
+    expect(ks.gateways.map((g) => [g.id, g.to, g.requires.level, g.incidentOnly])).toEqual([['kernelspace-backbone', 'backbone', 0, undefined]]);
+    expect(Object.isFrozen(ks.arena)).toBe(true);
+  });
+
+  it('only the backbone-kernelspace gateway is incident-only', () => {
+    const only = SUBNETS.flatMap((s) => s.gateways.filter((g) => g.incidentOnly).map((g) => g.id));
+    expect(only).toEqual(['backbone-kernelspace']);
   });
 });

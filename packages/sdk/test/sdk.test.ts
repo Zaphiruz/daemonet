@@ -37,8 +37,8 @@ describe('WorldView.gateways', () => {
     // lo has one gateway, so the order shows on subnets with several
     expect(view('lan', 5, 5).map((g) => g.id)).toEqual(['lan-lo', 'lan-dmz']);
     expect(view('lan', 120, 120).map((g) => g.id)).toEqual(['lan-dmz', 'lan-lo']);
-    expect(view('backbone', 5, 5).map((g) => g.id)).toEqual(['backbone-dmz', 'backbone-darknet', 'backbone-cloudnet']);
-    expect(view('backbone', 120, 120).map((g) => g.id)).toEqual(['backbone-cloudnet', 'backbone-darknet', 'backbone-dmz']);
+    expect(view('backbone', 5, 5).map((g) => g.id)).toEqual(['backbone-dmz', 'backbone-darknet', 'backbone-kernelspace', 'backbone-cloudnet']);
+    expect(view('backbone', 120, 120).map((g) => g.id)).toEqual(['backbone-cloudnet', 'backbone-kernelspace', 'backbone-darknet', 'backbone-dmz']);
   });
 
   it('is empty for a subnet the rules do not know', () => {

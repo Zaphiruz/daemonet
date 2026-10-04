@@ -1,4 +1,4 @@
-import { OPEN_SUBNET_IDS, getSubnet } from '@daemonet/rules';
+import { HOSTED_SUBNET_IDS, getSubnet } from '@daemonet/rules';
 import { z } from 'zod';
 
 const Env = z.object({
@@ -11,8 +11,8 @@ const Env = z.object({
   AUTH_DEV_BYPASS: z.enum(['true', 'false']).default('false'),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
   MAX_CONNECTIONS_PER_IP: z.coerce.number().int().positive().default(16),
-  /** Comma-separated subnet ids this process hosts (default: every open subnet). */
-  SUBNETS: z.string().default(OPEN_SUBNET_IDS.join(',')),
+  /** Comma-separated subnet ids this process hosts (default: every hosted subnet, kernelspace included). */
+  SUBNETS: z.string().default(HOSTED_SUBNET_IDS.join(',')),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   /** redis://daemonet:<pw>@host:6379/4 — unset: in-process bus (single sim process, no api moderation push). */
   REDIS_URL: z.string().min(1).optional(),

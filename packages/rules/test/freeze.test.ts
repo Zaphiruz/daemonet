@@ -4,12 +4,13 @@ import { GROUPS, USERS } from '../src/capture/root.js';
 import { FLAGS, TRANSITIONS } from '../src/capture/socket.js';
 import { FRAGMENT_IDS, RECIPES, SHOP } from '../src/content/economy.js';
 import { BESTIARY } from '../src/content/bestiary.js';
+import { BOSS_PHASES, KERNEL_DAEMONS } from '../src/content/incidents.js';
 import { DEFAULT_FILTER, DEFAULT_TERMS } from '../src/content/chatfilter.js';
 import { BESTIARY_WITH_RULES, EVOLUTION_RULES } from '../src/evolution/rules.js';
 import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
 import { MOVES, STATUS_IDS, TYPE_MOVES, TYPE_STATUS, getMove, type MoveDef } from '../src/content/moves.js';
 import { ROLE_WEIGHTS, SPECIES, STAGE_BUDGETS, STAT_OVERRIDES, getSpecies } from '../src/content/species.js';
-import { BACKBONE, CLOUDNET, DARKNET, DMZ, LAN, LO, OPEN_SUBNET_IDS, SUBNETS } from '../src/content/subnets.js';
+import { BACKBONE, CLOUDNET, DARKNET, DMZ, HOSTED_SUBNET_IDS, KERNELSPACE, LAN, LO, OPEN_SUBNET_IDS, SUBNETS } from '../src/content/subnets.js';
 import { ROLE_TRAITS, TRAITS } from '../src/content/traits.js';
 import { NATURES } from '../src/natures.js';
 import { BEATS, IMMUNE, RESISTED_BY, TYPES } from '../src/types.js';
@@ -33,7 +34,11 @@ describe('content tables are deep-frozen', () => {
     ['BACKBONE', BACKBONE],
     ['DARKNET', DARKNET],
     ['CLOUDNET', CLOUDNET],
+    ['KERNELSPACE', KERNELSPACE],
     ['OPEN_SUBNET_IDS', OPEN_SUBNET_IDS],
+    ['HOSTED_SUBNET_IDS', HOSTED_SUBNET_IDS],
+    ['KERNEL_DAEMONS', KERNEL_DAEMONS],
+    ['BOSS_PHASES', BOSS_PHASES],
     ['SUBNETS', SUBNETS],
     ['ITEMS', ITEMS],
     ['STARTING_INVENTORY', STARTING_INVENTORY],
@@ -78,6 +83,8 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(BACKBONE.gateways)).toBe(true);
     expect(Object.isFrozen(BACKBONE.gateways[0])).toBe(true);
     expect(Object.isFrozen(BACKBONE.gateways[0]!.requires)).toBe(true);
+    expect(Object.isFrozen(KERNELSPACE.arena)).toBe(true);
+    expect(Object.isFrozen(KERNELSPACE.regions)).toBe(true);
     expect(Object.isFrozen(ITEMS[0])).toBe(true);
     expect(Object.isFrozen(NATURES[4])).toBe(true);
     expect(Object.isFrozen(SPECIES[0])).toBe(true);

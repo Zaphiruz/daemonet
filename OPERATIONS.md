@@ -17,7 +17,7 @@ the workstation.
 | `AUTH_REQUIRED_GROUP` | `daemonet-users` | the access gate |
 | `TRUST_PROXY_HOPS` | `3` | see the warning below |
 | `MAX_CONNECTIONS_PER_IP` | `16` | concurrent connections allowed per client IP (sim default 16) |
-| `SUBNETS` | `lo,lan,dmz,backbone,darknet,cloudnet` | sim only; comma-separated subnets this process hosts, one world each (default: every open subnet). The first is where new operators start; an operator saved in an unlisted subnet restarts at its spawn. Replaces the old single `SUBNET` key: on an existing deployment run `vault kv patch secret/daemonet SUBNETS=lo,lan,dmz,backbone,darknet,cloudnet`, then `fetch-secrets.sh` and restart the sim (see "Change a secret"); a leftover `SUBNET` is only logged as ignored |
+| `SUBNETS` | `lo,lan,dmz,backbone,darknet,cloudnet,kernelspace` | sim only; comma-separated subnets this process hosts, one world each (default: every hosted subnet, `kernelspace` included: the Incident arena of SP4, entered only through the Incident gateway from backbone). The first is where new operators start; an operator saved in an unlisted subnet restarts at its spawn. On an existing deployment (it still lists six subnets) run `vault kv patch secret/daemonet SUBNETS=lo,lan,dmz,backbone,darknet,cloudnet,kernelspace`, then `fetch-secrets.sh` and restart the sim (see "Change a secret"); a leftover `SUBNET` is only logged as ignored |
 | `LOG_LEVEL` | `info` | |
 | `PORT` | `3000` | |
 | `REDIS_URL` | `redis://daemonet:<pw>@192.168.40.20:6379/4` | built by `scripts/provision-secrets.sh` from `/root/.daemonet-redis-pw` on S2 (step 3); the sim ⇄ api bus (chat, moderation). Unset: each service runs an in-process bus and logs a warning (admin chat actions then never reach the sim). Both the sim and the api read it (the api publishes admin mutes, deletions and filter terms on it) |
@@ -258,7 +258,7 @@ If the Vault document does not yet have the api keys (Step 5 not re-run), the ap
    ```bash
    # 1. Throwaway database + env file (password piped S2 -> S1, never on a command line; env file in tmpfs).
    ssh S2 'docker exec shared-infra-postgresql-1 psql -U postgres -c "CREATE DATABASE daemonet_staging OWNER daemonet TEMPLATE template0;"'
-   ssh S2 'cat /root/.daemonet-db-pw' | ssh S1 'umask 077; read -r PW; printf "DATABASE_URL=postgresql://daemonet:%s@192.168.40.20:5432/daemonet_staging\nAUTH_DEV_BYPASS=true\nNODE_ENV=development\nMAX_CONNECTIONS_PER_IP=128\nSUBNETS=lo,lan,dmz,backbone,darknet,cloudnet\nLOG_LEVEL=info\n" "$PW" > /dev/shm/daemonet-staging.env'
+   ssh S2 'cat /root/.daemonet-db-pw' | ssh S1 'umask 077; read -r PW; printf "DATABASE_URL=postgresql://daemonet:%s@192.168.40.20:5432/daemonet_staging\nAUTH_DEV_BYPASS=true\nNODE_ENV=development\nMAX_CONNECTIONS_PER_IP=128\nSUBNETS=lo,lan,dmz,backbone,darknet,cloudnet,kernelspace\nLOG_LEVEL=info\n" "$PW" > /dev/shm/daemonet-staging.env'
    # 2. Migrate it and start the staging sim, bound to S1 loopback only (reach it through an SSH tunnel).
    H="--rm --env-file /dev/shm/daemonet-staging.env --entrypoint '' --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true"
    ssh S1 "docker run $H daemonet-sim:latest sh -c 'cd packages/db && node_modules/.bin/prisma migrate deploy' && \

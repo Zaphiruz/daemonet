@@ -55,7 +55,7 @@ d = {
   "TRUST_PROXY_HOPS": "3",
   # Per-client-IP concurrent connection cap (sim default is 16).
   "MAX_CONNECTIONS_PER_IP": "16",
-  "SUBNETS": "lo,lan,dmz,backbone,darknet,cloudnet",
+  "SUBNETS": "lo,lan,dmz,backbone,darknet,cloudnet,kernelspace",
   "LOG_LEVEL": "info",
   "PORT": "3000",
   # Shared Redis on S2: ACL user daemonet (keys/channels daemonet:*), logical DB 4. Sim and api both use it.

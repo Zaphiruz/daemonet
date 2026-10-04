@@ -7,7 +7,7 @@ describe('loadConfig', () => {
   it('applies defaults with dev bypass', () => {
     const c = loadConfig({ ...base, AUTH_DEV_BYPASS: 'true' });
     expect(c).toMatchObject({ port: 3000, devBypass: true, oidc: null, requiredGroup: 'daemonet-users', trustProxyHops: 0, maxConnectionsPerIp: 16 });
-    expect(c.subnets).toEqual(['lo', 'lan', 'dmz', 'backbone', 'darknet', 'cloudnet']);
+    expect(c.subnets).toEqual(['lo', 'lan', 'dmz', 'backbone', 'darknet', 'cloudnet', 'kernelspace']);
   });
 
   it('reads and validates SUBNETS', () => {
