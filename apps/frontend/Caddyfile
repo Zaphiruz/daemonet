@@ -17,6 +17,9 @@
 
 # Policy of the app's own pages (index.html, assets, workers). No 'unsafe-inline' for scripts and no
 # data: for scripts; Monaco needs inline styles, same-origin workers, data:/blob: images and its font.
+# style-src keeps 'unsafe-inline' and img-src keeps data: blob: only because Monaco injects <style>
+# elements and draws its glyph/codicon images from data: URIs; neither can run script. The sandbox
+# document below has its own strict policy (SANDBOX_CSP) and allows neither.
 # connect-src lists the WebSocket scheme explicitly because older browsers do not map 'self' to ws(s).
 (host_csp) {
   Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; frame-src 'self'; connect-src 'self' ws://{host} wss://{host}; object-src 'none'; base-uri 'none'; form-action 'self'"
