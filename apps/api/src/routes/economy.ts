@@ -22,22 +22,41 @@ export function registerEconomyRoutes(app: FastifyInstance, prisma: PrismaClient
     return rows.map((r) => ({ delta: Number(r.delta), reason: r.reason, ref: r.ref, at: r.at }));
   });
 
-  /** Total supply and, per day for the last ECONOMY_DAYS days, bits created / destroyed and the split by reason. */
+  /**
+   * Total supply, the all-time ledger sum and their difference (`drift`, 0 unless a balance changed without a ledger
+   * row), and, per day for the last ECONOMY_DAYS days, bits created / destroyed and the split by reason. Everything is
+   * read in one REPEATABLE READ transaction (one snapshot, so concurrent intents cannot show up as drift), and the days
+   * are aggregated in the database.
+   */
   app.get('/api/admin/economy', { preHandler: [app.requireAuth, app.requireAdmin] }, async () => {
-    const [supply, operators] = await Promise.all([prisma.operator.aggregate({ _sum: { bits: true } }), prisma.operator.count()]);
     const since = new Date(Date.now() - ECONOMY_DAYS * 86_400_000);
     since.setUTCHours(0, 0, 0, 0);
-    const rows = await prisma.bitsLedger.findMany({ where: { at: { gte: since } }, select: { delta: true, reason: true, at: true } });
+    const { supply, ledgerSum, operators, rows } = await prisma.$transaction(
+      async (tx) => {
+        const supply = await tx.operator.aggregate({ _sum: { bits: true } });
+        const ledgerSum = await tx.bitsLedger.aggregate({ _sum: { delta: true } });
+        const operators = await tx.operator.count();
+        // "at" is a UTC timestamp without time zone (as Prisma writes it).
+        const rows = await tx.$queryRaw<Array<{ day: string; reason: string; created: bigint; destroyed: bigint; net: bigint }>>`
+          SELECT to_char("at", 'YYYY-MM-DD') AS "day", "reason",
+                 COALESCE(SUM("delta") FILTER (WHERE "delta" >= 0), 0)::bigint AS "created",
+                 COALESCE(-SUM("delta") FILTER (WHERE "delta" < 0), 0)::bigint AS "destroyed",
+                 SUM("delta")::bigint AS "net"
+          FROM "BitsLedger"
+          WHERE "at" >= (${since.toISOString()}::timestamptz AT TIME ZONE 'UTC')
+          GROUP BY 1, 2`;
+        return { supply: Number(supply._sum.bits ?? 0), ledgerSum: Number(ledgerSum._sum.delta ?? 0), operators, rows };
+      },
+      { isolationLevel: 'RepeatableRead' },
+    );
     const days = new Map<string, { day: string; created: number; destroyed: number; byReason: Record<string, number> }>();
     for (const r of rows) {
-      const day = r.at.toISOString().slice(0, 10);
-      let d = days.get(day);
-      if (!d) days.set(day, (d = { day, created: 0, destroyed: 0, byReason: {} }));
-      const delta = Number(r.delta);
-      if (delta >= 0) d.created += delta;
-      else d.destroyed -= delta;
-      d.byReason[r.reason] = (d.byReason[r.reason] ?? 0) + delta;
+      let d = days.get(r.day);
+      if (!d) days.set(r.day, (d = { day: r.day, created: 0, destroyed: 0, byReason: {} }));
+      d.created += Number(r.created);
+      d.destroyed += Number(r.destroyed);
+      d.byReason[r.reason] = Number(r.net);
     }
-    return { supply: Number(supply._sum.bits ?? 0), operators, days: [...days.values()].sort((a, b) => (a.day < b.day ? 1 : -1)) };
+    return { supply, ledgerSum, drift: supply - ledgerSum, operators, days: [...days.values()].sort((a, b) => (a.day < b.day ? 1 : -1)) };
   });
 }

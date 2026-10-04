@@ -250,6 +250,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(recipes.find((r: { id: string }) => r.id === 'tap')).toMatchObject({ bits: 64, fragments: { packet: 4, socket: 4 }, output: { item: 'tap', qty: 1 } });
     const granted = await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: csrf, payload: { amount: 500 } });
     expect(granted.json()).toMatchObject({ bits: 500 });
+    expect(granted.json().note).toMatch(/^[\x20-\x7e]+$/); // plain ASCII
     const ledger = (await app.inject({ method: 'GET', url: '/api/ledger', cookies })).json();
     expect(ledger).toMatchObject([{ delta: 500, reason: 'admin', ref: 'dev' }]);
     const economy = (await app.inject({ method: 'GET', url: '/api/admin/economy', cookies })).json();
@@ -258,6 +259,37 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     const plain = await app.inject({ method: 'GET', url: '/api/auth/dev?name=gus' });
     const plainCookies = { [COOKIE_NAME]: plain.cookies.find((c) => c.name === COOKIE_NAME)!.value };
     expect((await app.inject({ method: 'GET', url: '/api/admin/economy', cookies: plainCookies })).statusCode).toBe(403);
+  });
+
+  it('the admin economy view reports the ledger sum and zero drift after mixed activity, with days grouped in the database', async () => {
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=kim&admin=true' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    await app.inject({ method: 'GET', url: '/api/auth/dev?name=lou' });
+    const kim = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-kim' } });
+    const lou = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-lou' } });
+    // Balance change and ledger row together, as the sim and the dev route write them.
+    const move = (operatorId: string, delta: number, reason: string, at?: Date) =>
+      prisma!.$transaction([
+        prisma!.operator.update({ where: { id: operatorId }, data: { bits: { increment: BigInt(delta) } } }),
+        prisma!.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason, ...(at ? { at } : {}) } }),
+      ]);
+    await move(kim.id, 4000, 'admin', new Date(Date.now() - 40 * 86_400_000)); // outside the 14-day window
+    await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: csrf, payload: { amount: 1000 } });
+    await move(kim.id, -128, 'shop');
+    await move(kim.id, -64, 'craft');
+    await move(lou.id, 300, 'ticket');
+    await move(lou.id, 9000, 'admin');
+    await move(lou.id, -8192, 'disk');
+    const supply = 4000 + 1000 - 128 - 64 + 300 + 9000 - 8192;
+    const economy = (await app.inject({ method: 'GET', url: '/api/admin/economy', cookies })).json();
+    expect(economy).toMatchObject({ operators: 2, supply, ledgerSum: supply, drift: 0 });
+    // days inside the window only (the 40-day-old grant is in the sum, not in the days)
+    expect(economy.days).toEqual([
+      { day: new Date().toISOString().slice(0, 10), created: 10_300, destroyed: 8384, byReason: { admin: 10_000, ticket: 300, shop: -128, craft: -64, disk: -8192 } },
+    ]);
+    // drift shows a balance change without a ledger row
+    await prisma!.operator.update({ where: { id: lou.id }, data: { bits: { increment: 5n } } });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', cookies })).json()).toMatchObject({ drift: 5 });
   });
 
   it('lists the ledger newest first by sequence, capped at 64, and reads admin rights from the operator row', async () => {

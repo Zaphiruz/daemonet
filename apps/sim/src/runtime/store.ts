@@ -23,9 +23,12 @@ export interface Store {
   /** Form ids with a Discovery row (loaded once at boot into World.discovered). */
   listDiscoveries(): Promise<string[]>;
   /**
-   * Credits (or, with a negative delta, debits) bits outside the sim's intents (admin grants, dev seeding, ticket
-   * payouts) with a ledger row in the same transaction. Throws on a non-integer or zero delta, an unknown operator, or
-   * a debit larger than the balance. A connected operator's world sees the new balance on its next connection.
+   * Credits (or, with a negative delta, debits) bits outside the sim's intents, with a ledger row in the same
+   * transaction. Throws on a non-integer or zero delta, an unknown operator, or a debit larger than the balance.
+   *
+   * For offline / outside-the-sim credits only (admin grants, dev seeding): a connected operator's world balance is
+   * stale until the operator reconnects (the world never re-reads it, and the store refuses purchases the DB balance
+   * cannot cover). Payouts to connected operators (tickets, rewards) must be intents applied through the world.
    */
   grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<void>;
   /** The operator's most recent `limit` ledger rows, oldest first. */

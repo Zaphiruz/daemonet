@@ -45,7 +45,7 @@ export function registerDevBypass(
       await tx.bitsLedger.create({ data: { operatorId, delta: amount, reason: 'admin', ref: 'dev' } });
       return (await tx.operator.findUniqueOrThrow({ where: { id: operatorId }, select: { bits: true } })).bits;
     });
-    return { bits: Number(bits), note: 'a running sim session sees the new balance on the operator’s next connection' };
+    return { bits: Number(bits), note: 'a running sim session sees the new balance when the operator next connects' };
   });
 
   app.post('/api/dev/daemon', { preHandler: app.requireAuth }, async (req) => {
