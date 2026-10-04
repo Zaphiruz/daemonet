@@ -13,7 +13,7 @@ export const ALLOWED_VAULT_KEYS = Object.freeze([
   'AUTH_REQUIRED_GROUP',
   'TRUST_PROXY_HOPS',
   'MAX_CONNECTIONS_PER_IP',
-  'SUBNET',
+  'SUBNETS',
   'LOG_LEVEL',
   'PORT',
 ]);

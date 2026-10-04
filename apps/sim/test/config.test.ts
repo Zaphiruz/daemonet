@@ -6,7 +6,15 @@ const base = { DATABASE_URL: 'postgresql://x' };
 describe('loadConfig', () => {
   it('applies defaults with dev bypass', () => {
     const c = loadConfig({ ...base, AUTH_DEV_BYPASS: 'true' });
-    expect(c).toMatchObject({ port: 3000, devBypass: true, oidc: null, requiredGroup: 'daemonet-users', trustProxyHops: 0, subnet: 'lo', maxConnectionsPerIp: 16 });
+    expect(c).toMatchObject({ port: 3000, devBypass: true, oidc: null, requiredGroup: 'daemonet-users', trustProxyHops: 0, maxConnectionsPerIp: 16 });
+    expect(c.subnets).toEqual(['lo', 'lan', 'dmz', 'backbone', 'darknet', 'cloudnet']);
+  });
+
+  it('reads and validates SUBNETS', () => {
+    expect(loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', SUBNETS: ' lan, lo ,' }).subnets).toEqual(['lan', 'lo']);
+    for (const bad of ['', ' , ', 'lo,lo', 'lo,nowhere']) {
+      expect(() => loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', SUBNETS: bad })).toThrow();
+    }
   });
 
   it('reads and validates MAX_CONNECTIONS_PER_IP', () => {

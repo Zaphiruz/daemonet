@@ -51,7 +51,7 @@ d = {
   "TRUST_PROXY_HOPS": "3",
   # Per-client-IP concurrent connection cap (sim default is 16).
   "MAX_CONNECTIONS_PER_IP": "16",
-  "SUBNET": "lo",
+  "SUBNETS": "lo,lan,dmz,backbone,darknet,cloudnet",
   "LOG_LEVEL": "info",
   "PORT": "3000",
   # apps/api (web login). The sim's entrypoint drops these (and the api drops the bot/sim-only keys);

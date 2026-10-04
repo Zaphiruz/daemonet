@@ -15,9 +15,14 @@ const log = pino({ level: config.logLevel });
 
 const store = PrismaStore.connect(config.databaseUrl);
 await store.ping();
-const subnet = getSubnet(config.subnet);
-const seed = await store.createSeed(subnet.id);
-const world = new World({ subnet, seed: seed.seed, seedId: seed.id, discovered: await store.listDiscoveries() });
+// One world (and one seed row) per hosted subnet; the first is the default world.
+const discovered = await store.listDiscoveries();
+const worlds: World[] = [];
+for (const id of config.subnets) {
+  const subnet = getSubnet(id);
+  const seed = await store.createSeed(subnet.id);
+  worlds.push(new World({ subnet, seed: seed.seed, seedId: seed.id, discovered }));
+}
 
 // The dev verifier only exists when AUTH_DEV_BYPASS=true (loadConfig refuses that in production).
 const verify = combineVerifiers(
@@ -28,12 +33,12 @@ const verify = combineVerifiers(
   createTicketVerifier(store.prisma, config.requiredGroup),
 );
 
-const game = new Game({ world, store, verify, log });
+const game = new Game({ worlds, store, verify, log });
 const server = await startServer({ game, store, port: config.port, trustProxyHops: config.trustProxyHops, maxConnectionsPerIp: config.maxConnectionsPerIp, log });
 const stopLoop = startLoop(() => game.tick());
-const statsTimer = setInterval(() => log.info({ tick: world.tick, ...game.stats() }, 'tick stats'), 64_000);
+const statsTimer = setInterval(() => log.info({ tick: game.world.tick, ...game.stats() }, 'tick stats'), 64_000);
 
-log.info({ port: server.port, subnet: subnet.id, seedId: seed.id, devBypass: config.devBypass }, 'daemonet sim started');
+log.info({ port: server.port, subnets: worlds.map((w) => `${w.subnet.id}:${w.seedId}`), devBypass: config.devBypass }, 'daemonet sim started');
 
 let stopping = false;
 async function shutdown(signal: string) {
