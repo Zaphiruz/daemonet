@@ -1,4 +1,4 @@
-import { getMove, typeMultiplier, type StatKey, type ToolId } from '@daemonet/rules';
+import { getMove, getSubnet, typeMultiplier, type GatewayDef, type StatKey, type ToolId } from '@daemonet/rules';
 import {
   COMMANDS_PER_TICK,
   HEARTBEAT_MS,
@@ -104,6 +104,18 @@ export class WorldView {
 
   get(id: string): Entity | undefined {
     return this.client.entities.get(id);
+  }
+
+  /** Gateways of the current subnet (static content), nearest first. */
+  get gateways(): GatewayDef[] {
+    let gateways: readonly GatewayDef[];
+    try {
+      gateways = getSubnet(this.client.subnet).gateways;
+    } catch {
+      return [];
+    }
+    const me = this.origin();
+    return [...gateways].sort((a, b) => distance(a.at, me) - distance(b.at, me));
   }
 }
 
@@ -224,6 +236,10 @@ export class OperatorApi {
   }
   restoreAll() {
     return this.client.command({ cmd: 'restoreAll', actor: 'self', args: {} });
+  }
+  /** Travel through a gateway you are standing on; resolves when the new subnet's snapshot has arrived. */
+  travel(gatewayId: string) {
+    return this.client.command({ cmd: 'travel', actor: 'self', args: { gatewayId } });
   }
   claimStarter(species: string, operatorName: string) {
     return this.client.command({ cmd: 'claimStarter', actor: 'self', args: { species, operatorName } });

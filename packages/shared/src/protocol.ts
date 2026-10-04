@@ -36,6 +36,7 @@ export const Command = z.discriminatedUnion('cmd', [
   z.object({ cmd: z.literal('evolve'), actor: Self, args: z.object({ daemonId: Id, formId: Id }) }),
   z.object({ cmd: z.literal('hold'), actor: Self, args: z.object({ daemonId: Id, itemId: Id }) }),
   z.object({ cmd: z.literal('unhold'), actor: Self, args: z.object({ daemonId: Id }) }),
+  z.object({ cmd: z.literal('travel'), actor: Self, args: z.object({ gatewayId: Id }) }),
   z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
   z.object({ cmd: z.literal('store'), actor: Self, args: z.object({ daemonId: Id }) }),
@@ -201,6 +202,7 @@ export const GameEvent = z.discriminatedUnion('e', [
   z.object({ e: z.literal('swap'), out: Id, in: Id }),
   z.object({ e: z.literal('evolved'), daemon: Id, from: Id, to: Id, changes: z.array(z.unknown()) }),
   z.object({ e: z.literal('discovery'), form: Id, operator: Id, operatorName: z.string().nullable() }),
+  z.object({ e: z.literal('travelled'), from: z.string(), to: z.string() }),
 ]);
 export type GameEvent = z.infer<typeof GameEvent>;
 
