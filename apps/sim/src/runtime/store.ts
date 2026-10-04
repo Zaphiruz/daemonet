@@ -45,8 +45,10 @@ export interface ChatStore {
   isBlocked(blocker: string, blocked: string): Promise<boolean>;
   /** An operator row with this id exists (DM targets must). */
   operatorExists(operatorId: string): Promise<boolean>;
-  /** Admin-added filter terms (loaded at boot). */
+  /** Admin-added filter terms (loaded at boot and on every chat resync). */
   listFilterTerms(): Promise<FilterTerm[]>;
+  /** The stored mute of each of these operators that has a row (null = not muted); for chat resyncs. */
+  mutedUntil(operatorIds: readonly string[]): Promise<Map<string, string | null>>;
 }
 
 /** Persistence used by the runtime. Every method may throw on infrastructure failure (the runtime retries intents). */
@@ -407,6 +409,10 @@ export class MemoryStore implements Store {
 
   async listFilterTerms(): Promise<FilterTerm[]> {
     return this.filterTerms.map((t) => ({ ...t }));
+  }
+
+  async mutedUntil(operatorIds: readonly string[]): Promise<Map<string, string | null>> {
+    return new Map(operatorIds.filter((id) => this.operators.has(id)).map((id) => [id, this.mutes.get(id) ?? null]));
   }
 
   private ticketStateOf(operatorId: string) {

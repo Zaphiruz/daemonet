@@ -26,6 +26,14 @@ describe('MemoryBus', () => {
     expect(PREFIX).toBe('daemonet:');
   });
 
+  it('never reports a reconnect (an in-process bus cannot lose its connection)', () => {
+    const bus = new MemoryBus();
+    let n = 0;
+    const off = bus.onReconnect(() => n++);
+    off();
+    expect(n).toBe(0);
+  });
+
   it('caps the publish log', async () => {
     const bus = new MemoryBus(2);
     for (let i = 0; i < 5; i++) await bus.publish('c', i);
@@ -104,6 +112,31 @@ describe.skipIf(!url)('RedisBus (needs REDIS_URL)', () => {
     await a.publish('lost', { n: 2 });
     await new Promise((r) => setTimeout(r, 100));
     expect(got).toEqual([{ n: 2 }]);
+    await Promise.all([a.close(), b.close()]);
+  });
+
+  it('tells onReconnect handlers when the subscriber connection is ready again after a drop, never on the first connect', async () => {
+    const a = new RedisBus(url!);
+    const b = new RedisBus(url!);
+    let reconnects = 0;
+    const off = b.onReconnect(() => reconnects++);
+    await Promise.all([a.ready(), b.ready()]);
+    const got: unknown[] = [];
+    b.subscribe('back', (m) => got.push(m));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(reconnects).toBe(0);
+    const sub = (b as unknown as { sub: Redis }).sub;
+    sub.disconnect(true);
+    for (let i = 0; i < 50 && reconnects === 0; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(reconnects).toBe(1);
+    await new Promise((r) => setTimeout(r, 100));
+    await a.publish('back', { n: 1 });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(got).toEqual([{ n: 1 }]);
+    off();
+    sub.disconnect(true);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(reconnects).toBe(1);
     await Promise.all([a.close(), b.close()]);
   });
 });

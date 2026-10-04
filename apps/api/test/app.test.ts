@@ -782,6 +782,7 @@ describe.skipIf(!url)('API chat with a failing bus', () => {
         throw Object.assign(new Error('Connection is closed. secret chat text'), { name: 'ReplyError', code: 'ECONNREFUSED' });
       },
       subscribe: () => () => {},
+      onReconnect: () => () => {},
       close: async () => {},
     };
     const app = await buildApp({

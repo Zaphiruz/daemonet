@@ -1,12 +1,25 @@
 import { MemoryBus, type Bus } from '@daemonet/bus';
+import { nameAllowedBy } from '@daemonet/rules';
 import type { ServerMessage } from '@daemonet/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { World } from '../src/core/index.js';
 import { createDevVerifier } from '../src/runtime/auth.js';
 import { ChatService, type ChatHost } from '../src/runtime/chat.js';
 import { Game, type Conn } from '../src/runtime/game.js';
 import { MemoryStore } from '../src/runtime/store.js';
 import { FIXED_CLOCK, TEST_SUBNET, TEST_SUBNET_B } from './helpers.js';
+
+/** A MemoryBus whose reconnect the test triggers (RedisBus fires it when its subscriber is ready again). */
+class ReconnectingBus extends MemoryBus {
+  readonly reconnectHandlers = new Set<() => void>();
+  override onReconnect(handler: () => void): () => void {
+    this.reconnectHandlers.add(handler);
+    return () => this.reconnectHandlers.delete(handler);
+  }
+  reconnect(): void {
+    for (const h of [...this.reconnectHandlers]) h();
+  }
+}
 
 /** A chat host over a hand-built roster (no worlds), with a controllable clock. */
 function harness(opts: { bus?: Bus } = {}) {
@@ -120,6 +133,79 @@ describe('ChatService', () => {
     };
     expect(await h.chat.post('a', 'subnet:lo', 'hi')).toMatchObject({ code: 'E_STATE', message: 'chat is unavailable right now' });
     expect(h.lines('a')).toHaveLength(0);
+  });
+
+  it('resyncs mutes and filter terms from the store when the bus reconnects (pub/sub lost what was published meanwhile)', async () => {
+    const bus = new ReconnectingBus();
+    const h = harness({ bus });
+    h.roster.set('a', { name: 'alice', subnet: 'lo' });
+    h.roster.set('b', { name: 'bob', subnet: 'lo' });
+    h.store.operators.set('a', {} as never);
+    h.store.operators.set('b', {} as never);
+    const until = new Date(Date.parse(FIXED_CLOCK) + 600_000).toISOString();
+    h.chat.loadMute('b', until);
+    // during the outage: the api muted a, unmuted b and added a term; none of it reached the sim
+    h.store.mutes.set('a', until);
+    h.store.mutes.set('b', null);
+    h.store.filterTerms.push({ pattern: 'kumquat', kind: 'WORD', action: 'MASK' });
+    expect(bus.reconnectHandlers.size).toBe(1);
+    bus.reconnect();
+    await vi.waitFor(() => expect(h.chat.isMuted('a')).toBe(true));
+    expect(h.chat.isMuted('b')).toBe(false);
+    expect(h.sent.filter((s) => s.msg.t === 'muted').map((s) => [s.to, (s.msg as Extract<ServerMessage, { t: 'muted' }>).d.until])).toEqual([
+      ['a', until],
+      ['b', null],
+    ]);
+    h.tick(2000);
+    expect(await h.chat.post('b', 'subnet:lo', 'a kumquat')).toBeNull();
+    expect(h.lines('b').at(-1)!.text).toBe('a ***');
+    h.chat.close();
+    expect(bus.reconnectHandlers.size).toBe(0);
+  });
+
+  it('a resync never overrides an admin decision or a filter change that arrived while it read the store', async () => {
+    const bus = new ReconnectingBus();
+    const h = harness({ bus });
+    h.roster.set('a', { name: 'alice', subnet: 'lo' });
+    h.store.operators.set('a', {} as never);
+    const until = new Date(Date.parse(FIXED_CLOCK) + 600_000).toISOString();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const read = h.store.listFilterTerms.bind(h.store);
+    h.store.listFilterTerms = async () => {
+      await gate;
+      return read();
+    };
+    h.store.filterTerms.push({ pattern: 'stale', kind: 'WORD', action: 'MASK' });
+    const done = h.chat.resync();
+    await bus.publish('admin', { kind: 'mute', operatorId: 'a', until, origin: 'api' });
+    await bus.publish('admin', { kind: 'filter', terms: [{ pattern: 'fresh', kind: 'WORD', action: 'MASK' }] });
+    release();
+    await done;
+    expect(h.chat.isMuted('a')).toBe(true);
+    h.chat.loadMute('a', null);
+    expect(await h.chat.post('a', 'subnet:lo', 'fresh stale')).toBeNull();
+    expect(h.lines('a').at(-1)!.text).toBe('*** stale');
+  });
+
+  it('resyncs every minute as a safety net, and stops when closed', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const h = harness();
+      h.roster.set('a', { name: 'alice', subnet: 'lo' });
+      h.store.operators.set('a', {} as never);
+      h.store.mutes.set('a', new Date(Date.parse(FIXED_CLOCK) + 600_000).toISOString());
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(h.chat.isMuted('a')).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => expect(h.chat.isMuted('a')).toBe(true));
+      h.chat.close();
+      h.store.mutes.set('a', null);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(h.chat.isMuted('a')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('announces its own auto-mute on the bus once, and the echo changes nothing', async () => {
@@ -302,6 +388,7 @@ describe('ChatService', () => {
         throw new Error('redis down');
       },
       subscribe: () => () => {},
+      onReconnect: () => () => {},
       close: async () => {},
     };
     const h = harness({ bus: failing });
@@ -484,6 +571,21 @@ describe('chat through the Game', () => {
     expect(g.b.nameFilter).toBe(g.a.nameFilter);
     expect(await claim('plainname')).toMatchObject({ t: 'ack' });
     await g.game.shutdown();
+  });
+
+  it('resyncs the mute of every connected session and the name filter when the bus reconnects', async () => {
+    const bus = new ReconnectingBus();
+    const g = setupGame(new MemoryStore(), bus);
+    const alice = await g.join('alice');
+    const id = alice.of('authOk')[0]!.d.operatorId;
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    g.store.mutes.set(id, until);
+    g.store.filterTerms.push({ pattern: 'pineapple', kind: 'WORD', action: 'BLOCK' });
+    bus.reconnect();
+    await vi.waitFor(() => expect(alice.of('muted').map((m) => m.d.until)).toEqual([until]));
+    expect(nameAllowedBy(g.a.nameFilter, 'pineapple')).toBe(false);
+    await g.game.shutdown();
+    expect(bus.reconnectHandlers.size).toBe(0);
   });
 
   it('stops listening to the bus on shutdown', async () => {

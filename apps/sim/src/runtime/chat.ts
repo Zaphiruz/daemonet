@@ -83,6 +83,13 @@ const DM_LOOKUPS_PER_INTERVAL = 4;
 const RECENT_LINES = 1024;
 /** Per-operator bookkeeping maps are swept once they hold this many entries. */
 const SWEEP_AT = 4096;
+/** Safety-net resync of mutes and filter terms from the store (besides every bus reconnect). */
+export const CHAT_RESYNC_MS = 60_000;
+
+export interface ChatServiceOptions {
+  /** Periodic resync interval (default CHAT_RESYNC_MS; 0 disables it). */
+  resyncMs?: number;
+}
 
 /**
  * Only an error's name and code reach the log: a database error message can quote the row it failed on, and chat
@@ -115,15 +122,60 @@ export class ChatService {
   private readonly hits = new Map<string, number[]>();
   private readonly dmLookups = new Map<string, { since: number; n: number }>();
   private readonly recent = new Map<string, { from: string; to: string[] }>();
+  /** Bumped by every `filter` admin message: a resync whose store read raced one does not overwrite it. */
+  private filterGeneration = 0;
+  private resyncing: Promise<void> | null = null;
   private readonly unsubscribe: () => void;
+  private readonly offReconnect: () => void;
+  private readonly resyncTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
     private readonly host: ChatHost,
     private readonly store: ChatStore,
     private readonly bus: Bus,
     private readonly log: ChatLogger = { warn() {} },
+    opts: ChatServiceOptions = {},
   ) {
     this.unsubscribe = bus.subscribe('admin', (m) => this.onAdmin(m));
+    // Pub/sub is at-most-once: mutes, deletions and filter changes published while the bus was down are lost, so the
+    // state this service tracks is re-read from the database on every reconnect, and periodically as a safety net.
+    this.offReconnect = bus.onReconnect(() => void this.resync());
+    const every = opts.resyncMs ?? CHAT_RESYNC_MS;
+    if (every > 0) {
+      this.resyncTimer = setInterval(() => void this.resync(), every);
+      this.resyncTimer.unref?.();
+    }
+  }
+
+  /**
+   * Re-reads the admin filter terms and the mute of every operator with a session from the store. An admin decision
+   * (or filter change) that arrives on the bus while the read is in flight wins over what the read returned. Single
+   * flight; failures are logged and the next resync tries again.
+   */
+  resync(): Promise<void> {
+    this.resyncing ??= this.runResync().finally(() => {
+      this.resyncing = null;
+    });
+    return this.resyncing;
+  }
+
+  private async runResync(): Promise<void> {
+    const filterGen = this.filterGeneration;
+    const ids = [...this.host.operatorIds()];
+    const gens = new Map(ids.map((id) => [id, this.generation.get(id) ?? 0]));
+    try {
+      const [terms, mutes] = await Promise.all([this.store.listFilterTerms(), ids.length > 0 ? this.store.mutedUntil(ids) : new Map<string, string | null>()]);
+      if (this.filterGeneration === filterGen) this.setExtraTerms(terms);
+      for (const id of ids) {
+        if (!mutes.has(id) || !this.host.operator(id) || (this.generation.get(id) ?? 0) !== gens.get(id)) continue;
+        const before = this.isMuted(id) ? this.muted.get(id)! : null;
+        this.loadMute(id, mutes.get(id) ?? null);
+        const after = this.isMuted(id) ? this.muted.get(id)! : null;
+        if (before !== after) this.host.send(id, { t: 'muted', seq: 0, d: { until: after === null ? null : new Date(after).toISOString() } });
+      }
+    } catch (err) {
+      this.log.warn({ err: errInfo(err) }, 'chat resync failed');
+    }
   }
 
   /** Terms added by admins (loaded at boot, refreshed on the bus). */
@@ -346,6 +398,7 @@ export class ChatService {
         return;
       }
       case 'filter':
+        this.filterGeneration++;
         this.setExtraTerms(m.terms);
         return;
     }
@@ -390,5 +443,7 @@ export class ChatService {
 
   close(): void {
     this.unsubscribe();
+    this.offReconnect();
+    if (this.resyncTimer !== undefined) clearInterval(this.resyncTimer);
   }
 }

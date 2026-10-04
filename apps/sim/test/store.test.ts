@@ -58,6 +58,16 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(a).toMatchObject({ name: null, starterClaimed: false, x: 18.5, y: 16.5, bits: 0, inventory: {}, ram: [], diskSlots: [] });
     });
 
+    it('reads the stored mutes of existing operators for a chat resync', async () => {
+      const a = await store.loadOrCreateOperator('sub-m1', 'lo', SPAWN);
+      const b = await store.loadOrCreateOperator('sub-m2', 'lo', SPAWN);
+      const until = '2030-01-01T00:00:00.000Z';
+      await store.setMute(a.id, until);
+      const got = await store.mutedUntil([a.id, b.id, '00000000-0000-4000-8000-000000000000']);
+      expect([...got.entries()].sort()).toEqual([[a.id, until], [b.id, null]].sort());
+      expect((await store.mutedUntil([])).size).toBe(0);
+    });
+
     it('claims a starter once; a second operator cannot take the same name', async () => {
       const a = await store.loadOrCreateOperator('sub-a', 'lo', SPAWN);
       const b = await store.loadOrCreateOperator('sub-b', 'lo', SPAWN);

@@ -13,6 +13,11 @@ export type Handler = (message: unknown) => void;
 export interface Bus {
   publish(channel: string, message: unknown): Promise<void>;
   subscribe(channel: string, handler: Handler): () => void;
+  /**
+   * Called after the bus regained its connection following an outage (never for the first connection). Messages
+   * published while it was down are lost (at-most-once), so consumers re-read the state they track from the database.
+   */
+  onReconnect(handler: () => void): () => void;
   close(): Promise<void>;
 }
 
@@ -54,6 +59,11 @@ export class MemoryBus implements Bus {
     };
   }
 
+  /** An in-process bus never loses its connection: the handler is never called. */
+  onReconnect(_handler: () => void): () => void {
+    return () => {};
+  }
+
   async close(): Promise<void> {
     this.handlers.clear();
   }
@@ -69,6 +79,9 @@ export class RedisBus implements Bus {
   private readonly pub: Redis;
   private readonly sub: Redis;
   private readonly handlers = new Map<string, Set<Handler>>();
+  private readonly reconnectHandlers = new Set<() => void>();
+  /** Times the subscriber connection became ready; every time after the first is a reconnect. */
+  private readies = 0;
   private closing: Promise<void> | undefined;
 
   constructor(url: string) {
@@ -76,7 +89,10 @@ export class RedisBus implements Bus {
     this.pub = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: 2, retryStrategy });
     this.sub = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: null, retryStrategy });
     // (Re)issue SUBSCRIBE for every wanted channel whenever the connection becomes ready; idempotent in Redis.
-    this.sub.on('ready', () => this.resubscribe());
+    this.sub.on('ready', () => {
+      this.resubscribe();
+      if (this.readies++ > 0) this.reconnected();
+    });
     // Without an 'error' listener ioredis emits an uncaught error event; log and let it reconnect.
     this.pub.on('error', (err: Error) => console.error('bus publisher error', err.message));
     this.sub.on('error', (err: Error) => console.error('bus subscriber error', err.message));
@@ -98,6 +114,23 @@ export class RedisBus implements Bus {
     const keys = [...this.handlers.keys()];
     if (keys.length === 0) return;
     this.sub.subscribe(...keys).catch((err: Error) => console.error('bus resubscribe failed', err.message));
+  }
+
+  private reconnected(): void {
+    for (const h of [...this.reconnectHandlers]) {
+      try {
+        h();
+      } catch (err) {
+        console.error('bus reconnect handler failed', err);
+      }
+    }
+  }
+
+  onReconnect(handler: () => void): () => void {
+    this.reconnectHandlers.add(handler);
+    return () => {
+      this.reconnectHandlers.delete(handler);
+    };
   }
 
   async publish(channel: string, message: unknown): Promise<void> {
@@ -131,6 +164,7 @@ export class RedisBus implements Bus {
   close(): Promise<void> {
     this.closing ??= (async () => {
       this.handlers.clear();
+      this.reconnectHandlers.clear();
       await Promise.all(
         [this.pub, this.sub].map(async (c) => {
           try {

@@ -201,6 +201,12 @@ export class PrismaStore implements Store {
     return rows.map((r) => ({ pattern: r.pattern, kind: r.kind, action: r.action }));
   }
 
+  async mutedUntil(operatorIds: readonly string[]): Promise<Map<string, string | null>> {
+    if (operatorIds.length === 0) return new Map();
+    const rows = await this.prisma.operator.findMany({ where: { id: { in: [...operatorIds] } }, select: { id: true, mutedUntil: true } });
+    return new Map(rows.map((r) => [r.id, r.mutedUntil ? r.mutedUntil.toISOString() : null]));
+  }
+
   async applyIntent(intent: Intent, ctx: IntentContext): Promise<IntentResult> {
     try {
       return await this.prisma.$transaction(async (tx) => {
