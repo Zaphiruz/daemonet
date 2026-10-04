@@ -4,6 +4,7 @@ import * as monaco from 'monaco-editor';
 import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 import TsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
 import { useEffect, useRef, useState } from 'react';
+import type { editor } from 'monaco-editor';
 import { useLazyVersionQuery, useSaveScriptMutation, useScriptQuery, useVersionsQuery } from '../api.ts';
 import { log } from '../game/log.ts';
 import { useConnection } from '../game/connection.ts';
@@ -19,6 +20,19 @@ monaco.typescript.javascriptDefaults.addExtraLib(SDK_TYPES, 'file:///node_module
 
 export const AUTOSAVE_MS = 2000;
 
+const EDITOR_OPTIONS: editor.IStandaloneEditorConstructionOptions = { minimap: { enabled: false }, fontSize: 13, tabSize: 2, scrollBeyondLastLine: false };
+
+/** A readable reason for a failed save (an RTK Query error is `{ status, data }`, `{ status: 'FETCH_ERROR', error }` or an Error). */
+export function saveFailureReason(err: unknown): string {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (status === 413) return 'script too large (max 256 KiB)';
+  if (status === 401) return 'signed out';
+  if (typeof status === 'number') return `HTTP ${status}`;
+  const detail = (err as { error?: unknown; message?: unknown } | null)?.error ?? (err as { message?: unknown } | null)?.message;
+  if (typeof status === 'string') return typeof detail === 'string' ? `${status}: ${detail}` : status;
+  return typeof detail === 'string' ? detail : 'request failed';
+}
+
 export function ScriptPanel({ client }: { client: GameClient | null }) {
   const script = useScriptQuery();
   const versions = useVersionsQuery();
@@ -28,28 +42,52 @@ export function ScriptPanel({ client }: { client: GameClient | null }) {
   const conn = useConnection();
   const [source, setSource] = useState<string | null>(null);
   const [pasteWarning, setPasteWarning] = useState(false);
-  const dirty = useRef(false);
+  // `dirty` is true from the first edit until a save that covers it resolves (state for the status line, ref for the effect)
+  const [dirty, setDirtyState] = useState(false);
+  const dirtyRef = useRef(false);
+  const setDirty = (d: boolean) => {
+    dirtyRef.current = d;
+    setDirtyState(d);
+  };
+  /** Bumped by every edit: a save only clears `dirty` if nothing was typed since it was sent. */
+  const editSeq = useRef(0);
+  const inFlight = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const seenVersion = useRef<number | null>(null);
-  // adopt fresh server data (first load, or a newer version) unless the editor holds unsaved edits
+  // adopt fresh server data (first load, or a newer version) unless the editor holds unsaved edits or a save is in flight
   useEffect(() => {
     const d = script.data;
     if (!d || d.version === seenVersion.current) return;
-    if (source === null || !dirty.current) {
+    if (source === null || (!dirtyRef.current && inFlight.current === 0)) {
       seenVersion.current = d.version;
       setSource(d.source);
     }
-  }, [script.data, source]);
+  }, [script.data, source, dirty, saveState.isLoading]);
+
+  const send = (value: string, seq: number) => {
+    inFlight.current++;
+    save({ source: value })
+      .unwrap()
+      .then((r) => {
+        seenVersion.current = Math.max(seenVersion.current ?? 0, r.version);
+        if (editSeq.current === seq) setDirty(false);
+      })
+      .catch((err: unknown) => {
+        setDirty(true);
+        log.push('error', `autosave failed: ${saveFailureReason(err)}`);
+      })
+      .finally(() => {
+        inFlight.current--;
+      });
+  };
 
   const onChange = (value: string | undefined) => {
     setSource(value ?? '');
-    dirty.current = true;
+    setDirty(true);
+    const seq = ++editSeq.current;
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      dirty.current = false;
-      void save({ source: value ?? '' });
-    }, AUTOSAVE_MS);
+    timer.current = setTimeout(() => send(value ?? '', seq), AUTOSAVE_MS);
   };
 
   if (source === null) return <p className="p-3 text-sm text-neutral-500">loading script…</p>;
@@ -71,7 +109,7 @@ export function ScriptPanel({ client }: { client: GameClient | null }) {
           stop
         </button>
         <span className="mono text-neutral-500" data-testid="script-status">
-          {status} · v{script.data?.version ?? 0} {saveState.isLoading ? '· saving…' : dirty.current ? '· unsaved' : '· saved'}
+          {status} · v{script.data?.version ?? 0} {saveState.isLoading ? '· saving…' : saveState.isError ? '· save failed' : dirty ? '· unsaved' : '· saved'}
         </span>
         <button className="ml-auto text-neutral-400 hover:text-neutral-200" onClick={() => onChange(STARTER_TEMPLATE)}>
           insert starter template
@@ -113,9 +151,11 @@ export function ScriptPanel({ client }: { client: GameClient | null }) {
           theme="vs-dark"
           value={source}
           onChange={onChange}
-          options={{ minimap: { enabled: false }, fontSize: 13, tabSize: 2, scrollBeyondLastLine: false }}
+          options={EDITOR_OPTIONS}
         />
       </div>
     </div>
   );
 }
+
+export default ScriptPanel;
