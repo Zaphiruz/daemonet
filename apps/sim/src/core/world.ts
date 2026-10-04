@@ -369,6 +369,14 @@ export class World {
     return [...this.pending.values()].filter((i) => i.operatorId === operatorId);
   }
 
+  /**
+   * Forgets a pending intent without completing it (its outcome stayed unknown; the runtime reloads the operator from
+   * the store instead). Its locks are released only by that reload.
+   */
+  abandonIntent(id: string): void {
+    this.pending.delete(id);
+  }
+
   /** Queue an event for the next step (the runtime uses it when it hands an operator over between worlds). */
   emitCarry(event: ScopedEvent['event'], scope: { to: string } | { at: Point | null }): void {
     this.carry.emit(event, scope);

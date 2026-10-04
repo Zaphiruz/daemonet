@@ -77,7 +77,7 @@ const BACKOFF_MIN_MS = 256;
 const BACKOFF_MAX_MS = 8192;
 const ENEMY_RADIUS = 16;
 /** Kick reasons after which reconnecting can succeed; every other kick is terminal. */
-export const TRANSIENT_KICKS: ReadonlySet<string> = new Set(['idle', 'auth timeout', 'server shutting down']);
+export const TRANSIENT_KICKS: ReadonlySet<string> = new Set(['idle', 'auth timeout', 'server shutting down', 'reload required']);
 
 export class WorldView {
   constructor(private readonly client: GameClient) {}

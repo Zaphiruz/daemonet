@@ -33,6 +33,12 @@ export interface GameOptions {
   log?: Logger;
   /** Waits between intent persistence attempts (default 128/512/2048 ms). */
   retryDelaysMs?: readonly number[];
+  /**
+   * Attempts (default 32) and time (default 10 min) after which an intent whose outcome is still unknown stops being
+   * retried: it stays unresolved and its operator is reloaded from the store (see `persist`).
+   */
+  unknownRetryLimit?: number;
+  unknownRetryMs?: number;
   checkpointEveryTicks?: number;
   leaveAfterTicks?: number;
   authTimeoutTicks?: number;
@@ -82,6 +88,11 @@ interface Session {
   commandsThisTick: number;
   violations: number[];
   leaveAtTick: number | null;
+  /**
+   * Set when an intent's outcome stayed unknown past the retry cap: the operator was kicked, refuses reconnects until it
+   * has left, and its checkpoints skip the inventory so the next load takes the store as truth.
+   */
+  reloadRequired: boolean;
 }
 
 const BUCKET_MAX = 64;
@@ -93,6 +104,12 @@ const RECOVERED_TICK_MS = 25;
 
 /** Longest wait between attempts while an intent's outcome is unknown (see `persist`). */
 const MAX_RETRY_MS = 2048;
+const UNKNOWN_RETRY_LIMIT = 32;
+const UNKNOWN_RETRY_MS = 10 * 60_000;
+/** Past the bounded retry schedule, only every WARN_EVERY-th failed attempt is logged. */
+const WARN_EVERY = 8;
+/** Kick reason when an operator must reconnect to reload its state from the store (transient in the SDK). */
+export const RELOAD_KICK = 'reload required';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -114,6 +131,8 @@ export class Game {
   private readonly verify: TokenVerifier;
   private readonly log: Logger;
   private readonly retryDelays: readonly number[];
+  private readonly unknownRetryLimit: number;
+  private readonly unknownRetryMs: number;
   private readonly checkpointEvery: number;
   private readonly leaveAfter: number;
   private readonly authTimeout: number;
@@ -152,6 +171,8 @@ export class Game {
     this.verify = opts.verify;
     this.log = opts.log ?? silent;
     this.retryDelays = opts.retryDelaysMs ?? [128, 512, 2048];
+    this.unknownRetryLimit = opts.unknownRetryLimit ?? UNKNOWN_RETRY_LIMIT;
+    this.unknownRetryMs = opts.unknownRetryMs ?? UNKNOWN_RETRY_MS;
     this.checkpointEvery = opts.checkpointEveryTicks ?? 512;
     this.leaveAfter = opts.leaveAfterTicks ?? 128;
     this.authTimeout = opts.authTimeoutTicks ?? 80;
@@ -228,6 +249,8 @@ export class Game {
       const rec = await this.loadOperator(claims.sub);
       if (st.phase === 'closed') return;
       let session = this.sessions.get(rec.id);
+      // The old session must leave first (its checkpoint skips the inventory); the client retries the transient kick.
+      if (session?.reloadRequired) return this.kick(st, RELOAD_KICK, CLOSE.unavailable);
       if (!session) {
         // An operator whose subnet this process does not host starts over at the default world's spawn.
         let world = this.worlds.get(rec.subnet);
@@ -240,7 +263,7 @@ export class Game {
         if (!world.operators.has(rec.id)) world.addOperator(rec);
         session = {
           operatorId: rec.id, sub: claims.sub, world, controller: null, spectators: new Set(), resumeToken: randomHex(16), buffer: [], baseTick: world.tick,
-          savedKnown: null, savedSelf: null, commandsThisTick: 0, violations: [], leaveAtTick: null,
+          savedKnown: null, savedSelf: null, commandsThisTick: 0, violations: [], leaveAtTick: null, reloadRequired: false,
         };
         this.sessions.set(rec.id, session);
       }
@@ -498,7 +521,7 @@ export class Game {
   private leave(session: Session): void {
     for (const load of this.loads.get(session.sub) ?? []) load.stale = true;
     const world = session.world;
-    const record = world.checkpoint(session.operatorId);
+    const record = this.record(world, session.operatorId);
     world.removeOperator(session.operatorId);
     this.sessions.delete(session.operatorId);
     for (const st of [...session.spectators]) this.kick(st, 'operator left', CLOSE.left);
@@ -522,10 +545,16 @@ export class Game {
   private checkpointAll(): void {
     const records: OperatorRecord[] = [];
     for (const world of this.worlds.values()) {
-      for (const op of world.operators.values()) if (!op.travelling) records.push(world.checkpoint(op.id));
+      for (const op of world.operators.values()) if (!op.travelling) records.push(this.record(world, op.id));
     }
     if (records.length === 0) return;
     this.track(this.writeCheckpoint(records, (err) => this.log.error({ err: err.message }, 'checkpoint failed')));
+  }
+
+  /** The operator's checkpoint record; a session that must reload never writes its inventory (the store is the truth). */
+  private record(world: World, operatorId: string): OperatorRecord {
+    const rec = world.checkpoint(operatorId);
+    return this.sessions.get(operatorId)?.reloadRequired ? { ...rec, inventoryInFlight: true } : rec;
   }
 
   /**
@@ -555,7 +584,7 @@ export class Game {
       this.log.error({ operator: intent.operatorId, from: intent.from, to: intent.to }, 'travel committed but the operator could not be moved');
       // The store now names the destination while the operator is still here: write it back where it really is.
       if (from.operators.has(intent.operatorId)) {
-        const record = from.checkpoint(intent.operatorId);
+        const record = this.record(from, intent.operatorId);
         this.track(this.writeCheckpoint([record], (err) => this.log.error({ operator: intent.operatorId, err: err.message }, 'travel reconcile checkpoint failed')));
       }
       return;
@@ -586,16 +615,24 @@ export class Game {
     // written over a committed result by the next checkpoint (economy: bits / items; capture: the consumed tool;
     // claimStarter: the starting inventory), a
     // failure is never synthesized: the same intent is retried (idempotent by id) until the store answers. Shutdown
-    // abandons it still pending, so the final checkpoint leaves the inventory to the store.
+    // abandons it still pending, so the final checkpoint leaves the inventory to the store. An error that persists past
+    // the retry cap (a store bug, or a long outage) still invents no outcome: retrying stops and the operator reloads
+    // from the store (`reloadFromStore`).
     const untilKnown = isEconomyIntent(intent) || intent.kind === 'capture' || intent.kind === 'claimStarter';
     const run = async () => {
       let result: IntentResult = { ok: false, reason: 'persist failed' };
+      const started = Date.now();
       for (let attempt = 0; ; attempt++) {
         try {
           result = await apply();
           break;
         } catch (err) {
-          this.log.warn({ intent: intent.id, attempt, err: (err as Error).message }, 'intent persist failed');
+          if (attempt < this.retryDelays.length || attempt % WARN_EVERY === 0) {
+            this.log.warn({ intent: intent.id, attempt, err: (err as Error).message }, 'intent persist failed');
+          }
+          if (untilKnown && (attempt + 1 >= this.unknownRetryLimit || Date.now() - started >= this.unknownRetryMs)) {
+            return this.reloadFromStore(world, intent, attempt + 1, err as Error);
+          }
           const delay = this.retryDelays[attempt];
           if (delay !== undefined) {
             await sleep(delay);
@@ -612,6 +649,25 @@ export class Game {
       if (intent.kind === 'travel' && result.ok) this.moveOperator(world, intent);
     };
     this.track(run());
+  }
+
+  /**
+   * An intent whose outcome is still unknown after the retry cap: it is never completed (no failure is invented) and
+   * no longer retried. It leaves the world's pending set, and its operator is kicked and leaves with a checkpoint that
+   * skips the inventory (never bits), so the reconnect loads the store's state as the truth. The operator's locks
+   * (pending daemons, a pending claim) go with the operator.
+   */
+  private reloadFromStore(world: World, intent: Intent, attempts: number, err: Error): void {
+    this.log.error(
+      { intent: intent.id, kind: intent.kind, operator: intent.operatorId, attempts, err: err.message },
+      'intent outcome still unknown after the retry cap: operator reloads from the store',
+    );
+    world.abandonIntent(intent.id);
+    const session = this.sessions.get(intent.operatorId);
+    if (!session) return;
+    session.reloadRequired = true;
+    for (const st of [...(session.controller ? [session.controller] : []), ...session.spectators]) this.kick(st, RELOAD_KICK, CLOSE.unavailable);
+    session.leaveAtTick = this.ticks;
   }
 
   private abandon(intent: Intent): void {

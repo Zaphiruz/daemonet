@@ -719,6 +719,82 @@ describe('economy in the runtime', () => {
     expect(store.operators.get(id)!.inventory).toEqual({ sniff: 8, restore: 2 });
   });
 
+  it('an intent the store throws on deterministically: retries stop at the cap, the operator reloads from the store, others carry on', async () => {
+    const store = new MemoryStore();
+    const apply = store.applyIntent.bind(store);
+    let stuck: string | null = null;
+    let attempts = 0;
+    // A store bug: this one craft always throws (before committing anything).
+    store.applyIntent = async (intent, ctx) => {
+      if (intent.kind === 'craft' && (stuck ??= intent.id) === intent.id) {
+        attempts++;
+        throw new Error('store bug');
+      }
+      return apply(intent, ctx);
+    };
+    const logs: Array<{ level: string; obj: object; msg?: string }> = [];
+    const log = {
+      info: () => {},
+      warn: (obj: object, msg?: string) => logs.push({ level: 'warn', obj, msg }),
+      error: (obj: object, msg?: string) => logs.push({ level: 'error', obj, msg }),
+    };
+    const { a, game: g } = game(store, { log, checkpointEveryTicks: 1 });
+    const ann = await shopper(store, 'ann', 1000, { 'frag:packet': 4, 'frag:socket': 4 });
+    const bob = await shopper(store, 'bob', 1000);
+    const annConn = await join(g, 'ann');
+    const bobConn = await join(g, 'bob');
+    const checkpoints: OperatorRecord[] = [];
+    const write = store.checkpoint.bind(store);
+    store.checkpoint = async (records) => {
+      checkpoints.push(...records.filter((r) => r.id === ann).map((r) => ({ ...r, inventory: { ...r.inventory } })));
+      return write(records);
+    };
+    await g.message(annConn, cmd(craftCmd('tap')));
+    tick(g);
+    expect(a.operators.get(ann)).toMatchObject({ bits: 936, inventory: {} }); // costs taken at accept
+    for (let i = 0; i < 400 && !annConn.closed; i++) {
+      await settle();
+      if (i === 2) {
+        await g.message(bobConn, cmd(buyCmd('sniff')));
+        tick(g);
+      }
+    }
+    expect(attempts).toBe(32);
+    await settle();
+    expect(attempts).toBe(32); // no more retries
+    // never failed, never refunded: the operator is kicked to reload instead
+    expect(annConn.of('err')).toEqual([]);
+    expect(annConn.of('kick').at(-1)!.d.reason).toBe('reload required');
+    expect(annConn.closed).toMatchObject({ reason: 'reload required' });
+    expect(logs.filter((l) => l.level === 'error')).toHaveLength(1);
+    expect(logs.filter((l) => l.level === 'warn').length).toBeLessThan(12);
+    // a reconnect before the old session has left is turned away (transient: the client retries)
+    const early = await join(g, 'ann');
+    expect(early.closed).toMatchObject({ reason: 'reload required' });
+    expect(early.of('snapshot')).toEqual([]);
+    // the leave checkpoint leaves the inventory (and bits) to the store
+    tick(g);
+    await g.flush();
+    expect(g.worldOf(ann)).toBeUndefined();
+    expect(checkpoints.at(-1)).toMatchObject({ inventoryInFlight: true });
+    expect(store.operators.get(ann)).toMatchObject({ bits: 1000, inventory: { 'frag:packet': 4, 'frag:socket': 4 } });
+    // the reconnect loads the store's state and works normally
+    const back = await join(g, 'ann');
+    expect(back.of('snapshot')[0]!.d.self).toMatchObject({ bits: 1000, inventory: { 'frag:packet': 4, 'frag:socket': 4 } });
+    expect(a.inventoryInFlight(ann)).toBe(false);
+    await g.message(back, cmd(craftCmd('tap')));
+    tick(g);
+    await g.flush();
+    tick(g);
+    expect(back.of('ack').at(-1)!.d).toMatchObject({ result: { bits: 936, output: { item: 'tap', qty: 1 } } });
+    expect(store.operators.get(ann)).toMatchObject({ bits: 936, inventory: { tap: 1 } });
+    // the other operator was never affected
+    expect(bobConn.closed).toBeNull();
+    expect(bobConn.of('ack').at(-1)!.d).toMatchObject({ result: { bits: 968 } });
+    expect(store.operators.get(bob)).toMatchObject({ bits: 968, inventory: { sniff: 1 } });
+    await g.shutdown();
+  });
+
   it('bits granted while connected are seen on the next connection, never overwritten by a checkpoint', async () => {
     const store = new MemoryStore();
     const { a, game: g } = game(store, { checkpointEveryTicks: 1 });
