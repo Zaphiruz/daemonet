@@ -85,3 +85,12 @@ Fixed before merge: autosave failures surface and keep the script dirty; error b
 Task F: minor (deferred): ScriptPanel shows "save failed" until the next save is sent, even with newer unsaved edits; no automatic retry after a failed save
 Task F: minor (deferred): ScriptPanel's pending autosave timer is not cleared on unmount (a quick tab switch can adopt a stale version)
 Task F: minor (deferred): sandbox start notice is armed on iframe load, so a frame that never loads gets no notice
+
+## 2026-09-30-daemonet-sp3a-plan1-content
+
+Fixed before merge: StatusSchema typed from STATUS_IDS without a cast; BestiaryRow.stage doc; ItemId union restored; item/budget/chart/move-slot test pins; crypto status slot and lo comments
+
+Task F: minor (deferred): kernel↔signal and shell↔root are mutual ×2 strengths — designer yes/no before SP3a plan 3 tunes around it
+Task F: minor (deferred): id reuse across namespaces (cosmicray move + evolution item; sigstop move + species) — accept or add a cross-namespace uniqueness test
+Task F: minor (deferred): Codex panel still renders a 4×4 "SP1 types" chart (SP3a plan 4 replaces it)
+Task F: minor (deferred): add a SUBNET_IDS constant so bestiary `subnet` requirements can be validated once the other subnets exist
