@@ -239,9 +239,17 @@ export function registerChatRoutes(app: FastifyInstance, prisma: PrismaClient, b
   });
 }
 
-/** Deletes chat older than CHAT_HISTORY_DAYS; the server runs it at boot and every 6 hours. */
-export async function pruneChat(prisma: PrismaClient, now = new Date()): Promise<number> {
+/**
+ * Deletes chat lines and filter hits older than CHAT_HISTORY_DAYS; the server runs it at boot and every 6 hours. A line
+ * an OPEN report references is kept until the report is resolved (the admin must still see it and be able to act on it).
+ */
+export async function pruneChat(prisma: PrismaClient, now = new Date()): Promise<{ messages: number; hits: number }> {
   const cutoff = new Date(now.getTime() - CHAT_HISTORY_DAYS * 86_400_000);
-  const r = await prisma.chatMessage.deleteMany({ where: { at: { lt: cutoff } } });
-  return r.count;
+  // One statement, so a report opened between a read of the OPEN set and the delete cannot lose its line.
+  const messages = await prisma.$executeRaw`
+    DELETE FROM "ChatMessage" m
+    WHERE m."at" < ${cutoff}
+      AND NOT EXISTS (SELECT 1 FROM "Report" r WHERE r."messageId" = m."id" AND r."status" = 'OPEN')`;
+  const hits = await prisma.chatFilterHit.deleteMany({ where: { at: { lt: cutoff } } });
+  return { messages, hits: hits.count };
 }

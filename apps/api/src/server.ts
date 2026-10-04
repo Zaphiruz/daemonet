@@ -39,8 +39,8 @@ if (!config.redisUrl) app.log.warn('REDIS_URL not set: using the in-process bus 
 
 const prune = () =>
   pruneChat(prisma)
-    .then((n) => {
-      if (n > 0) app.log.info({ deleted: n }, 'pruned chat history');
+    .then(({ messages, hits }) => {
+      if (messages > 0 || hits > 0) app.log.info({ messages, hits }, 'pruned chat history');
     })
     .catch((err: unknown) => app.log.error({ err: { name: (err as Error)?.name, code: (err as { code?: unknown })?.code } }, 'chat prune failed'));
 void prune();

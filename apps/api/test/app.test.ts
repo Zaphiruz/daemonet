@@ -446,7 +446,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(term.statusCode).toBe(200);
     expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'filter', terms: [{ pattern: 'banana', action: 'BLOCK' }] } });
     expect((await app.inject({ method: 'POST', url: '/api/admin/chat/filter', cookies: cb, headers: csrf, payload: { pattern: '(', kind: 'REGEX', action: 'BLOCK' } })).statusCode).toBe(400);
-    expect(await pruneChat(prisma!, new Date('2026-09-30T12:00:00Z'))).toBe(1);
+    expect(await pruneChat(prisma!, new Date('2026-09-30T12:00:00Z'))).toMatchObject({ messages: 1 });
   });
 
   it('chat authorization: admin rights from the operator row on every request, DMs per pair under the viewer’s name, own blocks only', async () => {
@@ -630,7 +630,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
       ],
     });
     await prisma!.chatMessage.updateMany({ where: { id: { in: ['d1', 's1'] } }, data: { at: now } });
-    expect(await pruneChat(prisma!, now)).toBe(1);
+    expect(await pruneChat(prisma!, now)).toMatchObject({ messages: 1 });
     expect(await prisma!.chatMessage.findUnique({ where: { id: 'p-in' } })).not.toBeNull();
     expect(await prisma!.chatMessage.findUnique({ where: { id: 'p-out' } })).toBeNull();
   });
@@ -815,5 +815,39 @@ describe.skipIf(!url)('API without the dev bypass', () => {
     expect((await app.inject({ method: 'POST', url: '/api/dev/daemon', headers: csrf, payload: { species: 'pingling', level: 8 } })).statusCode).toBe(404);
     expect((await app.inject({ method: 'POST', url: '/api/dev/bits', headers: csrf, payload: { amount: 5 } })).statusCode).toBe(404);
     await app.close();
+  });
+});
+
+describe.skipIf(!url)('chat retention', () => {
+  it('never prunes a line an OPEN report references, and prunes filter hits on the same 7-day horizon', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Operator", "ChatMessage", "ChatFilterHit", "Report" CASCADE');
+    const now = new Date('2026-10-04T12:00:00Z');
+    const day = 86_400_000;
+    const old = new Date(now.getTime() - 7 * day - 60_000);
+    const fresh = new Date(now.getTime() - 7 * day + 60_000);
+    const a = await prisma!.operator.create({ data: { sub: 'ret-a', x: 0, y: 0 } });
+    const b = await prisma!.operator.create({ data: { sub: 'ret-b', x: 0, y: 0 } });
+    await prisma!.chatMessage.createMany({
+      data: [
+        { id: 'r-open', channel: 'subnet:lo', operatorId: b.id, text: 'reported, open', at: old },
+        { id: 'r-done', channel: 'subnet:lo', operatorId: b.id, text: 'reported, dismissed', at: old },
+        { id: 'r-none', channel: 'subnet:lo', operatorId: b.id, text: 'never reported', at: old },
+        { id: 'r-new', channel: 'subnet:lo', operatorId: b.id, text: 'recent', at: fresh },
+      ],
+    });
+    await prisma!.report.create({ data: { reporterId: a.id, targetId: b.id, messageId: 'r-open', reason: 'SPAM' } });
+    await prisma!.report.create({ data: { reporterId: a.id, targetId: b.id, messageId: 'r-done', reason: 'SPAM', status: 'DISMISSED' } });
+    await prisma!.chatFilterHit.createMany({
+      data: [
+        { operatorId: b.id, channel: 'subnet:lo', text: 'x', term: 'kys', at: old },
+        { operatorId: b.id, channel: 'subnet:lo', text: 'y', term: 'kys', at: fresh },
+      ],
+    });
+    expect(await pruneChat(prisma!, now)).toEqual({ messages: 2, hits: 1 });
+    expect((await prisma!.chatMessage.findMany({ orderBy: { id: 'asc' } })).map((m) => m.id)).toEqual(['r-new', 'r-open']);
+    expect((await prisma!.chatFilterHit.findMany()).map((h) => h.text)).toEqual(['y']);
+    // once the report is resolved, the line ages out like any other
+    await prisma!.report.updateMany({ where: { messageId: 'r-open' }, data: { status: 'ACTIONED' } });
+    expect(await pruneChat(prisma!, now)).toEqual({ messages: 1, hits: 0 });
   });
 });
