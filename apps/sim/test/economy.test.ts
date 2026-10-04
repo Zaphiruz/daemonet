@@ -810,3 +810,68 @@ describe('economy in the runtime', () => {
     expect(store.operators.get(id)!.bits).toBe(1000);
   });
 });
+
+describe('bits spent in the api while a shop intent is in flight (SP4 plan 3)', () => {
+  /*
+   * Ordering argument: the world took the buy's cost at accept and the store will take it at commit; the api's spend
+   * commits in the DB and reaches the world as a delta. Deltas commute, so whichever of the two commits first, the
+   * world ends at (start - cost - spend) = the DB balance. If the spend leaves too little for the buy, the store refuses
+   * it and the world's refund brings it back to (start - spend), again the DB balance. Never setting an absolute balance
+   * is what keeps the in-flight cost from being undone or counted twice.
+   */
+  const push = (operatorId: string, row: { id: string; seq: number; balance: number }, delta: number) => ({
+    kind: 'bits', operatorId, ledgerId: row.id, seq: row.seq, delta, reason: 'org', balance: row.balance, origin: 'api',
+  });
+
+  it('the spend commits while the buy is pending: the world ends at the DB balance', async () => {
+    const store = new GatedStore();
+    const bus = new MemoryBus();
+    const { a, game: g } = game(store, { bus });
+    const id = await shopper(store, 'alice', 1000);
+    const conn = await join(g, 'alice');
+    const op = a.operators.get(id)!;
+    store.holdIntents();
+    await g.message(conn, cmd(buyCmd('tap', 2)));
+    tick(g);
+    await settle();
+    expect(op.bits).toBe(744); // the cost is taken at accept
+    const spend = await store.grantBits(id, -500, 'org');
+    await bus.publish('admin', push(id, spend, -500));
+    await bus.publish('admin', push(id, spend, -500)); // a duplicate delivery
+    expect(op.bits).toBe(244);
+    store.releaseIntents();
+    await g.flush();
+    tick(g);
+    expect(store.operators.get(id)!.bits).toBe(244);
+    expect(op.bits).toBe(244);
+    // a resync never re-applies the sim's own (shop) rows nor the pushed one
+    await g.chat.resync();
+    expect(op.bits).toBe(244);
+    await g.shutdown();
+  });
+
+  it('the spend leaves too little for the pending buy: the store refuses it and the refund lands on the DB balance', async () => {
+    const store = new GatedStore();
+    const bus = new MemoryBus();
+    const { a, game: g } = game(store, { bus });
+    const id = await shopper(store, 'bob', 1000);
+    const conn = await join(g, 'bob');
+    const op = a.operators.get(id)!;
+    store.holdIntents();
+    await g.message(conn, cmd(buyCmd('tap', 2)));
+    tick(g);
+    await settle();
+    const spend = await store.grantBits(id, -900, 'org');
+    await bus.publish('admin', push(id, spend, -900));
+    expect(op.bits).toBe(-156); // transiently below zero: the buy has not been answered yet
+    store.releaseIntents();
+    await g.flush();
+    tick(g);
+    expect(conn.of('err').at(-1)!.d).toMatchObject({ message: 'not enough bits' });
+    expect(store.operators.get(id)!.bits).toBe(100);
+    expect(op.bits).toBe(100);
+    await g.chat.resync();
+    expect(op.bits).toBe(100);
+    await g.shutdown();
+  });
+});

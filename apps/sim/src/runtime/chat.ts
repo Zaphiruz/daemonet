@@ -30,6 +30,11 @@ export interface ChatHost {
   orgOf?(operatorId: string): { id: string; tag: string } | undefined;
   /** The compiled filter (defaults + admin terms) changed: names are checked against it too (SP4 spec §5.1). */
   filterChanged?(filter: CompiledFilter): void;
+  /**
+   * Re-reads the other bus-driven operator state (SP4 plan 3: org membership, names, balances) of these operators from
+   * the store; run by every chat resync (bus reconnect and the periodic safety net). Handles its own failures.
+   */
+  resync?(operatorIds: readonly string[]): Promise<void>;
   now(): number;
 }
 
@@ -83,7 +88,7 @@ const DM_LOOKUPS_PER_INTERVAL = 4;
 const RECENT_LINES = 1024;
 /** Per-operator bookkeeping maps are swept once they hold this many entries. */
 const SWEEP_AT = 4096;
-/** Safety-net resync of mutes and filter terms from the store (besides every bus reconnect). */
+/** Safety-net resync of mutes and filter terms (and the host's operator state) from the store (besides every bus reconnect). */
 export const CHAT_RESYNC_MS = 60_000;
 
 export interface ChatServiceOptions {
@@ -162,6 +167,10 @@ export class ChatService {
   private async runResync(): Promise<void> {
     const filterGen = this.filterGeneration;
     const ids = [...this.host.operatorIds()];
+    await Promise.all([this.resyncChat(filterGen, ids), this.host.resync?.(ids)]);
+  }
+
+  private async resyncChat(filterGen: number, ids: string[]): Promise<void> {
     const gens = new Map(ids.map((id) => [id, this.generation.get(id) ?? 0]));
     try {
       const [terms, mutes] = await Promise.all([this.store.listFilterTerms(), ids.length > 0 ? this.store.mutedUntil(ids) : new Map<string, string | null>()]);

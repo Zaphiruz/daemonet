@@ -183,6 +183,44 @@ model DaemonArchive {
   @@index([operatorId])
 }
 
+enum OrgRank {
+  OWNER
+  OFFICER
+  MEMBER
+}
+
+/// Orgs (SP4 spec §7): name, 4-character tag, up to 64 members.
+model Org {
+  id        String      @id
+  name      String      @unique
+  tag       String      @unique
+  ownerId   String
+  createdAt DateTime    @default(now())
+  members   OrgMember[]
+  invites   OrgInvite[]
+}
+
+model OrgMember {
+  operatorId String   @id
+  orgId      String
+  org        Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  rank       OrgRank  @default(MEMBER)
+  joinedAt   DateTime @default(now())
+
+  @@index([orgId])
+}
+
+model OrgInvite {
+  orgId      String
+  org        Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  operatorId String
+  byId       String
+  at         DateTime @default(now())
+
+  @@id([orgId, operatorId])
+  @@index([operatorId])
+}
+
 /// Chat (SP4 spec §5): 7 days of history, soft-deleted by admins.
 model ChatMessage {
   id         String    @id

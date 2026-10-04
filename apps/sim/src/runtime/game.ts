@@ -2,11 +2,25 @@ import { randomInt, timingSafeEqual } from 'node:crypto';
 import type { Bus } from '@daemonet/bus';
 import { ticketKey } from '@daemonet/rules';
 import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Command, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
-import { INTEREST_RADIUS, distance, entitiesNear, isEconomyIntent, toSelf, type Input, type Intent, type IntentResult, type OperatorRecord, type World } from '../core/index.js';
+import {
+  INTEREST_RADIUS,
+  distance,
+  entitiesNear,
+  isEconomyIntent,
+  toSelf,
+  type Input,
+  type Intent,
+  type IntentResult,
+  type Operator,
+  type OperatorRecord,
+  type OrgView,
+  type World,
+} from '../core/index.js';
 import type { TokenVerifier } from './auth.js';
 import { ChatService } from './chat.js';
 import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
 import { diffEntities } from './interest.js';
+import { BitsPush, OrgMembershipPush, RenamePush } from './pushes.js';
 import { randomHex, type Store } from './store.js';
 
 /** Transport-independent connection. */
@@ -99,6 +113,16 @@ interface Session {
    * has left, and its checkpoints skip the inventory so the next load takes the store as truth.
    */
   reloadRequired: boolean;
+  /**
+   * Ledger watermark of the world's balance: every BitsLedger row of the operator up to this seq is in it (the load's
+   * `ledgerSeq`, advanced by resyncs). Rows written outside the sim above it are applied once, as deltas.
+   */
+  ledgerSeq: number;
+  /** Rows above the watermark already applied from a bus push (id -> seq), pruned when the watermark passes them. */
+  ledgerApplied: Map<string, number>;
+  /** Bumped by every org / rename push: a resync whose store read raced one does not overwrite it. */
+  orgGen: number;
+  nameGen: number;
 }
 
 const BUCKET_MAX = 64;
@@ -118,6 +142,11 @@ const WARN_EVERY = 8;
 export const RELOAD_KICK = 'reload required';
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+const sameOrg = (a: OrgView | null, b: OrgView | null) => a === b || (a !== null && b !== null && a.id === b.id && a.name === b.name && a.tag === b.tag && a.rank === b.rank);
+
+/** Bus message kinds this class handles on the `admin` channel (the chat service handles the others). */
+const ADMIN_KINDS: ReadonlySet<unknown> = new Set(['bits', 'rename']);
 
 /** Constant-time string comparison; different lengths never match. */
 function sameSecret(a: string, b: string): boolean {
@@ -168,6 +197,7 @@ export class Game {
   readonly chat: ChatService;
   /** Clusters (SP4): membership across worlds, outside the tick, never persisted. */
   readonly clusters: ClusterService;
+  private readonly unsubscribe: Array<() => void>;
 
   constructor(opts: GameOptions) {
     const worlds = opts.worlds ?? (opts.world ? [opts.world] : []);
@@ -213,6 +243,9 @@ export class Game {
         operatorIds: () => this.sessions.keys(),
         send: (operatorId, msg) => this.sendTo(operatorId, msg),
         clusterOf: (id) => this.clusters.of(id),
+        orgOf: (id) => operator(id)?.op.org ?? undefined,
+        // org membership, names and balances changed while the bus was down are re-read with the mutes
+        resync: (ids) => this.resyncOperators(ids),
         // names are checked in the worlds (claimStarter) against the same filter as chat
         filterChanged: (filter) => {
           for (const w of this.worlds.values()) w.nameFilter = filter;
@@ -223,6 +256,109 @@ export class Game {
       opts.bus,
       this.log,
     );
+    this.unsubscribe = [opts.bus.subscribe('org', (m) => this.onOrgPush(m)), opts.bus.subscribe('admin', (m) => this.onAdminPush(m))];
+  }
+
+  // ---- operator state pushed by the api (SP4 spec §7) ----
+
+  /** The connected operator and its session, wherever it is (an operator lives in one world at a time). */
+  private live(operatorId: string): { session: Session; op: Operator } | undefined {
+    const session = this.sessions.get(operatorId);
+    const op = session?.world.operators.get(operatorId);
+    return session && op ? { session, op } : undefined;
+  }
+
+  /**
+   * `org` channel: membership changes (create, join, leave, kick, rank, tag). An operator not loaded here ignores it:
+   * its next load reads the store.
+   */
+  private onOrgPush(raw: unknown): void {
+    if ((raw as { kind?: unknown } | null)?.kind !== 'membership') return;
+    const parsed = OrgMembershipPush.safeParse(raw);
+    if (!parsed.success) return this.log.warn({ kind: 'membership' }, 'dropped a malformed org message');
+    const m = parsed.data;
+    if (m.origin === 'sim') return;
+    const live = this.live(m.operatorId);
+    if (!live) return;
+    live.session.orgGen++;
+    live.op.org = m.org ? { ...m.org } : null;
+  }
+
+  /** `admin` channel: bits spent or granted in the api, and renames (mutes, deletions and filters go to the chat). */
+  private onAdminPush(raw: unknown): void {
+    const kind = (raw as { kind?: unknown } | null)?.kind;
+    if (!ADMIN_KINDS.has(kind)) return;
+    const parsed = (kind === 'bits' ? BitsPush : RenamePush).safeParse(raw);
+    if (!parsed.success) return this.log.warn({ kind }, 'dropped a malformed admin message');
+    const m = parsed.data as BitsPush | RenamePush;
+    if (m.origin === 'sim') return;
+    const live = this.live(m.operatorId);
+    if (!live) return;
+    if (m.kind === 'bits') {
+      this.applyLedgerRow(live.session, live.op, { id: m.ledgerId, seq: m.seq, delta: m.delta, reason: m.reason });
+    } else {
+      live.session.nameGen++;
+      this.rename(live.op, m.name);
+    }
+  }
+
+  /**
+   * Applies a ledger row written outside the sim to the live balance, once (economy contract): a row at or below the
+   * watermark is already in the balance, an applied id is a duplicate. Always a delta, never an absolute balance: the
+   * world has already taken the cost of any in-flight intent the DB has not committed yet, and deltas commute, so
+   * once both commit the world balance equals the DB balance (and a refused intent's refund lands there too). The
+   * balance may dip below zero until such an intent is answered.
+   */
+  private applyLedgerRow(session: Session, op: Operator, row: { id: string; seq: number; delta: number; reason: string }): void {
+    if (row.seq <= session.ledgerSeq || session.ledgerApplied.has(row.id)) return;
+    session.ledgerApplied.set(row.id, row.seq);
+    op.bits += row.delta;
+    session.world.emitCarry({ e: 'bits', delta: row.delta, reason: row.reason, balance: op.bits }, { to: op.id });
+  }
+
+  /** A new name shows in entities and `self` from the next tick; cluster views cache names, so they are rebuilt. */
+  private rename(op: Operator, name: string): void {
+    if (op.name === name) return;
+    op.name = name;
+    this.clusters.reattach(op.id);
+  }
+
+  /**
+   * Re-reads org membership, names and the ledger rows above each watermark for these operators (bus reconnects and
+   * the periodic chat resync). A push that arrived while the read was in flight wins over it (generations, applied
+   * row ids); an operator that left or reloaded meanwhile is skipped (its new load is newer). Never throws.
+   */
+  private async resyncOperators(ids: readonly string[]): Promise<void> {
+    const before = new Map<string, { session: Session; orgGen: number; nameGen: number }>();
+    const after = new Map<string, number>();
+    for (const id of ids) {
+      const session = this.sessions.get(id);
+      if (!session) continue;
+      before.set(id, { session, orgGen: session.orgGen, nameGen: session.nameGen });
+      after.set(id, session.ledgerSeq);
+    }
+    if (after.size === 0) return;
+    let state;
+    try {
+      state = await this.store.liveState(after);
+    } catch (err) {
+      this.log.warn({ err: { name: (err as Error)?.name ?? 'Error' } }, 'operator resync failed');
+      return;
+    }
+    for (const [id, b] of before) {
+      const st = state.get(id);
+      const live = this.live(id);
+      if (!st || !live || live.session !== b.session) continue;
+      const { session, op } = live;
+      if (session.orgGen === b.orgGen && !sameOrg(op.org, st.org)) op.org = st.org ? { ...st.org } : null;
+      // A claimed name is never taken back to null (a claim the store has not committed yet).
+      if (session.nameGen === b.nameGen && st.name !== null) this.rename(op, st.name);
+      for (const row of st.ledger) this.applyLedgerRow(session, op, row);
+      if (st.ledgerSeq > session.ledgerSeq) {
+        session.ledgerSeq = st.ledgerSeq;
+        for (const [rowId, seq] of session.ledgerApplied) if (seq <= session.ledgerSeq) session.ledgerApplied.delete(rowId);
+      }
+    }
   }
 
   /** Sends an out-of-tick server message to every connection of an operator (controller and spectators). */
@@ -321,6 +457,7 @@ export class Game {
         session = {
           operatorId: rec.id, sub: claims.sub, world, controller: null, spectators: new Set(), resumeToken: randomHex(16), buffer: [], baseTick: world.tick,
           savedKnown: null, savedSelf: null, commandsThisTick: 0, violations: [], leaveAtTick: null, reloadRequired: false,
+          ledgerSeq: rec.ledgerSeq, ledgerApplied: new Map(), orgGen: 0, nameGen: 0,
         };
         this.sessions.set(rec.id, session);
         this.chat.loadMute(rec.id, rec.mutedUntil);
@@ -819,6 +956,7 @@ export class Game {
    * abandoned pending), then checkpoint everyone and wait for persistence.
    */
   async shutdown(): Promise<void> {
+    for (const off of this.unsubscribe) off();
     this.chat.close();
     for (const st of [...this.conns.values()]) this.kick(st, 'server shutting down', 1001);
     this.stopping = true;

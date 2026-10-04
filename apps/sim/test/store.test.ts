@@ -248,6 +248,26 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(await store.ledgerFor(a.id)).toHaveLength(1);
     });
 
+    it('the load carries the org (none) and the ledger watermark of its balance; liveState lists rows written outside the sim above it', async () => {
+      const a = await store.loadOrCreateOperator('sub-live', 'lo', SPAWN);
+      expect(a).toMatchObject({ org: null, ledgerSeq: 0, bits: 0 });
+      const g1 = await store.grantBits(a.id, 1000, 'admin', 'grant-1');
+      expect(g1).toEqual({ id: expect.any(String), seq: expect.any(Number), balance: 1000 });
+      const loaded = await store.loadOrCreateOperator('sub-live', 'lo', SPAWN);
+      expect(loaded).toMatchObject({ bits: 1000, ledgerSeq: g1.seq });
+      const buy: Intent = { id: 'i-live-buy', kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'tap', qty: 1, price: 128 };
+      expect(await store.applyIntent(buy, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      const g2 = await store.grantBits(a.id, -100, 'rename', 'olga');
+      expect(g2).toMatchObject({ balance: 1000 - 128 - 100 });
+      expect(g2.seq).toBeGreaterThan(g1.seq);
+      const live = await store.liveState(new Map([[a.id, loaded.ledgerSeq], ['00000000-0000-0000-0000-000000000000', 0]]));
+      expect([...live.keys()]).toEqual([a.id]);
+      // the shop row is the sim's own (applied by the world at accept): it only moves the watermark
+      expect(live.get(a.id)).toEqual({ name: null, org: null, ledgerSeq: g2.seq, ledger: [{ id: g2.id, seq: g2.seq, delta: -100, reason: 'rename' }] });
+      expect((await store.liveState(new Map([[a.id, g2.seq]]))).get(a.id)).toEqual({ name: null, org: null, ledgerSeq: g2.seq, ledger: [] });
+      expect(await store.liveState(new Map())).toEqual(new Map());
+    });
+
     it('refuses economy intents that do not match the rules (no bits or items can be minted)', async () => {
       const a = await store.loadOrCreateOperator('sub-l3', 'lo', SPAWN);
       await store.grantBits(a.id, 1_000_000, 'admin');
@@ -559,11 +579,28 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
 
 contract('MemoryStore', async () => new MemoryStore(), async () => {});
 
+describe('MemoryStore orgs', () => {
+  it('loads and resyncs the org it holds for the operator (mirrors OrgMember)', async () => {
+    const store = new MemoryStore();
+    const a = await store.loadOrCreateOperator('sub-org', 'lo', SPAWN);
+    const root = { id: 'o1', name: 'Root Access', tag: 'ROOT', rank: 'OWNER' } as const;
+    store.orgs.set(a.id, root);
+    expect((await store.loadOrCreateOperator('sub-org', 'lo', SPAWN)).org).toEqual(root);
+    expect((await store.liveState(new Map([[a.id, 0]]))).get(a.id)!.org).toEqual(root);
+  });
+});
+
 describe('PrismaStore.loadOrCreateOperator unique races', () => {
   const uniqueViolation = () => Object.assign(new Error('Unique constraint failed on the fields: (`sub`)'), { code: 'P2002' });
   const row = { id: 'op-1', sub: 's', name: null, starterClaimed: false, x: 1, y: 2, bits: 0n, inventory: {}, daemons: [] };
   const storeWith = (upsert: () => Promise<unknown>) =>
-    new PrismaStore({ operator: { upsert }, ticket: { findMany: async () => [] }, research: { findMany: async () => [] } } as unknown as PrismaClient);
+    new PrismaStore({
+      operator: { upsert },
+      ticket: { findMany: async () => [] },
+      research: { findMany: async () => [] },
+      orgMember: { findUnique: async () => null },
+      $queryRaw: async () => [{ bits: 0n, seq: null }],
+    } as unknown as PrismaClient);
 
   it('retries once when a simultaneous first login for the same sub wins the insert', async () => {
     let calls = 0;
@@ -747,5 +784,20 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     const recs = await Promise.all(Array.from({ length: 8 }, () => store.loadOrCreateOperator('sub-first', 'lo', SPAWN)));
     expect(new Set(recs.map((r) => r.id)).size).toBe(1);
     expect(await prisma!.operator.count({ where: { sub: 'sub-first' } })).toBe(1);
+  });
+
+  it('loads and resyncs the org from OrgMember; an api spend committed between loads moves balance and watermark together', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Org", "OrgMember", "OrgInvite" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-org', 'lo', SPAWN);
+    await prisma!.org.create({ data: { id: 'o1', name: 'Root Access', tag: 'ROOT', ownerId: a.id, members: { create: { operatorId: a.id, rank: 'OWNER' } } } });
+    const root = { id: 'o1', name: 'Root Access', tag: 'ROOT', rank: 'OWNER' };
+    await store.grantBits(a.id, 500, 'admin');
+    const spend = await store.grantBits(a.id, -200, 'org', 'o1');
+    const loaded = await store.loadOrCreateOperator('sub-org', 'lo', SPAWN);
+    expect(loaded).toMatchObject({ org: root, bits: 300, ledgerSeq: spend.seq });
+    expect((await store.liveState(new Map([[a.id, 0]]))).get(a.id)).toMatchObject({ org: root, ledgerSeq: spend.seq, ledger: [{ delta: 500 }, { id: spend.id, delta: -200, reason: 'org' }] });
+    await prisma!.org.delete({ where: { id: 'o1' } });
+    expect((await store.loadOrCreateOperator('sub-org', 'lo', SPAWN)).org).toBeNull();
   });
 });

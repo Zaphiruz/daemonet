@@ -46,6 +46,14 @@ export interface ClusterView {
   members: Array<{ id: string; name: string | null; subnet: string | null; away: boolean }>;
 }
 
+/** An operator's org (SP4 spec §7) and its rank there. */
+export interface OrgView {
+  id: string;
+  name: string;
+  tag: string;
+  rank: 'OWNER' | 'OFFICER' | 'MEMBER';
+}
+
 /**
  * Who a tag belongs to (SP4 spec §6): the cluster while the operator is in one, otherwise the operator.
  * Everything that used to compare `tagOwner` with an operator id compares party keys instead.
@@ -98,6 +106,8 @@ export interface OperatorRecord {
   research: Record<string, number>;
   /** Chat mute (ISO) or null. */
   mutedUntil: string | null;
+  /** The operator's org, or null (loaded with the record; never written by checkpoints). */
+  org: OrgView | null;
   /**
    * Set on checkpoint records while an intent that rewrites the inventory in the store (buy, craft, decompile,
    * claimStarter) is in flight: the store must leave `inventory` alone so it can neither rewind a committed intent
@@ -214,6 +224,8 @@ export interface Operator {
   mutedUntil: string | null;
   /** Set by the runtime's cluster service; null when solo. Not persisted. */
   cluster: ClusterView | null;
+  /** The operator's org: loaded with the record and kept current by the runtime over the bus. */
+  org: OrgView | null;
 }
 
 export interface Capture {

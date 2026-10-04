@@ -1,5 +1,5 @@
 import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient } from '@daemonet/db';
-import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
+import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OrgView, OwnedDaemonRecord, Point } from '../core/index.js';
 import { DISK_EXPANSION_ITEM, DISK_STEP, dayKey, getSpecies, type FilterTerm, type TicketKind, type TicketParams } from '@daemonet/rules';
 import {
   checkpointFields,
@@ -9,6 +9,7 @@ import {
   ledgerReason,
   missingItem,
   randomHex,
+  SIM_LEDGER_REASONS,
   stateFields as memStateFields,
   ticketAcceptProblem,
   ticketCapProblem,
@@ -17,8 +18,15 @@ import {
   type ChatRow,
   type IntentContext,
   type LedgerRow,
+  type LedgerWrite,
+  type LiveOperatorState,
+  type LoadedOperator,
   type Store,
 } from './store.js';
+
+type OrgMemberWithOrg = { rank: OrgView['rank']; org: { id: string; name: string; tag: string } };
+
+const orgView = (m: OrgMemberWithOrg | null | undefined): OrgView | null => (m ? { id: m.org.id, name: m.org.name, tag: m.org.tag, rank: m.rank } : null);
 
 function toRecord(row: DaemonRow): OwnedDaemonRecord {
   return {
@@ -134,7 +142,7 @@ export class PrismaStore implements Store {
     }
   }
 
-  async loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord> {
+  async loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<LoadedOperator> {
     const upsert = () =>
       this.prisma.operator.upsert({
         where: { sub },
@@ -151,10 +159,17 @@ export class PrismaStore implements Store {
       op = await upsert();
     }
     const day = dayKey(new Date().toISOString());
-    const [tickets, research] = await Promise.all([
+    const [tickets, research, member, economy] = await Promise.all([
       this.prisma.ticket.findMany({ where: { operatorId: op.id, OR: [{ status: 'OPEN' }, { day }] }, orderBy: { acceptedAt: 'asc' } }),
       this.prisma.research.findMany({ where: { operatorId: op.id } }),
+      this.prisma.orgMember.findUnique({ where: { operatorId: op.id }, include: { org: true } }),
+      // One statement, so one snapshot: the balance reflects exactly the ledger rows up to `seq` (the watermark above
+      // which pushed or resynced rows are applied as deltas).
+      this.prisma.$queryRaw<Array<{ bits: bigint; seq: bigint | null }>>`
+        SELECT o."bits", (SELECT max(l."seq") FROM "BitsLedger" l WHERE l."operatorId" = o."id") AS "seq"
+        FROM "Operator" o WHERE o."id" = ${op.id}`,
     ]);
+    const econ = economy[0] ?? { bits: op.bits, seq: null };
     return {
       id: op.id,
       name: op.name,
@@ -162,7 +177,7 @@ export class PrismaStore implements Store {
       subnet: op.subnet,
       x: op.x,
       y: op.y,
-      bits: Number(op.bits),
+      bits: Number(econ.bits),
       diskCapacity: op.diskCapacity,
       inventory: (op.inventory ?? {}) as Record<string, number>,
       ram: op.daemons.filter((d) => d.location === 'RAM').map(toRecord),
@@ -173,7 +188,35 @@ export class PrismaStore implements Store {
       ),
       research: Object.fromEntries(research.map((r) => [String(r.line), r.points])),
       mutedUntil: op.mutedUntil ? op.mutedUntil.toISOString() : null,
+      org: orgView(member),
+      ledgerSeq: econ.seq === null ? 0 : Number(econ.seq),
     };
+  }
+
+  async liveState(after: ReadonlyMap<string, number>): Promise<Map<string, LiveOperatorState>> {
+    const ids = [...after.keys()];
+    if (ids.length === 0) return new Map();
+    const [ops, members, rows] = await Promise.all([
+      this.prisma.operator.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }),
+      this.prisma.orgMember.findMany({ where: { operatorId: { in: ids } }, include: { org: true } }),
+      // One statement: per operator, every row above the watermark that has committed (seq order = commit order).
+      this.prisma.bitsLedger.findMany({
+        where: { OR: ids.map((id) => ({ operatorId: id, seq: { gt: BigInt(after.get(id)!) } })) },
+        select: { id: true, seq: true, operatorId: true, delta: true, reason: true },
+        orderBy: { seq: 'asc' },
+      }),
+    ]);
+    const orgs = new Map(members.map((m) => [m.operatorId, m]));
+    const out = new Map<string, LiveOperatorState>();
+    for (const op of ops) out.set(op.id, { name: op.name, org: orgView(orgs.get(op.id)), ledgerSeq: after.get(op.id)!, ledger: [] });
+    for (const r of rows) {
+      const state = out.get(r.operatorId);
+      if (!state) continue;
+      const seq = Number(r.seq);
+      state.ledgerSeq = Math.max(state.ledgerSeq, seq);
+      if (!SIM_LEDGER_REASONS.has(r.reason)) state.ledger.push({ id: r.id, seq, delta: Number(r.delta), reason: r.reason });
+    }
+    return out;
   }
 
   async appendChat(row: ChatRow): Promise<void> {
@@ -457,9 +500,9 @@ export class PrismaStore implements Store {
     return rows.map((r) => r.formId);
   }
 
-  async grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<void> {
+  async grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<LedgerWrite> {
     if (!Number.isSafeInteger(delta) || delta === 0) throw new RangeError(`invalid bits delta ${delta}`);
-    await this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx) => {
       // A debit is conditional on the balance (row-locked by the update), so bits never go negative.
       const res = await tx.operator.updateMany({
         where: delta < 0 ? { id: operatorId, bits: { gte: BigInt(-delta) } } : { id: operatorId },
@@ -469,7 +512,9 @@ export class PrismaStore implements Store {
         if (delta < 0 && (await tx.operator.count({ where: { id: operatorId } })) === 1) throw new RangeError('not enough bits');
         throw new Error(`unknown operator ${operatorId}`);
       }
-      await tx.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason, ref: ref ?? null } });
+      const row = await tx.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason, ref: ref ?? null }, select: { id: true, seq: true } });
+      const op = await tx.operator.findUniqueOrThrow({ where: { id: operatorId }, select: { bits: true } });
+      return { id: row.id, seq: Number(row.seq), balance: Number(op.bits) };
     });
   }
 

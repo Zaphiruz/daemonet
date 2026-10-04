@@ -148,6 +148,7 @@ export class World {
       research: { ...rec.research },
       mutedUntil: rec.mutedUntil,
       cluster: null,
+      org: rec.org,
     };
     this.operators.set(op.id, op);
     for (const d of [...rec.ram].sort((a, b) => a.slot - b.slot)) this.addOwned(op, d);
@@ -226,6 +227,7 @@ export class World {
       acceptedToday: [...op.acceptedKeys],
       research: { ...op.research },
       mutedUntil: op.mutedUntil,
+      org: op.org,
       ...(this.inventoryInFlight(op.id) ? { inventoryInFlight: true } : {}),
     };
   }

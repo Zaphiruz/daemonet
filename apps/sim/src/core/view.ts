@@ -66,7 +66,7 @@ export function toDaemonEntity(world: World, d: Daemon, viewer?: Operator): Enti
 }
 
 export function toOperatorEntity(op: Operator): Entity {
-  return { kind: 'operator', id: op.id, name: op.name, x: op.x, y: op.y };
+  return { kind: 'operator', id: op.id, name: op.name, tag: op.org?.tag ?? null, x: op.x, y: op.y };
 }
 
 export function toRamDaemon(world: World, d: Daemon): RamDaemon {
@@ -129,6 +129,7 @@ export function toSelf(world: World, op: Operator): OperatorSelf {
         progress: t.progress,
         title: boardTicket(t.subnet, t.day, t.index)?.title ?? t.kind,
       })),
+    org: op.org ? { ...op.org } : null,
     cluster: op.cluster
       ? { id: op.cluster.id, code: op.cluster.code, leaderId: op.cluster.leaderId, members: op.cluster.members.map((m) => ({ ...m })) }
       : null,

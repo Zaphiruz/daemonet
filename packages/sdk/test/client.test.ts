@@ -37,7 +37,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const last = () => FakeWs.instances[FakeWs.instances.length - 1]!;
 
 const self = {
-  id: 'op1', name: 'x', starterClaimed: true, x: 0, y: 0, bits: 0, diskCapacity: 256, tickets: [], ticketsToday: 0, research: {}, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null, cluster: null,
+  id: 'op1', name: 'x', starterClaimed: true, x: 0, y: 0, bits: 0, diskCapacity: 256, tickets: [], ticketsToday: 0, research: {}, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null, org: null, cluster: null,
 };
 function snapshot(ws: FakeWs): void {
   ws.serverSend({ t: 'authOk', seq: 1, d: { operatorId: 'op1', role: 'controller', resumeToken: 'r', tick: 1 } });

@@ -16,7 +16,7 @@ import {
   type TicketKind,
   type TicketParams,
 } from '@daemonet/rules';
-import type { Intent, IntentResult, OpenTicket, OperatorRecord, OwnedDaemonRecord, Point, ShopIntent } from '../core/index.js';
+import type { Intent, IntentResult, OpenTicket, OperatorRecord, OrgView, OwnedDaemonRecord, Point, ShopIntent } from '../core/index.js';
 import { shopPrice } from '../core/systems/economy.js';
 import { boardTicket } from '../core/systems/tickets.js';
 
@@ -57,9 +57,15 @@ export interface Store extends ChatStore {
   createSeed(subnet: string): Promise<{ id: string; seed: string }>;
   /**
    * Loads the operator with its open tickets (with progress), today's (UTC, store clock) accepted count and keys, its
-   * Codex research and its chat mute.
+   * Codex research, its chat mute, its org and the ledger watermark of its balance (`LoadedOperator.ledgerSeq`).
    */
-  loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord>;
+  loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<LoadedOperator>;
+  /**
+   * What changed outside the sim for connected operators (SP4 plan 3: the runtime's resync after bus outages): name,
+   * org and the ledger rows above each operator's watermark (`after`: operator id -> seq) that the sim's own intents
+   * did not write. Operators without a row are left out.
+   */
+  liveState(after: ReadonlyMap<string, number>): Promise<Map<string, LiveOperatorState>>;
   /**
    * Idempotent by intent.id. Domain failures (name taken, not on Disk, ticket not open) resolve with ok: false. A
    * `completeTicket` moves the row OPEN -> DONE and credits the reward with exactly one ledger row (reason `ticket`,
@@ -76,13 +82,14 @@ export interface Store extends ChatStore {
   listDiscoveries(): Promise<string[]>;
   /**
    * Credits (or, with a negative delta, debits) bits outside the sim's intents, with a ledger row in the same
-   * transaction. Throws on a non-integer or zero delta, an unknown operator, or a debit larger than the balance.
+   * transaction; returns the row's id and seq and the new balance. Throws on a non-integer or zero delta, an unknown
+   * operator, or a debit larger than the balance. `reason` must not be one of SIM_LEDGER_REASONS.
    *
-   * For offline / outside-the-sim credits only (admin grants, dev seeding): a connected operator's world balance is
-   * stale until the operator reconnects (the world never re-reads it, and the store refuses purchases the DB balance
-   * cannot cover). Payouts to connected operators (tickets, rewards) must be intents applied through the world.
+   * For outside-the-sim credits only (admin grants, dev seeding): a connected operator's world applies the row as a
+   * delta when it is pushed over the bus (`admin { kind: 'bits' }`) or at the next resync. Payouts to connected
+   * operators (tickets, rewards) must be intents applied through the world.
    */
-  grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<void>;
+  grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<LedgerWrite>;
   /** The operator's most recent `limit` ledger rows, oldest first. */
   ledgerFor(operatorId: string, limit?: number): Promise<LedgerRow[]>;
   ping(): Promise<void>;
@@ -95,6 +102,43 @@ export interface LedgerRow {
   reason: string;
   ref: string | null;
   at: string;
+}
+
+/**
+ * Ledger reasons written only by the sim's own store intents (buy / craft / completeTicket). The world applied those
+ * itself (costs at accept, gains on commit), so a resync never applies them again; every other reason (admin grants,
+ * org and rename spends in the api, ...) was written outside the sim and reaches the world as a delta.
+ */
+export const SIM_LEDGER_REASONS: ReadonlySet<string> = new Set(['shop', 'disk', 'craft', 'ticket']);
+
+/** A ledger row just written outside the sim's intents. */
+export interface LedgerWrite {
+  id: string;
+  /**
+   * BitsLedger.seq. Per operator, rows commit in seq order: every writer locks the operator row (the balance update or
+   * `lockOperator`) before inserting its row, so the next writer draws its seq only after the previous one committed.
+   */
+  seq: number;
+  /** The balance after the row. */
+  balance: number;
+}
+
+/**
+ * The record a load returns. `ledgerSeq` is the highest ledger seq of the operator, read in the same snapshot as
+ * `bits`: the balance reflects exactly the rows up to it, so a pushed or resynced row is applied only above it.
+ */
+export interface LoadedOperator extends OperatorRecord {
+  ledgerSeq: number;
+}
+
+/** See `Store.liveState`. */
+export interface LiveOperatorState {
+  name: string | null;
+  org: OrgView | null;
+  /** Highest ledger seq of the operator in the same read (the caller's watermark when there is none above it). */
+  ledgerSeq: number;
+  /** Rows above the caller's watermark whose reason is not in SIM_LEDGER_REASONS, in seq order. */
+  ledger: Array<{ id: string; seq: number; delta: number; reason: string }>;
 }
 
 /** Ledger reason of a bits-spending intent. */
@@ -335,6 +379,11 @@ export class MemoryStore implements Store {
   readonly filterTerms: FilterTerm[] = [];
   /** operatorId -> mutedUntil (ISO) or null */
   readonly mutes = new Map<string, string | null>();
+  /** operatorId -> org membership (the api's OrgMember rows; tests set it). */
+  readonly orgs = new Map<string, OrgView>();
+  /** BitsLedger ids and seqs, parallel to `ledger` (kept apart so `ledger` stays in the LedgerRow shape). */
+  private readonly ledgerKeys: Array<{ id: string; seq: number }> = [];
+  private lastLedgerSeq = 0;
   /** Wall clock for "today" (tests pin it). */
   now: () => string = () => new Date().toISOString();
   /** Tests set this to make the next N applyIntent calls throw. */
@@ -360,7 +409,45 @@ export class MemoryStore implements Store {
     return { id: row.id, seed: row.seed };
   }
 
-  async loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord> {
+  /** Appends a ledger row (mirrors BitsLedger's uuid id and autoincrement seq). */
+  private addLedger(row: LedgerRow): { id: string; seq: number } {
+    const key = { id: crypto.randomUUID(), seq: ++this.lastLedgerSeq };
+    this.ledger.push(row);
+    this.ledgerKeys.push(key);
+    return key;
+  }
+
+  private maxLedgerSeq(operatorId: string): number {
+    let max = 0;
+    this.ledger.forEach((l, i) => {
+      if (l.operatorId === operatorId) max = Math.max(max, this.ledgerKeys[i]!.seq);
+    });
+    return max;
+  }
+
+  private orgOf(operatorId: string): OrgView | null {
+    const o = this.orgs.get(operatorId);
+    return o ? { ...o } : null;
+  }
+
+  async liveState(after: ReadonlyMap<string, number>): Promise<Map<string, LiveOperatorState>> {
+    const out = new Map<string, LiveOperatorState>();
+    for (const [id, seq] of after) {
+      const op = this.operators.get(id);
+      if (!op) continue;
+      const state: LiveOperatorState = { name: op.name, org: this.orgOf(id), ledgerSeq: seq, ledger: [] };
+      this.ledger.forEach((l, i) => {
+        const key = this.ledgerKeys[i]!;
+        if (l.operatorId !== id || key.seq <= seq) return;
+        state.ledgerSeq = Math.max(state.ledgerSeq, key.seq);
+        if (!SIM_LEDGER_REASONS.has(l.reason)) state.ledger.push({ id: key.id, seq: key.seq, delta: l.delta, reason: l.reason });
+      });
+      out.set(id, state);
+    }
+    return out;
+  }
+
+  async loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<LoadedOperator> {
     let op = [...this.operators.values()].find((o) => o.sub === sub);
     if (!op) {
       op = { id: crypto.randomUUID(), sub, name: null, starterClaimed: false, bits: 0, diskCapacity: DISK_BASE, subnet, x: spawn.x, y: spawn.y, inventory: {} };
@@ -382,6 +469,8 @@ export class MemoryStore implements Store {
       ...this.ticketStateOf(op.id),
       research: this.researchFor(op.id),
       mutedUntil: this.mutes.get(op.id) ?? null,
+      org: this.orgOf(op.id),
+      ledgerSeq: this.maxLedgerSeq(op.id),
     };
   }
 
@@ -510,7 +599,7 @@ export class MemoryStore implements Store {
         op.bits -= intent.price;
         if (intent.itemId === DISK_EXPANSION_ITEM) op.diskCapacity += DISK_STEP;
         else op.inventory = withItems(op.inventory, { [intent.itemId]: intent.qty }, 1);
-        this.ledger.push({ operatorId: op.id, delta: -intent.price, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
+        this.addLedger({ operatorId: op.id, delta: -intent.price, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
         break;
       }
       case 'craft': {
@@ -521,7 +610,7 @@ export class MemoryStore implements Store {
         if (missing) return { ok: false, reason: `not enough ${missing}` };
         op.bits -= intent.bits;
         op.inventory = withItems(withItems(op.inventory, intent.fragments, -1), { [intent.output.item]: intent.output.qty }, 1);
-        this.ledger.push({ operatorId: op.id, delta: -intent.bits, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
+        this.addLedger({ operatorId: op.id, delta: -intent.bits, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
         break;
       }
       case 'decompile': {
@@ -560,7 +649,7 @@ export class MemoryStore implements Store {
         t.progress = t.target;
         t.completedAt = this.now();
         op.bits += intent.reward;
-        this.ledger.push({ operatorId: op.id, delta: intent.reward, reason: 'ticket', ref: intent.ticketId, at: this.now() });
+        this.addLedger({ operatorId: op.id, delta: intent.reward, reason: 'ticket', ref: intent.ticketId, at: this.now() });
         break;
       }
     }
@@ -600,13 +689,14 @@ export class MemoryStore implements Store {
     return [...this.discoveries.keys()];
   }
 
-  async grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<void> {
+  async grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<LedgerWrite> {
     if (!Number.isSafeInteger(delta) || delta === 0) throw new RangeError(`invalid bits delta ${delta}`);
     const op = this.operators.get(operatorId);
     if (!op) throw new Error(`unknown operator ${operatorId}`);
     if (op.bits + delta < 0) throw new RangeError('not enough bits');
     op.bits += delta;
-    this.ledger.push({ operatorId, delta, reason, ref: ref ?? null, at: new Date().toISOString() });
+    const key = this.addLedger({ operatorId, delta, reason, ref: ref ?? null, at: new Date().toISOString() });
+    return { ...key, balance: op.bits };
   }
 
   async ledgerFor(operatorId: string, limit = 64): Promise<LedgerRow[]> {

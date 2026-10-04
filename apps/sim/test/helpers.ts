@@ -78,6 +78,7 @@ export function operatorRecord(id: string, overrides: Partial<OperatorRecord> = 
     acceptedToday: [],
     research: {},
     mutedUntil: null,
+    org: null,
     ...overrides,
   };
 }

@@ -16,7 +16,8 @@ const Id = z.string().min(1).max(64);
 const Coord = z.number().finite();
 const TypeIdSchema = z.enum(TYPES);
 const Self = z.literal('self');
-const OperatorName = z.string().regex(/^[a-z0-9_-]{3,16}$/);
+/** Operator names (claimStarter, and renames pushed by the api). */
+export const OperatorName = z.string().regex(/^[a-z0-9_-]{3,16}$/);
 
 // ---- Commands (client -> server, inside a `cmd` message) ----
 
@@ -95,6 +96,8 @@ export const OperatorEntity = z.object({
   kind: z.literal('operator'),
   id: Id,
   name: z.string().nullable(),
+  /** Org tag (4 chars) or null. */
+  tag: z.string().nullable(),
   x: Coord,
   y: Coord,
 });
@@ -204,6 +207,8 @@ export const OperatorSelf = z.object({
       title: z.string(),
     }),
   ),
+  /** The org this operator belongs to (SP4), or null. */
+  org: z.object({ id: Id, name: z.string(), tag: z.string(), rank: z.enum(['OWNER', 'OFFICER', 'MEMBER']) }).nullable(),
   /** The cluster this operator is in (SP4): join code, leader, members with their subnet; `away` = not in your subnet. */
   cluster: z
     .object({
