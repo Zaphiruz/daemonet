@@ -5,6 +5,8 @@ declare module '@daemonet/sdk' {
   export interface DaemonEntity extends Positioned {
     kind: 'daemon'; id: string; species: string; types: string[]; level: number; hp: number; maxHp: number;
     owner: string | null; taggedBy: string | null; clean: boolean; signature: number; statuses: string[]; hardened: boolean;
+    /** The Incident's kernel daemon, and whether it is immune until its adds are cleared. */
+    boss?: boolean; shielded?: boolean;
     /** Wild daemons only: what your Codex research on the line reveals (nature at 4 captures, IV buckets at 16, exact IVs at 64). */
     scan?: { nature?: number; ivBuckets?: number[]; ivs?: number[] };
   }
@@ -77,6 +79,7 @@ declare module '@daemonet/sdk' {
     /** Leader only; the join code changes so the member cannot come back with the old one. */
     kick(operatorId: string): Promise<unknown>;
   }
+  export interface IncidentEvent { phase: 'open' | 'fighting' | 'shield' | 'unshield' | 'cleared' | 'expired'; id: string; n: number; species: string; endsAt: string; bossId: string | null; participants?: Array<{ operatorId: string; name: string | null; damage: number; share: number; reward: number }> }
   export class GameClient {
     tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, Entity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi; readonly chat: ChatApi; readonly cluster: ClusterApi;
     on(name: 'captureStart', handler: (ev: CaptureStartEvent) => void): () => void;
@@ -89,6 +92,12 @@ declare module '@daemonet/sdk' {
     on(name: 'decompiled', handler: (ev: { daemon: string; species: string; fragments: Record<string, number> }) => void): () => void;
     on(name: 'ticketProgress', handler: (ev: { ticketId: string; progress: number; target: number }) => void): () => void;
     on(name: 'ticketDone', handler: (ev: { ticketId: string; reward: number; unpaid?: boolean }) => void): () => void;
+    /** Incidents (server-wide): the phase changed; "cleared" lists each operator's damage share and reward. */
+    on(name: 'incident', handler: (ev: IncidentEvent) => void): () => void;
+    /** A blast lands on this circle (tiles) at atTick: move your daemons and yourself out. */
+    on(name: 'telegraph', handler: (ev: { x: number; y: number; radius: number; atTick: number }) => void): () => void;
+    /** Your payout from a cleared Incident. */
+    on(name: 'incidentReward', handler: (ev: { incidentId: string; reward: number; share: number }) => void): () => void;
     on(name: 'chat', handler: (line: ChatLine) => void): () => void;
     on(name: 'chatDeleted', handler: (ev: { id: string; channel: string }) => void): () => void;
     /** Your mute state changed: until is the end of the mute (ISO time), or null when it was lifted. */

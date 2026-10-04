@@ -1,6 +1,7 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import { chatStore } from './game/chat.ts';
 import { clusterStore } from './game/clusters.ts';
+import { incidentStore } from './game/incident.ts';
 import type { CodexBestiaryRow, ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
 
 export interface Me {
@@ -127,7 +128,7 @@ export function describeApiError(err: unknown): string {
   if (status === 413 || code === 'payload_too_large') return 'request too large';
   if (status === 429 || code === 'rate_limited') return 'too many requests: slow down and try again';
   if (typeof status === 'number' && status >= 500) return 'server error: try again later';
-  if ((code === 'validation_error' || code === 'bad_request' || code === 'not_found') && message) return message;
+  if ((code === 'validation_error' || code === 'bad_request' || code === 'not_found' || code === 'conflict') && message) return message;
   return 'request failed';
 }
 
@@ -144,6 +145,30 @@ export function describeOrgError(err: unknown): string {
   if (e.status === 403 || code === 'forbidden') return message ? `not allowed: ${message}` : 'not allowed: your rank cannot do that';
   if ((e.status === 400 || e.status === 404) && message) return message;
   return describeApiError(err);
+}
+
+/** One operator's line in an Incident's history: names are live, there are no ids. `you` marks the caller. */
+export interface IncidentParticipant {
+  name: string | null;
+  damage: number;
+  share: number;
+  reward: number;
+  you: boolean;
+}
+export interface IncidentRecord {
+  id: string;
+  n: number;
+  species: string;
+  openedAt: string;
+  endsAt: string;
+  closedAt: string | null;
+  outcome: 'OPEN' | 'CLEARED' | 'EXPIRED';
+  participants: IncidentParticipant[];
+}
+export interface IncidentList {
+  next: { at: string; species: string; periodMs: number; windowMs: number };
+  current: { id: string; n: number; species: string; openedAt: string; endsAt: string } | null;
+  recent: IncidentRecord[];
 }
 
 export interface Codex {
@@ -216,7 +241,7 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
@@ -249,6 +274,8 @@ export const api = createApi({
     /** POST /api/orgs<path> — create (''), /invite, /<id>/accept, /<id>/decline, /leave, /kick, /rank, /transfer, /tag. */
     orgAction: b.mutation<unknown, { path: string; body: object }>({ query: ({ path, body }) => ({ url: `/orgs${path}`, method: 'POST', body }), invalidatesTags: ['Org'] }),
     rename: b.mutation<{ ok: boolean; name: string; bits: number }, { name: string }>({ query: (body) => ({ url: '/me/rename', method: 'POST', body }), invalidatesTags: ['Me', 'Org'] }),
+    incidents: b.query<IncidentList, void>({ query: () => '/incidents', providesTags: ['Incidents'] }),
+    startIncident: b.mutation<{ ok: boolean }, void>({ query: () => ({ url: '/admin/incidents/start', method: 'POST' }), invalidatesTags: ['Incidents'] }),
     script: b.query<ScriptDoc, void>({ query: () => '/scripts/main', providesTags: ['Script'] }),
     versions: b.query<ScriptVersion[], void>({ query: () => '/scripts/main/versions', providesTags: ['Script'] }),
     version: b.query<{ version: number; source: string }, number>({ query: (v) => `/scripts/main/versions/${v}` }),
@@ -266,6 +293,7 @@ export const api = createApi({
           // the chat lines and mute state belong to the operator who just left too
           chatStore.clear();
           clusterStore.clear();
+          incidentStore.reset();
         } catch {
           // a failed logout keeps the session and its caches
         }
@@ -289,6 +317,8 @@ export const {
   useOrgLeaderboardQuery,
   useOrgActionMutation,
   useRenameMutation,
+  useIncidentsQuery,
+  useStartIncidentMutation,
   useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */

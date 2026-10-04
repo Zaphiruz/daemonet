@@ -319,6 +319,27 @@ describe('createBridge chat (SP4)', () => {
   });
 });
 
+describe('createBridge Incident events (SP4 plan 4)', () => {
+  it('lets scripts react to Incidents: incident, telegraph and incidentReward ride inside delta frames (no new frame type is relayed)', async () => {
+    const { port2, frames, bridge, done } = setup();
+    port2.postMessage(auth);
+    await until(() => frames().length >= 2);
+    const events = [
+      { e: 'incident', phase: 'shield', id: 'i1', n: 3, species: 'pidzero', endsAt: '2026-10-04T04:20:00.000Z', bossId: 'b1' },
+      { e: 'telegraph', x: 10, y: 12, radius: 6, atTick: 400 },
+      { e: 'incidentReward', incidentId: 'i1', reward: 512, share: 0.25 },
+    ];
+    bridge.deliver(JSON.stringify({ t: 'delta', seq: 5, d: { tick: 5, upserts: [], removes: [], events } }));
+    // a would-be dedicated frame is not on the allowlist: scripts get the events from delta only
+    for (const t of ['incident', 'telegraph', 'incidentReward']) bridge.deliver(JSON.stringify({ t, seq: 6, d: {} }));
+    await settle();
+    const got = frames().slice(2);
+    expect(got.map((g) => g.t)).toEqual(['delta']);
+    expect(got[0]!.d.events).toEqual(events);
+    done();
+  });
+});
+
 describe('createBridge clusters (SP4 plan 2)', () => {
   const clusterCmd = (reqId: string, cmd: string, args: object) => JSON.stringify({ t: 'cmd', seq: 2, d: { reqId, cmd, actor: 'self', args } });
 

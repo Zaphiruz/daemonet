@@ -1,7 +1,8 @@
-import { getSubnet, TICK_HZ, type SubnetDef } from '@daemonet/rules';
+import { getSubnet, INCIDENT_SUBNET, TICK_HZ, type SubnetDef } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { signatureColor, spriteFor, SPRITE_SIZE } from '@daemonet/sprites';
 import type { Controls } from '../game/controls.ts';
+import { incidentStore } from '../game/incident.ts';
 import { taggedName } from '../game/names.ts';
 import { scale, visibleTiles, worldToScreen, type Camera } from './camera.ts';
 
@@ -68,6 +69,9 @@ const COLORS = {
   path: 'rgba(125, 211, 252, 0.6)',
   link: '#a78bfa',
   gateway: '#38bdf8',
+  boss: '#f43f5e',
+  shield: '#93c5fd',
+  telegraph: 'rgba(244, 63, 94, 0.35)',
 };
 
 export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): void {
@@ -109,6 +113,17 @@ export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): voi
     ctx.fillText(`→ ${g.to}${g.requires.level ? ` L${g.requires.level}` : ''}`, p.sx + s + 2, p.sy + 4);
   }
 
+  // blasts that land in two seconds (kernelspace only; the store drops them once they have landed)
+  if (client.subnet === INCIDENT_SUBNET) {
+    ctx.fillStyle = COLORS.telegraph;
+    for (const t of incidentStore.get().telegraphs) {
+      const c = worldToScreen(cam, t.x, t.y);
+      ctx.beginPath();
+      ctx.arc(c.sx, c.sy, t.radius * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   const me = client.self;
   const capture = me.capture;
   for (const e of client.entities.values()) {
@@ -133,6 +148,20 @@ export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): voi
       ctx.stroke();
     }
     ctx.drawImage(sprite, p.sx - size / 2, p.sy - size / 2, size, size);
+    if (e.boss) {
+      // the kernel daemon: a ring of 1.4 tiles whose bright arc is its remaining HP (blue while its shield holds)
+      ctx.strokeStyle = e.shielded ? COLORS.shield : COLORS.boss;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, s * 1.4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(p.sx, p.sy, s * 1.4, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * Math.max(0, e.hp)) / Math.max(1, e.maxHp));
+      ctx.stroke();
+      ctx.fillStyle = e.shielded ? COLORS.shield : COLORS.boss;
+      ctx.fillText(e.shielded ? 'KERNEL DAEMON · shielded' : 'KERNEL DAEMON', p.sx - s * 1.4, p.sy - s * 1.4 - 4);
+    }
     if (e.hardened) {
       ctx.strokeStyle = COLORS.hardened;
       ctx.lineWidth = 1;

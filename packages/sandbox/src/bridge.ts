@@ -59,6 +59,8 @@ type Envelope = { t?: unknown; d?: unknown };
  * `chat` commands are ordinary `cmd` frames and share the per-tick command budget and the frame flood budget.
  * `clusterInvite` (SP4 plan 2) is one too: a cluster id, the inviter's id and name and an expiry (no credential, and the
  * cluster id only works with the invite), so a script can accept invites; its `cluster*` commands share the same budgets.
+ * Incident events (SP4 plan 4: `incident`, `telegraph`, `incidentReward`) need no entry: they ride inside `delta` frames, which
+ * are already relayed, so scripts can react to phases and dodge blasts (pinned by `bridge.test.ts`).
  */
 const RELAYED: ReadonlySet<string> = new Set(['delta', 'ack', 'err', 'kick', 'chat', 'chatDeleted', 'muted', 'clusterInvite']);
 

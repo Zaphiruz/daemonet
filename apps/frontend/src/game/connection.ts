@@ -6,6 +6,7 @@ import { capture as appCapture, type CaptureStore } from './capture.ts';
 import { chatStore, setMe, type ChatStore } from './chat.ts';
 import { clusterStore, type ClusterStore } from './clusters.ts';
 import { getControls, setControls } from './controls.ts';
+import { describeIncidentEvent, incidentStore, type IncidentStore } from './incident.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
 
@@ -45,6 +46,10 @@ export interface ConnectionDeps {
   invalidateCodex(): void;
   /** Drops the cached ticket board and history (a ticket finished or moved). Optional: tests may omit it. */
   invalidateTickets?(): void;
+  /** Holds the running Incident and its telegraphs (events arrive before any panel mounts). Optional: tests may omit it. */
+  incident?: IncidentStore;
+  /** Refetches /api/incidents (after a reconnect, when an Incident ended): the API re-seeds the store. Optional. */
+  invalidateIncidents?(): void;
 }
 
 /** Backoff for a first connection that failed: doubles from RETRY_MIN_MS up to RETRY_MAX_MS. */
@@ -120,6 +125,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.capture.clear();
     deps.chat?.clear();
     deps.clusters?.clear();
+    deps.incident?.resync();
     client.close();
     set({ status, kickReason: reason, client: null });
   };
@@ -157,7 +163,10 @@ export function createConnection(deps: ConnectionDeps) {
       deps.log.push('system', `kicked: ${reason}`);
       fail(gen, c, 'kicked', reason);
     });
-    on('tick', () => set({ version: state.version + 1 }));
+    on('tick', (tick) => {
+      deps.incident?.prune(tick);
+      set({ version: state.version + 1 });
+    });
     on('captureStart', (e) => deps.capture.start(e));
     on('captureResult', (e) => deps.capture.result(e));
     // chat goes into a store wired here, not into panel effects: lines arrive whether or not the Chat tab is open
@@ -172,6 +181,14 @@ export function createConnection(deps: ConnectionDeps) {
       deps.clusters?.push(inv);
       deps.log.push('event', `${inv.name ?? 'an operator'} invites you to a cluster (chat tab)`);
     });
+    // Incidents are server-wide: the store is fed here, not by the banner, so the phase is known whichever tab is open
+    on('incident', (e) => {
+      deps.incident?.onEvent(e);
+      deps.log.push('event', describeIncidentEvent(e));
+      if (e.phase === 'cleared' || e.phase === 'expired') deps.invalidateIncidents?.();
+    });
+    on('telegraph', (t) => deps.incident?.onTelegraph({ x: t.x, y: t.y, radius: t.radius, atTick: t.atTick }));
+    on('incidentReward', (e) => deps.log.push('event', `Incident reward: ${e.reward} bits for ${Math.round(e.share * 100)}% of the damage`));
     on('disconnect', () => {
       deps.capture.clear();
       if (state.status === 'online') set({ status: 'reconnecting' });
@@ -179,6 +196,9 @@ export function createConnection(deps: ConnectionDeps) {
     on('reconnect', () => {
       // before the snapshot and the server's re-sent mute: chat refetches the history it may have missed
       deps.chat?.reconnected();
+      // the end of an Incident may have been missed while away: forget it and ask the API what is running
+      deps.incident?.resync();
+      deps.invalidateIncidents?.();
       set({ status: 'online' });
       deps.log.push('system', 'reconnected');
     });
@@ -206,6 +226,7 @@ export function createConnection(deps: ConnectionDeps) {
         const { actor } = getControls();
         const keep = actor === 'self' || c.self.ram.some((d) => d.id === actor);
         setControls({ targetId: null, actor: keep ? actor : 'self' });
+        deps.incident?.clearTelegraphs();
       }
       subnet = c.subnet;
       set({ version: state.version + 1 });
@@ -240,6 +261,7 @@ export function createConnection(deps: ConnectionDeps) {
     subnet = c.subnet;
     setMe(c.operatorId);
     set({ status: 'online', client: c, role, kickReason: null });
+    deps.invalidateIncidents?.();
     deps.log.push('system', `connected as ${role}`);
     return { kind: 'online' };
   }
@@ -255,6 +277,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.stopSandbox();
     deps.capture.clear();
     deps.clusters?.clear();
+    deps.incident?.resync();
     state.client?.close();
     set({ status: 'connecting', role, client: null, kickReason: null });
     let unauthorized = 0;
@@ -287,6 +310,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.capture.clear();
     deps.chat?.clear();
     deps.clusters?.clear();
+    deps.incident?.resync();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
   }
@@ -314,9 +338,11 @@ const connection = createConnection({
   capture: appCapture,
   chat: chatStore,
   clusters: clusterStore,
+  incident: incidentStore,
   stopSandbox,
   invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
   invalidateTickets: () => store.dispatch(api.util.invalidateTags(['Tickets'])),
+  invalidateIncidents: () => store.dispatch(api.util.invalidateTags(['Incidents'])),
 });
 
 // the sandbox only starts a script on a live socket

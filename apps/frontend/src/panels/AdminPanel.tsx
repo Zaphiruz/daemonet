@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { describeApiError, useAddFilterTermMutation, useAdminEconomyQuery, useAdminReportsQuery, useDeleteFilterTermMutation, useFilterTermsQuery, useResolveReportMutation } from '../api.ts';
+import { describeApiError, useAddFilterTermMutation, useAdminEconomyQuery, useAdminReportsQuery, useDeleteFilterTermMutation, useFilterTermsQuery, useIncidentsQuery, useResolveReportMutation, useStartIncidentMutation } from '../api.ts';
 
-const VIEWS = ['reports', 'filter', 'economy'] as const;
+const VIEWS = ['reports', 'filter', 'economy', 'incidents'] as const;
 type View = (typeof VIEWS)[number];
 
 /** Shows the readable form of an API failure (every admin error code goes through `describeApiError`). */
@@ -45,7 +45,42 @@ export function AdminPanel() {
       {view === 'reports' && <Reports />}
       {view === 'filter' && <Filter />}
       {view === 'economy' && <Economy />}
+      {view === 'incidents' && <Incidents />}
     </div>
+  );
+}
+
+/** Start an Incident now (the sim refuses while one runs; the API answers 409 then), next schedule and recent outcomes. */
+function Incidents() {
+  const list = useIncidentsQuery();
+  const [start, state] = useStartIncidentMutation();
+  const { error, act } = useAction();
+  return (
+    <section className="space-y-1 text-xs" data-testid="admin-incidents">
+      <ErrorNote error={list.error ?? error} />
+      <button
+        className="rounded bg-red-900 px-2 py-0.5 hover:bg-red-800 disabled:opacity-40"
+        disabled={state.isLoading || !!list.data?.current}
+        onClick={() => void act(() => start()).then(() => list.refetch())}
+        data-testid="incident-start"
+      >
+        start an Incident now
+      </button>
+      {list.data && (
+        <p className="text-neutral-500">
+          next scheduled: {new Date(list.data.next.at).toLocaleString()} ({list.data.next.species})
+        </p>
+      )}
+      {list.data?.recent.map((r) => (
+        <div key={r.id} className="mono flex justify-between border-b border-neutral-900 py-0.5">
+          <span className="text-neutral-500">{new Date(r.openedAt).toLocaleString()}</span>
+          <span>{r.species}</span>
+          <span className={r.outcome === 'CLEARED' ? 'text-emerald-300' : 'text-neutral-400'}>
+            {r.outcome.toLowerCase()} · {r.participants.length} operators
+          </span>
+        </div>
+      ))}
+    </section>
   );
 }
 

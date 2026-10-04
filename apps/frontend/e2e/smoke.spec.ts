@@ -192,6 +192,17 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await pa.getByTestId('org-leave').click(); // the last member: disband, confirmed first
   await pa.getByTestId('org-confirm').click();
   await expect(pa.getByTestId('org-create')).toBeVisible({ timeout: 10_000 });
+
+  // Incidents: an admin starts one; every connected operator sees the banner and the Incidents tab lists it
+  const adm = await browser.newContext({ baseURL: 'http://127.0.0.1:4173' });
+  expect((await adm.request.get(`/api/auth/dev?name=${name}adm&admin=true`, { maxRedirects: 0 })).status()).toBe(302);
+  const started = await adm.request.post('/api/admin/incidents/start', { headers: { 'x-requested-with': 'daemonet' } });
+  expect([200, 409]).toContain(started.status()); // 409: one from an earlier run is still inside its twenty minutes
+  await expect(pb.getByTestId('incident-banner')).toContainText('INCIDENT', { timeout: 15_000 });
+  await expect(pa.getByTestId('incident-banner')).toContainText('kernelspace');
+  await pb.getByTestId('tab-incidents').click();
+  await expect(pb.getByTestId('incident-current')).toContainText('running');
+  await adm.close();
   await a.close();
   await b.close();
 });

@@ -1,9 +1,10 @@
-import { GATEWAY_RADIUS, getMove, getSpecies, NATURES, SCAN_BUCKET_LABELS, STAT_KEYS, TICK_HZ, type ToolId } from '@daemonet/rules';
+import { GATEWAY_RADIUS, INCIDENT_MAX_OPERATORS, getMove, getSpecies, NATURES, SCAN_BUCKET_LABELS, STAT_KEYS, TICK_HZ, type ToolId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useState } from 'react';
 import { run } from '../components/WorldCanvas.tsx';
 import { useCaptureChallenge } from '../game/capture.ts';
 import { parseAnswer, setControls, useControls } from '../game/controls.ts';
+import { useIncident } from '../game/incident.ts';
 
 const TOOLS: ToolId[] = ['sniff', 'tap', 'mirror', 'dump'];
 
@@ -141,6 +142,7 @@ export function PlayPanel({ client }: { client: GameClient }) {
 export function GatewaySection({ client, me, manual }: { client: GameClient; me: GameClient['self']; manual: boolean }) {
   // one travel at a time: the button stays disabled until the request settles (the snapshot has arrived, or it failed)
   const [inFlight, setInFlight] = useState(false);
+  const incident = useIncident().current;
   const travel = (gatewayId: string) => {
     setInFlight(true);
     const p = client.operator.travel(gatewayId);
@@ -154,22 +156,31 @@ export function GatewaySection({ client, me, manual }: { client: GameClient; me:
     <>
       {client.world.gateways
         .filter((g) => Math.hypot(g.at.x - me.x, g.at.y - me.y) <= GATEWAY_RADIUS)
-        .map((g) => (
+        .map((g) => {
+          // the kernelspace gateway only works while an Incident is running there (and while it has room)
+          const closed = g.incidentOnly === true && incident === null;
+          return (
           <section key={g.id} className="rounded border border-sky-700 p-2" data-testid={`gateway-${g.id}`}>
             <div>
               gateway to <span className="font-medium">{g.to}</span>
               {g.requires.level > 0 && <span className="text-neutral-500"> · needs a level {g.requires.level} daemon</span>}
             </div>
+            {g.incidentOnly === true && (
+              <div className="text-xs text-neutral-500" data-testid={`gateway-note-${g.id}`}>
+                {closed ? 'closed: it opens only while an Incident is running' : `Incident open: ${INCIDENT_MAX_OPERATORS} operators at most, a full arena refuses you`}
+              </div>
+            )}
             <button
               className="mt-1 rounded bg-sky-700 px-2 py-0.5 hover:bg-sky-600 disabled:opacity-40"
-              disabled={!manual || inFlight || me.running.length > 0 || !!me.capture}
+              disabled={!manual || closed || inFlight || me.running.length > 0 || !!me.capture}
               onClick={() => travel(g.id)}
               data-testid={`travel-${g.id}`}
             >
               {inFlight ? 'travelling…' : `travel ${me.running.length > 0 ? '(recall first)' : ''}`}
             </button>
           </section>
-        ))}
+          );
+        })}
     </>
   );
 }

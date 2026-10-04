@@ -13,3 +13,4 @@ export const badRequest = (message: string) => new AppError(400, 'validation_err
 export const unauthorized = (message: string) => new AppError(401, 'unauthorized', message);
 export const forbidden = (message: string) => new AppError(403, 'forbidden', message);
 export const notFound = (message: string) => new AppError(404, 'not_found', message);
+export const conflict = (message: string) => new AppError(409, 'conflict', message);

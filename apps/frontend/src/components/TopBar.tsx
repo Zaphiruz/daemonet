@@ -1,7 +1,9 @@
 import type { GameClient } from '@daemonet/sdk';
-import { useLogoutMutation, type Me } from '../api.ts';
+import { useEffect, useState } from 'react';
+import { useIncidentsQuery, useLogoutMutation, type Me } from '../api.ts';
 import { open, useConnection, type Role } from '../game/connection.ts';
 import { setControls, useControls } from '../game/controls.ts';
+import { incidentStore, useIncident } from '../game/incident.ts';
 import { log } from '../game/log.ts';
 import { taggedName } from '../game/names.ts';
 
@@ -10,6 +12,39 @@ const reconnect = (role: Role) => void open(role).catch(() => {});
 /** The subnet of the latest snapshot (it changes on travel). */
 export function SubnetStat({ client }: { client: GameClient | null }) {
   return <span data-testid="subnet">{client?.subnet || '—'}</span>;
+}
+
+/** An Incident whose end passed this long ago without an event is treated as over (the event was lost). */
+const STALE_MS = 10_000;
+
+/** Re-renders every second while `active` (the banner's countdown). */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+/** Species, phase and time left of the running Incident (SP4 spec §8); nothing while none is running. */
+function IncidentBanner() {
+  const incidents = useIncidentsQuery();
+  const incident = useIncident().current;
+  // a page loaded mid-Incident gets no event until the phase changes: the API seeds the store
+  useEffect(() => incidentStore.seed(incidents.data?.current ?? null), [incidents.data, incidents.fulfilledTimeStamp]);
+  const now = useNow(incident !== null);
+  if (!incident) return null;
+  const end = Date.parse(incident.endsAt);
+  if (now > end + STALE_MS) return null;
+  const left = Math.max(0, end - now);
+  return (
+    <span className="mono rounded bg-red-900 px-2 text-red-100" data-testid="incident-banner">
+      INCIDENT · {incident.species} · {incident.phase === 'shield' ? 'shielded' : incident.phase} · {Math.floor(left / 60_000)}:{String(Math.floor((left % 60_000) / 1000)).padStart(2, '0')} · kernelspace
+    </span>
+  );
 }
 
 export function TopBar({ me }: { me: Me }) {
@@ -30,6 +65,7 @@ export function TopBar({ me }: { me: Me }) {
         {conn.status}
         {conn.kickReason ? ` (${conn.kickReason})` : ''}
       </span>
+      <IncidentBanner />
       <span className="ml-auto flex items-center gap-2">
         <label className="text-neutral-400">
           zoom

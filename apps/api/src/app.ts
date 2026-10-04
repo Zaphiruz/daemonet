@@ -11,6 +11,7 @@ import { createSessionStore } from './auth/session.js';
 import { AppError } from './errors.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerEconomyRoutes } from './routes/economy.js';
+import { registerIncidentRoutes } from './routes/incidents.js';
 import { registerMiscRoutes } from './routes/misc.js';
 import { registerOrgRoutes } from './routes/orgs.js';
 import { registerScriptRoutes } from './routes/scripts.js';
@@ -72,5 +73,6 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
   registerEconomyRoutes(app, o.prisma);
   registerChatRoutes(app, o.prisma, o.bus);
   registerOrgRoutes(app, o.prisma, o.bus);
+  registerIncidentRoutes(app, o.prisma, o.bus);
   return app;
 }

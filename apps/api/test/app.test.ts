@@ -1,5 +1,6 @@
 import { MemoryBus, type Bus } from '@daemonet/bus';
 import { createPrisma } from '@daemonet/db';
+import { INCIDENT_PERIOD_MS, INCIDENT_WINDOW_MS, bossSpecies, incidentNumber, nextIncidentStart } from '@daemonet/rules';
 import { EVOLUTION_RULES } from '@daemonet/rules/evolution';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -76,7 +77,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   beforeEach(async () => {
     oidc = fakeOidc();
     bus.log.length = 0;
-    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "DaemonArchive", "BitsLedger", "Ticket", "Research", "ChatMessage", "ChatBlock", "ChatFilterTerm", "ChatFilterHit", "Report", "Org", "OrgMember", "OrgInvite" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "DaemonArchive", "BitsLedger", "Ticket", "Research", "ChatMessage", "ChatBlock", "ChatFilterTerm", "ChatFilterHit", "Report", "Org", "OrgMember", "OrgInvite", "Incident" CASCADE');
   });
 
   /** Runs the full login: /login sets the PKCE cookie, /callback exchanges and sets the session cookie. */
@@ -957,6 +958,96 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     const seed = () => app.inject({ method: 'POST', url: '/api/dev/daemon', cookies, headers: csrf, payload: { species: 'pingling', level: 2 } });
     expect((await seed()).statusCode).toBe(200);
     expect((await seed()).statusCode).toBe(400);
+  });
+
+  it('lists Incidents with the next scheduled one, live names and no ids; one is read by id', async () => {
+    const a = await app.inject({ method: 'GET', url: '/api/auth/dev?name=ivy' });
+    const user = { [COOKIE_NAME]: a.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const ivy = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-ivy' } });
+    const kim = await prisma!.operator.create({ data: { sub: 'dev-kim', name: 'kim-now', x: 0, y: 0 } });
+    expect((await app.inject({ method: 'GET', url: '/api/incidents' })).statusCode).toBe(401);
+    await prisma!.incident.createMany({
+      data: [
+        {
+          id: 'inc-old', n: 1, species: 'pidzero', openedAt: new Date(Date.now() - 86_400_000), endsAt: new Date(Date.now() - 86_400_000 + 1_200_000), closedAt: new Date(), outcome: 'CLEARED',
+          participants: [
+            { operatorId: kim.id, name: 'kim-then', damage: 10, share: 0.5, reward: 4096 },
+            { operatorId: ivy.id, name: 'ivy', damage: 10, share: 0.5, reward: 4096 },
+            { operatorId: 'gone', name: 'old-name', damage: 1, share: 0, reward: 0, refused: true },
+          ],
+        },
+        { id: 'inc-now', n: 2, species: 'pingodeth', endsAt: new Date(Date.now() + 600_000), outcome: 'OPEN' },
+        { id: 'inc-stale', n: 3, species: 'pidzero', openedAt: new Date(Date.now() - 7_200_000), endsAt: new Date(Date.now() - 6_000_000), outcome: 'OPEN' },
+      ],
+    });
+    const res = await app.inject({ method: 'GET', url: '/api/incidents', cookies: user });
+    expect(res.headers['cache-control']).toBe('private, no-store');
+    const list = res.json();
+    expect(list.current).toMatchObject({ id: 'inc-now', species: 'pingodeth' });
+    expect(list.recent.map((r: { id: string }) => r.id)).toEqual(['inc-now', 'inc-stale', 'inc-old']);
+    const next = nextIncidentStart(Date.now());
+    expect(list.next).toEqual({ at: new Date(next).toISOString(), species: bossSpecies(incidentNumber(next)), periodMs: INCIDENT_PERIOD_MS, windowMs: INCIDENT_WINDOW_MS });
+    const old = list.recent.find((r: { id: string }) => r.id === 'inc-old');
+    expect(old.participants).toEqual([
+      { name: 'kim-now', damage: 10, share: 0.5, reward: 4096, you: false },
+      { name: 'ivy', damage: 10, share: 0.5, reward: 4096, you: true },
+      { name: 'old-name', damage: 1, share: 0, reward: 0, you: false },
+    ]);
+    expect(JSON.stringify(list)).not.toContain(kim.id);
+    expect(JSON.stringify(list)).not.toContain('refused');
+    const one = (await app.inject({ method: 'GET', url: '/api/incidents/inc-old', cookies: user })).json();
+    expect(one).toMatchObject({ id: 'inc-old', outcome: 'CLEARED', species: 'pidzero' });
+    expect(one.participants).toEqual(old.participants);
+    expect(JSON.stringify(one)).not.toContain(kim.id);
+    expect((await app.inject({ method: 'GET', url: '/api/incidents/nope', cookies: user })).statusCode).toBe(404);
+  });
+
+  it('only admins start an Incident (checked per request); one cannot start while another runs; the start rides the bus with origin api', async () => {
+    const a = await app.inject({ method: 'GET', url: '/api/auth/dev?name=ivy' });
+    const b = await app.inject({ method: 'GET', url: '/api/auth/dev?name=jo&admin=true' });
+    const user = { [COOKIE_NAME]: a.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const admin = { [COOKIE_NAME]: b.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const start = (cookies: Record<string, string>) => app.inject({ method: 'POST', url: '/api/admin/incidents/start', cookies, headers: csrf });
+    expect((await app.inject({ method: 'POST', url: '/api/admin/incidents/start', cookies: admin })).statusCode).toBe(403); // no CSRF header
+    expect((await start(user)).statusCode).toBe(403);
+    expect(bus.log).toHaveLength(0);
+    await prisma!.incident.create({ data: { id: 'inc-run', n: 9, species: 'pidzero', endsAt: new Date(Date.now() + 600_000), outcome: 'OPEN' } });
+    const busy = await start(admin);
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json()).toMatchObject({ error: 'conflict' });
+    expect(bus.log).toHaveLength(0);
+    await prisma!.incident.update({ where: { id: 'inc-run' }, data: { outcome: 'CLEARED', closedAt: new Date() } });
+    expect((await start(admin)).json()).toEqual({ ok: true });
+    expect(bus.log.at(-1)).toEqual({ channel: 'admin', message: { kind: 'incident:start', origin: 'api' } });
+    // admin rights come from the operator row, not the session
+    await prisma!.operator.updateMany({ where: { sub: 'dev-jo' }, data: { isAdmin: false } });
+    bus.log.length = 0;
+    expect((await start(admin)).statusCode).toBe(403);
+    expect(bus.log).toHaveLength(0);
+  });
+
+  it('answers an Incident start when the bus is down and logs the failure without a payload', async () => {
+    const lines: string[] = [];
+    const failing: Bus = {
+      publish: async () => {
+        throw Object.assign(new Error('Connection is closed.'), { name: 'ReplyError', code: 'ECONNREFUSED' });
+      },
+      subscribe: () => () => {},
+      onReconnect: () => () => {},
+      close: async () => {},
+    };
+    const app2 = await buildApp({
+      prisma: prisma!, bus: failing, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: true, disableRateLimit: true,
+      logger: { ...loggerOptions('info'), stream: { write: (l: string) => void lines.push(l) } },
+    });
+    const dev = await app2.inject({ method: 'GET', url: '/api/auth/dev?name=root&admin=true' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    expect((await app2.inject({ method: 'POST', url: '/api/admin/incidents/start', cookies, headers: csrf })).statusCode).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    await app2.close();
+    const failures = lines.map((l) => JSON.parse(l) as { msg?: string; kind?: string }).filter((l) => l.msg === 'bus publish failed');
+    expect(failures.map((l) => l.kind)).toEqual(['incident:start']);
   });
 
   it('dev route seeds a daemon on Disk for the session operator', async () => {
