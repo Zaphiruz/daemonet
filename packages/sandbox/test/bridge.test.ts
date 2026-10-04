@@ -340,6 +340,24 @@ describe('createBridge Incident events (SP4 plan 4)', () => {
   });
 });
 
+describe('createBridge arena (SP6 plan 1)', () => {
+  it('relays arenaChallenge (credential-free) once authenticated, re-sequenced; arena events ride in delta', async () => {
+    const { port2, frames, bridge, done } = setup();
+    const challenge = JSON.stringify({ t: 'arenaChallenge', seq: 9, d: { challengeId: 'a'.repeat(32), from: 'op2', name: 'bob', mode: 'ranked', expiresAt: '2026-10-04T00:01:00.000Z' } });
+    bridge.deliver(challenge);
+    await settle();
+    expect(frames()).toEqual([]);
+    port2.postMessage(auth);
+    await until(() => frames().length >= 2);
+    bridge.deliver(challenge);
+    await settle();
+    const got = frames().slice(2);
+    expect(got.map((g) => [g.t, g.seq])).toEqual([['arenaChallenge', 3]]);
+    expect(got[0]!.d).toMatchObject({ challengeId: 'a'.repeat(32), from: 'op2', mode: 'ranked' });
+    done();
+  });
+});
+
 describe('createBridge clusters (SP4 plan 2)', () => {
   const clusterCmd = (reqId: string, cmd: string, args: object) => JSON.stringify({ t: 'cmd', seq: 2, d: { reqId, cmd, actor: 'self', args } });
 

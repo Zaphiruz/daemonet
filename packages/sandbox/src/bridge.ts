@@ -61,8 +61,12 @@ type Envelope = { t?: unknown; d?: unknown };
  * cluster id only works with the invite), so a script can accept invites; its `cluster*` commands share the same budgets.
  * Incident events (SP4 plan 4: `incident`, `telegraph`, `incidentReward`) need no entry: they ride inside `delta` frames, which
  * are already relayed, so scripts can react to phases and dodge blasts (pinned by `bridge.test.ts`).
+ * `arenaChallenge` (SP6 plan 1) is one too: a challenge id, the challenger's id and name, the mode and an expiry (no
+ * credential; the id only works for the operator challenged), so a script can accept challenges; the arena events
+ * (`arenaQueued`, `arenaMatch`, `arenaResult`) ride in `delta`. A match is entered and left with a fresh `snapshot`,
+ * which is never relayed: the host restarts the script per the reconnect rule, as on travel.
  */
-const RELAYED: ReadonlySet<string> = new Set(['delta', 'ack', 'err', 'kick', 'chat', 'chatDeleted', 'muted', 'clusterInvite']);
+const RELAYED: ReadonlySet<string> = new Set(['delta', 'ack', 'err', 'kick', 'chat', 'chatDeleted', 'muted', 'clusterInvite', 'arenaChallenge']);
 
 /** Error replies per tick; beyond this a flooding script gets silence rather than more work for the host. */
 const MAX_ERRORS_PER_TICK = 8;
