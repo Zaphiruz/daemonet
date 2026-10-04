@@ -17,7 +17,8 @@ export interface Store {
   applyIntent(intent: Intent, ctx: IntentContext): Promise<IntentResult>;
   /**
    * Writes position, inventory and RAM daemon state. Never writes `bits` or `diskCapacity` (only intents and
-   * `grantBits` change those, with a ledger row) and skips `inventory` on records marked `inventoryInFlight`.
+   * `grantBits` change those, with a ledger row) and skips `inventory` and every daemon's `heldItem` on records marked
+   * `inventoryInFlight` (a held item moves only together with the inventory).
    */
   checkpoint(records: readonly OperatorRecord[]): Promise<void>;
   /** Form ids with a Discovery row (loaded once at boot into World.discovered). */
@@ -167,6 +168,15 @@ export function stateFields(d: OwnedDaemonRecord) {
     level: d.level, xp: d.xp, hp: d.hp, energy: d.energy, moves: [...d.moves], crashed: d.crashed,
     ivs: [...d.ivs], patched: d.patched, heldItem: d.heldItem, moveTypeUses: [...d.moveTypeUses], crashes: d.crashes, history: d.history.map((h) => ({ ...h })),
   };
+}
+
+/**
+ * What a checkpoint writes to a RAM daemon row. A held item moves between the daemon and the inventory (hold / unhold),
+ * so it is written only together with the inventory: on an `inventoryInFlight` record both are left to the store.
+ */
+export function checkpointFields(d: OwnedDaemonRecord, inventoryInFlight: boolean | undefined) {
+  const { heldItem, ...rest } = stateFields(d);
+  return inventoryInFlight ? rest : { ...rest, heldItem };
 }
 
 interface MemDaemon extends OwnedDaemonRecord {
@@ -350,7 +360,7 @@ export class MemoryStore implements Store {
       for (const d of rec.ram) {
         const row = this.daemons.get(d.id);
         // A record taken before an evolve committed (other species) must not roll the evolved row back.
-        if (row && row.operatorId === op.id && row.location === 'RAM' && row.species === d.species) Object.assign(row, stateFields(d));
+        if (row && row.operatorId === op.id && row.location === 'RAM' && row.species === d.species) Object.assign(row, checkpointFields(d, rec.inventoryInFlight));
       }
     }
   }

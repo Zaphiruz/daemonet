@@ -273,19 +273,23 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
         prisma!.operator.update({ where: { id: operatorId }, data: { bits: { increment: BigInt(delta) } } }),
         prisma!.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason, ...(at ? { at } : {}) } }),
       ]);
+    // Every row inside the window is pinned to yesterday 12:00 UTC (no flake when the run straddles midnight).
+    const yesterday = new Date(Date.now() - 86_400_000);
+    yesterday.setUTCHours(12, 0, 0, 0);
     await move(kim.id, 4000, 'admin', new Date(Date.now() - 40 * 86_400_000)); // outside the 14-day window
     await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: csrf, payload: { amount: 1000 } });
-    await move(kim.id, -128, 'shop');
-    await move(kim.id, -64, 'craft');
-    await move(lou.id, 300, 'ticket');
-    await move(lou.id, 9000, 'admin');
-    await move(lou.id, -8192, 'disk');
+    await prisma!.bitsLedger.updateMany({ where: { operatorId: kim.id, ref: 'dev' }, data: { at: yesterday } });
+    await move(kim.id, -128, 'shop', yesterday);
+    await move(kim.id, -64, 'craft', yesterday);
+    await move(lou.id, 300, 'ticket', yesterday);
+    await move(lou.id, 9000, 'admin', yesterday);
+    await move(lou.id, -8192, 'disk', yesterday);
     const supply = 4000 + 1000 - 128 - 64 + 300 + 9000 - 8192;
     const economy = (await app.inject({ method: 'GET', url: '/api/admin/economy', cookies })).json();
     expect(economy).toMatchObject({ operators: 2, supply, ledgerSum: supply, drift: 0 });
     // days inside the window only (the 40-day-old grant is in the sum, not in the days)
     expect(economy.days).toEqual([
-      { day: new Date().toISOString().slice(0, 10), created: 10_300, destroyed: 8384, byReason: { admin: 10_000, ticket: 300, shop: -128, craft: -64, disk: -8192 } },
+      { day: yesterday.toISOString().slice(0, 10), created: 10_300, destroyed: 8384, byReason: { admin: 10_000, ticket: 300, shop: -128, craft: -64, disk: -8192 } },
     ]);
     // drift shows a balance change without a ledger row
     await prisma!.operator.update({ where: { id: lou.id }, data: { bits: { increment: 5n } } });

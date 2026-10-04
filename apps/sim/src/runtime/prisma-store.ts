@@ -2,6 +2,7 @@ import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient 
 import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
 import { DISK_EXPANSION_ITEM, DISK_STEP } from '@daemonet/rules';
 import {
+  checkpointFields,
   decompileProblem,
   decompileStoreGain,
   economyIntentProblem,
@@ -330,7 +331,7 @@ export class PrismaStore implements Store {
         });
         for (const d of rec.ram) {
           // `species` guard: a record taken before an evolve committed must not roll the evolved row back.
-          await tx.daemon.updateMany({ where: { id: d.id, operatorId: rec.id, location: 'RAM', species: d.species }, data: stateFields(d) });
+          await tx.daemon.updateMany({ where: { id: d.id, operatorId: rec.id, location: 'RAM', species: d.species }, data: { ...checkpointFields(d, rec.inventoryInFlight), history: json(d.history) } });
         }
       }
     });

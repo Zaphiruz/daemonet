@@ -280,6 +280,34 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(await store.loadOrCreateOperator('sub-l5', 'lo', SPAWN)).toMatchObject({ x: 8, bits: 872, inventory: { tap: 1, sniff: 2 } });
     });
 
+    it('an inventoryInFlight checkpoint never writes a held item (it moves only together with the inventory)', async () => {
+      const ctx = { seedId: 'abcd1234' };
+      // hold during a pending craft: the world moved jumboframe from the inventory onto the daemon
+      const a = await store.loadOrCreateOperator('sub-hf1', 'lo', SPAWN);
+      await store.applyIntent(claim(a.id, 'hf1', ownedRecord('tracerat', 20, 0, 'abcd1234-n1'), 'i-n-claim1'), ctx);
+      await store.grantBits(a.id, 1000, 'admin');
+      await store.checkpoint([{ ...(await store.loadOrCreateOperator('sub-hf1', 'lo', SPAWN)), inventory: { jumboframe: 1, 'frag:packet': 4, 'frag:socket': 4 } }]);
+      const recA = await store.loadOrCreateOperator('sub-hf1', 'lo', SPAWN);
+      const craft: Intent = {
+        id: 'i-n-craft', kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'tap', qty: 1, bits: 64, fragments: { 'frag:packet': 4, 'frag:socket': 4 }, output: { item: 'tap', qty: 1 },
+      };
+      const heldA = { ...recA.ram[0]!, heldItem: 'jumboframe', xp: recA.ram[0]!.xp + 5 };
+      await store.checkpoint([{ ...recA, inventory: {}, ram: [heldA], inventoryInFlight: true }]); // taken while the craft is pending
+      expect(await store.applyIntent(craft, ctx)).toEqual({ ok: true });
+      await store.checkpoint([{ ...recA, inventory: {}, ram: [heldA], inventoryInFlight: true }]); // a stale in-flight record after the commit
+      const reA = await store.loadOrCreateOperator('sub-hf1', 'lo', SPAWN);
+      expect(reA.inventory).toEqual({ jumboframe: 1, tap: 1 });
+      expect(reA.ram[0]).toMatchObject({ heldItem: null, xp: heldA.xp }); // other state is still written; no duplicate
+      // unhold during a pending craft: the world moved jumboframe from the daemon into the inventory
+      const b = await store.loadOrCreateOperator('sub-hf2', 'lo', SPAWN);
+      await store.applyIntent(claim(b.id, 'hf2', { ...ownedRecord('tracerat', 20, 0, 'abcd1234-n2'), heldItem: 'jumboframe' }, 'i-n-claim2'), ctx);
+      const recB = await store.loadOrCreateOperator('sub-hf2', 'lo', SPAWN);
+      await store.checkpoint([{ ...recB, inventory: { ...recB.inventory, jumboframe: 1 }, ram: [{ ...recB.ram[0]!, heldItem: null }], inventoryInFlight: true }]);
+      const reB = await store.loadOrCreateOperator('sub-hf2', 'lo', SPAWN);
+      expect(reB.inventory).toEqual({ sniff: 8, restore: 2 });
+      expect(reB.ram[0]!.heldItem).toBe('jumboframe'); // no loss
+    });
+
     it('decompile refuses a daemon on Disk, of another operator, or whose species changed, and archives once', async () => {
       const a = await store.loadOrCreateOperator('sub-l6', 'lo', SPAWN);
       const b = await store.loadOrCreateOperator('sub-l7', 'lo', SPAWN);
