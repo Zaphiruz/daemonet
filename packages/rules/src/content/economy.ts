@@ -25,7 +25,7 @@ export const MAX_PRICE = 1_048_576;
 export const MAX_QTY = 1024;
 export const FEE_DIVISOR = 16;
 
-/** Daemon listings (SP5 spec ง3, ง6): at most this many active per seller, each open for seven days. */
+/** Daemon listings (SP5 spec ยง3, ยง6): at most this many active per seller, each open for seven days. */
 export const MAX_ACTIVE_LISTINGS = 16;
 export const LISTING_TTL_MS = 7 * 86_400_000;
 
