@@ -73,3 +73,15 @@ Fixed before merge: real script escaping/robust init/allowlisted relay; then red
 - T2: escapeForScript 'js' mode doesn't handle the <!-- <script double-escape state (doc it); init-listener test is string-matching only; self-navigation / WebRTC exfil of game state (host frame-src)
 - T3: seam-column smoothing counts only the horizontal mirror neighbour; signature not validated (16 wraps to tier 0)
 Task F: minor (deferred): worker script-src 'self' admits same-origin script loads (never serve user content as JS on the frontend origin); init after stop leaks the port; watchdog timers throttled in hidden frames / slow first load may report unresponsive; main() throwing posts error without finished; verify "cookie blocked" line tautological; Safari and real Caddy unverified
+
+## 2026-09-30-daemonet-sp2-plan3-web-client
+
+Fixed before merge: autosave failures surface and keep the script dirty; error boundaries around panels and the world canvas; exported TRANSIENT_KICKS, ticket fetch timeout, sandbox start notice, lazy Script tab, typed entities, TICK_HZ, hoisted Monaco options; Caddyfile CSP comment
+
+- T1: sendFrame JSON.parse unguarded (bridge sends validated frames only)
+- T2: sandbox online probe is registered by connection.ts at module load (sandbox.start refuses if connection.ts is never imported); offline refusal leaves status stopped
+- T3: ScriptPanel can briefly adopt an older refetch while a later autosave is in flight (skip adoption while saving); Monaco loads eagerly on the login page
+- T4: CI failure-log docker logs errors if the container never started; shipped HEALTHCHECK probes :80 so the CI container on :4173 never reports healthy; CI host-network path not yet run on a GitHub runner (first CI run on main will tell)
+Task F: minor (deferred): ScriptPanel shows "save failed" until the next save is sent, even with newer unsaved edits; no automatic retry after a failed save
+Task F: minor (deferred): ScriptPanel's pending autosave timer is not cleared on unmount (a quick tab switch can adopt a stale version)
+Task F: minor (deferred): sandbox start notice is armed on iframe load, so a frame that never loads gets no notice
