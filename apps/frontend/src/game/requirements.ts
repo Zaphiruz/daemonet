@@ -1,6 +1,7 @@
 import { getItem, type Requirement } from '@daemonet/rules';
 
-function itemName(id: string): string {
+/** An item's display name (the raw id for an unknown item). */
+export function itemName(id: string): string {
   try {
     return getItem(id).name;
   } catch {

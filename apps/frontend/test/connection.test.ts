@@ -47,6 +47,7 @@ function setup(outcomes: Outcome[], ticket: () => Promise<string> = (() => {
   const log = createLog(1000);
   const capture = createCaptureStore();
   const stopSandbox = vi.fn();
+  const invalidateCodex = vi.fn();
   const fetchTicketMock = vi.fn(ticket);
   const deps: ConnectionDeps = {
     fetchTicket: fetchTicketMock,
@@ -59,9 +60,10 @@ function setup(outcomes: Outcome[], ticket: () => Promise<string> = (() => {
     log,
     capture,
     stopSandbox,
+    invalidateCodex,
   };
   const conn = createConnection(deps);
-  return { conn, clients, log, capture, stopSandbox, fetchTicket: fetchTicketMock, texts: () => log.get().map((e) => `${e.kind}:${e.text}`) };
+  return { conn, clients, log, capture, stopSandbox, invalidateCodex, fetchTicket: fetchTicketMock, texts: () => log.get().map((e) => `${e.kind}:${e.text}`) };
 }
 
 beforeEach(() => {
@@ -184,6 +186,15 @@ describe('connection store', () => {
     expect(c.closed).toBe(true);
     expect(t.stopSandbox).toHaveBeenCalledTimes(2);
     expect(t.texts()).toContain('system:kicked: takeover');
+  });
+
+  it('refreshes the Codex when a live discovery arrives', async () => {
+    const t = setup([{ kind: 'ready' }]);
+    await t.conn.open('controller');
+    expect(t.invalidateCodex).not.toHaveBeenCalled();
+    t.clients[0]!.emit('discovery', { form: 'anycastrel', operatorName: 'ada' });
+    expect(t.invalidateCodex).toHaveBeenCalledTimes(1);
+    expect(t.texts()).toContain('event:ada discovered anycastrel');
   });
 
   it('gives up a reconnecting client when the session is gone', async () => {

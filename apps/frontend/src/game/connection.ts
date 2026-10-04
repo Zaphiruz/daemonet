@@ -1,6 +1,7 @@
 import { GameClient, TRANSIENT_KICKS, type ConnectOptions, type TokenSource } from '@daemonet/sdk';
 import { useSyncExternalStore } from 'react';
-import { fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
+import { api, fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
+import { store } from '../store.ts';
 import { capture as appCapture, type CaptureStore } from './capture.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
@@ -33,6 +34,8 @@ export interface ConnectionDeps {
   capture: CaptureStore;
   /** Ends the sandboxed script (its bridge is tied to the client being replaced or lost). */
   stopSandbox(): void;
+  /** Drops the cached Codex so an open panel refetches (a live discovery reveals a hidden requirement). */
+  invalidateCodex(): void;
 }
 
 /** Backoff for a first connection that failed: doubles from RETRY_MIN_MS up to RETRY_MAX_MS. */
@@ -161,7 +164,10 @@ export function createConnection(deps: ConnectionDeps) {
     on('signatureSpawn', (e) => deps.log.push('event', `${e.clean ? 'clean' : ''}${e.signature ? ` T${e.signature}` : ''} ${e.species} spawned somewhere in the subnet`));
     on('crash', (e) => deps.log.push('event', `${e.daemon} crashed`));
     on('evolved', (e) => deps.log.push('event', `${e.daemon} evolved: ${e.from} -> ${e.to}`));
-    on('discovery', (e) => deps.log.push('event', `${e.operatorName ?? 'someone'} discovered ${e.form}`));
+    on('discovery', (e) => {
+      deps.log.push('event', `${e.operatorName ?? 'someone'} discovered ${e.form}`);
+      deps.invalidateCodex();
+    });
 
     // The SDK's start() does not settle when closed while it is still fetching the ticket, so a
     // cancelled attempt is settled through this race instead.
@@ -256,6 +262,7 @@ const connection = createConnection({
   log: appLog,
   capture: appCapture,
   stopSandbox,
+  invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
 });
 
 // the sandbox only starts a script on a live socket

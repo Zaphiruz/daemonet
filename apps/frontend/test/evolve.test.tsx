@@ -68,10 +68,11 @@ describe('HeldSlot', () => {
     const { rerender } = render(<HeldSlot daemon={daemon} inventory={{ jumboframe: 1, restore: 2, amplifier: 0 }} disabled={false} onHold={onHold} onUnhold={onUnhold} />);
     const select = screen.getByTestId('hold-2') as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(['', 'jumboframe']);
+    expect(select.options[1]!.textContent).toBe('Jumbo Frame ×1');
     fireEvent.change(select, { target: { value: 'jumboframe' } });
     expect(onHold).toHaveBeenCalledWith('jumboframe');
     rerender(<HeldSlot daemon={{ ...daemon, heldItem: 'jumboframe' }} inventory={{}} disabled={false} onHold={onHold} onUnhold={onUnhold} />);
-    expect(screen.getByTestId('held-2').textContent).toContain('held: jumboframe');
+    expect(screen.getByTestId('held-2').textContent).toContain('held: Jumbo Frame');
     fireEvent.click(screen.getByText('unhold'));
     expect(onUnhold).toHaveBeenCalled();
   });

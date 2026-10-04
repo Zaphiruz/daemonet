@@ -1,6 +1,6 @@
 import { isHoldable } from '@daemonet/rules';
 import type { RamDaemon } from '@daemonet/shared';
-import { describeBranch } from '../game/requirements.ts';
+import { describeBranch, itemName } from '../game/requirements.ts';
 
 /** The RAM card's evolution list: every branch with its requirements; `evolve` enabled once met. */
 export function EvolveSection({ daemon, disabled, onEvolve }: { daemon: RamDaemon; disabled: boolean; onEvolve: (formId: string) => void }) {
@@ -42,7 +42,7 @@ export function HeldSlot({
   const holdable = Object.entries(inventory).filter(([id, n]) => n > 0 && isHoldable(id));
   return (
     <div className="mono mt-1 flex items-center gap-2 text-xs text-neutral-400" data-testid={`held-${daemon.slot}`}>
-      <span>held: {daemon.heldItem ?? '—'}</span>
+      <span>held: {daemon.heldItem ? itemName(daemon.heldItem) : '—'}</span>
       {daemon.heldItem && (
         <button className="text-neutral-300 hover:text-white disabled:opacity-40" disabled={disabled} onClick={onUnhold}>
           unhold
@@ -59,7 +59,7 @@ export function HeldSlot({
           <option value="">hold…</option>
           {holdable.map(([id, n]) => (
             <option key={id} value={id}>
-              {id} ×{n}
+              {itemName(id)} ×{n}
             </option>
           ))}
         </select>
