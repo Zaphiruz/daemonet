@@ -461,6 +461,9 @@ export class Game {
         };
         this.sessions.set(rec.id, session);
         this.chat.loadMute(rec.id, rec.mutedUntil);
+        // Pushes for this operator that landed while the load was in flight had no session and were dropped: re-read
+        // org, name and the ledger rows above the load's watermark now rather than at the next periodic resync.
+        void this.resyncOperators([rec.id]);
       }
       st.sub = claims.sub;
       st.operatorId = rec.id;

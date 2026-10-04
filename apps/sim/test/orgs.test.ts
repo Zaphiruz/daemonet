@@ -205,6 +205,44 @@ describe('org membership, balance and rename pushes from the api', () => {
     await game.shutdown();
   });
 
+  it('pushes dropped while the operator was loading are recovered as soon as the session exists (no wait for the periodic resync)', async () => {
+    class GatedLoad extends MemoryStore {
+      gate: Promise<void> | null = null;
+      loading: (() => void) | null = null;
+      override async loadOrCreateOperator(...args: Parameters<MemoryStore['loadOrCreateOperator']>) {
+        const rec = await super.loadOrCreateOperator(...args);
+        this.loading?.();
+        if (this.gate) await this.gate;
+        return rec;
+      }
+    }
+    const { store, bus, world, game, join } = setup(new GatedLoad());
+    const pre = await store.loadOrCreateOperator('dev-alice', 'test', world.subnet.spawn);
+    let open!: () => void;
+    store.gate = new Promise<void>((r) => (open = r));
+    const loaded = new Promise<void>((r) => (store.loading = r));
+    const joining = join('alice');
+    await loaded;
+    // the load has read the row; the api commits and pushes now, before the session exists (the pushes are dropped)
+    store.orgs.set(pre.id, ROOT);
+    store.operators.get(pre.id)!.name = 'alicia';
+    const row = await store.grantBits(pre.id, 250, 'admin');
+    await bus.publish('org', { kind: 'membership', operatorId: pre.id, org: ROOT, origin: 'api' });
+    await bus.publish('admin', { kind: 'rename', operatorId: pre.id, name: 'alicia', origin: 'api' });
+    await bus.publish('admin', bitsPush(pre.id, row, 250, 'admin'));
+    open();
+    const alice = await joining;
+    await new Promise((r) => setTimeout(r, 5));
+    const op = world.operators.get(pre.id)!;
+    expect(op).toMatchObject({ org: ROOT, name: 'alicia', bits: 250 });
+    game.tick();
+    expect(bitsEvents(alice)).toEqual([{ e: 'bits', delta: 250, reason: 'admin', balance: 250 }]);
+    // a late redelivery of the recovered row is not applied twice
+    await bus.publish('admin', bitsPush(pre.id, row, 250, 'admin'));
+    expect(op.bits).toBe(250);
+    await game.shutdown();
+  });
+
   it('a rename refreshes the cluster views of every member', async () => {
     const { bus, world, game, join } = setup();
     const alice = await join('alice');
