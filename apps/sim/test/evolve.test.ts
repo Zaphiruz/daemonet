@@ -1,8 +1,10 @@
-import { getSpecies, statBlock, statBlockToArray, typeIndex } from '@daemonet/rules';
+import { getSpecies, movesAtLevel, statBlock, statBlockToArray, typeIndex } from '@daemonet/rules';
 import { describe, expect, it } from 'vitest';
 import { toRamDaemon, type Intent } from '../src/core/index.js';
+import { Out } from '../src/core/out.js';
+import { awardXp } from '../src/core/systems/progress.js';
 import { MemoryStore } from '../src/runtime/store.js';
-import { FIXED_CLOCK, input, makeWorld, operatorRecord, ownedRecord, self, step } from './helpers.js';
+import { FIXED_CLOCK, idle, input, makeWorld, operatorRecord, ownedRecord, self, step } from './helpers.js';
 
 /** An operator with an Echolet at 16 in slot 0 (evolves into Tracerat, or Broadcaw while holding a Jumbo Frame). */
 function setup(discovered: string[] = []) {
@@ -316,4 +318,50 @@ describe('lifetime counters', () => {
     expect(mine.crashes).toBe(1);
     expect(world.checkpoint('bob').ram[0]).toMatchObject({ crashes: 1, moveTypeUses: mine.moveTypeUses });
   });
+});
+
+describe('final-review fixes', () => {
+  const evolveCmd = (formId: string, daemonId = 'alice-d0') => input('alice', { cmd: 'evolve', actor: self, args: { daemonId, formId } });
+  const evolveIntent = (r: { intents: Intent[] }) => r.intents[0] as Extract<Intent, { kind: 'evolve' }>;
+
+  it('restoreAll leaves a daemon with a pending evolve alone (no runnable 0 HP daemon)', async () => {
+    const world = setup();
+    const store = await seededStore(world);
+    const op = world.operators.get('alice')!;
+    op.x = 4.5;
+    op.y = 5.5;
+    const d = world.daemons.get('alice-d0')!;
+    d.hp = 0;
+    d.crashed = true;
+    expect(step(world, input('alice', { cmd: 'restoreAll', actor: self, args: {} })).replies[0]).toMatchObject({ ok: true });
+    const intent = evolveIntent(step(world, evolveCmd('tracerat')));
+    expect(intent.hp).toBe(0);
+    const results = idle(world, 40); // the restore channel finishes before the store confirms
+    const restored = results.flatMap((r) => r.events).flatMap((e) => (e.event.e === 'restored' ? e.event.daemons : []));
+    expect(restored).toEqual([]);
+    expect(d.crashed).toBe(true);
+    world.completeIntent(intent.id, await store.applyIntent(intent, { seedId: 'seed0001' }));
+    step(world);
+    expect(d.species).toBe('tracerat');
+    expect(d.hp).toBe(0);
+    expect(d.crashed).toBe(true);
+    expect(step(world, input('alice', { cmd: 'run', actor: self, args: { daemonId: 'alice-d0' } })).replies[0]).toMatchObject({ ok: false, code: 'E_STATE' });
+  });
+
+  it('a crashed daemon may evolve and stays at 0 HP, still refused by run', async () => {
+    const world = setup();
+    const store = await seededStore(world);
+    const d = world.daemons.get('alice-d0')!;
+    d.hp = 0;
+    d.crashed = true;
+    store.daemons.get('alice-d0')!.hp = 0;
+    store.daemons.get('alice-d0')!.crashed = true;
+    const { intent } = await evolveThrough(world, store, 'tracerat');
+    expect(intent.hp).toBe(0);
+    expect(d.species).toBe('tracerat');
+    expect(d.hp).toBe(0);
+    expect(d.crashed).toBe(true);
+    expect(step(world, input('alice', { cmd: 'run', actor: self, args: { daemonId: 'alice-d0' } })).replies[0]).toMatchObject({ ok: false, code: 'E_STATE' });
+  });
+
 });

@@ -46,9 +46,11 @@ export function upkeep(world: World, out: Out): void {
     }
     if (tick < op.restoreUntil) continue;
     op.restoreUntil = null;
-    for (const id of op.ram) restoreDaemon(world.daemons.get(id)!);
+    // A daemon with a pending store / evolve is skipped: completion writes the snapshot taken at command time.
+    const restored = op.ram.filter((id) => !world.daemons.get(id)!.pending);
+    for (const id of restored) restoreDaemon(world.daemons.get(id)!);
     // Temporary SP1-only rule (SP1 spec 3.4): no shop yet, so restoring tops sniff back up to 8.
     op.inventory.sniff = Math.max(op.inventory.sniff ?? 0, SP1_SNIFF_REFILL);
-    out.emit({ e: 'restored', daemons: [...op.ram] }, { to: op.id });
+    out.emit({ e: 'restored', daemons: restored }, { to: op.id });
   }
 }
