@@ -1,4 +1,4 @@
-import { ARENA_LEVEL, SANDBOX, getSpecies, movesAtLevel, msToTicks } from '@daemonet/rules';
+import { ARENA_LEVEL, SANDBOX, computeStats, getSpecies, movesAtLevel, msToTicks, statBlock, statBlockFromArray } from '@daemonet/rules';
 import type { Command } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
 import { World, arenaCopy, arenaRecord, concede, concedeBoth, toSelf, type ArenaState } from '../src/core/index.js';
@@ -35,6 +35,17 @@ describe('arena copies', () => {
     expect(entered.ram.map((d) => [d.id, d.level])).toEqual([['a0', 64], ['a2', 64]]);
     expect(rec.ram[0]!.level).toBe(20);
   });
+
+  it('ranked copy stats are exactly computeStats at level 64 with a zero bonus', () => {
+    const original = { ...ownedRecord('pingling', 20, 0, 'p0'), bonus: [5, 4, 3, 2, 1, 5, 4, 3], signature: 4, nature: 3 };
+    const copy = arenaCopy(original, 'ranked');
+    const sp = getSpecies('pingling');
+    const expected = computeStats({ base: sp.base, ivs: statBlockFromArray(original.ivs), bonus: statBlock(0), level: ARENA_LEVEL, nature: original.nature });
+    expect(copy.hp).toBe(expected.hp);
+    const world = new World({ subnet: SANDBOX, seed: 'stats', seedId: 'dddd0002', spawner: false });
+    world.addOperator(operatorRecord('alice', { subnet: 'sandbox', ram: [copy] }));
+    expect(world.daemons.get('p0')!.stats).toEqual(expected);
+  });
 });
 
 describe('arena match rules', () => {
@@ -55,7 +66,7 @@ describe('arena match rules', () => {
     const use = (targetId: string) => step(world, input('alice', { cmd: 'use', actor: 'alice-d0', args: { move, targetId } })).replies[0];
     expect(use('bob')).toMatchObject({ ok: false, message: 'not a valid target' });
     expect(use('bob-d1')).toMatchObject({ ok: false, message: 'not a valid target' }); // in RAM, not running
-    expect(use('alice-d0')).toMatchObject({ ok: false });
+    expect(use('alice-d0')).toMatchObject({ ok: false, message: 'not a valid target' });
     world.daemons.get('alice-d0')!.cooldowns = {};
     const before = world.daemons.get('bob-d0')!.hp;
     world.daemons.get('bob-d0')!.trait = 'echo';
@@ -90,6 +101,42 @@ describe('arena match rules', () => {
     expect([bob.x, bob.y]).toEqual([10.5, 24.5]);
     expect(world.operators.get('alice')!.running).toEqual([]);
     expect(step(world, input('alice', { cmd: 'moveTo', actor: self, args: { x: 9.5, y: 24.5 } })).replies[0]).toMatchObject({ ok: false, message: 'the match is over' });
+  });
+
+  it('both sides wiped out on the same tick is a draw', () => {
+    const world = duel();
+    for (const id of ['alice-d0', 'alice-d1', 'bob-d0', 'bob-d1']) {
+      world.daemons.get(id)!.hp = 0;
+      world.daemons.get(id)!.crashed = true;
+    }
+    step(world);
+    expect(world.arena).toMatchObject({ phase: 'over', result: { winner: null, reason: 'wipeout' } });
+  });
+
+  it('an operator missing from the live match world loses by disconnect', () => {
+    const world = duel();
+    world.removeOperator('bob');
+    step(world);
+    expect(world.arena).toMatchObject({ phase: 'over', result: { winner: 'alice', reason: 'disconnect' } });
+
+    const empty = duel();
+    empty.removeOperator('alice');
+    empty.removeOperator('bob');
+    step(empty);
+    expect(empty.arena).toMatchObject({ phase: 'over', result: { winner: null, reason: 'disconnect' } });
+  });
+
+  it('a hit that deals no damage (bitshield) does not count as dealt', () => {
+    const world = duel();
+    run(world, 'alice');
+    run(world, 'bob');
+    const bob = world.daemons.get('bob-d0')!;
+    bob.trait = 'bitshield';
+    const before = bob.hp;
+    const move = world.daemons.get('alice-d0')!.moves[0]!;
+    expect(step(world, input('alice', { cmd: 'use', actor: 'alice-d0', args: { move, targetId: 'bob-d0' } })).replies[0]).toMatchObject({ ok: true });
+    expect(bob.hp).toBe(before);
+    expect([...world.arena!.dealt]).toEqual([]);
   });
 
   it('times out to the higher total HP fraction; equal fractions draw', () => {
