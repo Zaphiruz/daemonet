@@ -222,3 +222,11 @@ Fixed before merge: bearer scope per spec §3 (opt-in routes, never admin), per-
 - T2: per-operator 429 lacks retry-after/x-ratelimit headers; per-IP Exchange budget is per route (use a shared groupId when plans 2–4 add routes); frontend Dockerfile doesn't copy packages/auth (not needed)
 - T3: DiskPanel `lockedBy !== null` disables load forever if the field is missing (use !!); lock tooltip "cancel the order first" has no UI yet; vault qty clamped to 64 per click (brief-mandated)
 Task F: minor (deferred): packages/auth has no own tests; bearer without groups claim calls userinfo per request (cache per token); any Authorization header + cookie refused (document); per-operator limiter in memory (single api process)
+
+## 2026-10-02-daemonet-sp5-plan2-order-book
+
+Fixed before merge: my-orders lists every OPEN order; limits fit real use (per-address multiple, /64, retry-after); order time after the lock; cap ignores expired; shared ledger primitives; preview wording; expiry at boot; spec/OPERATIONS updated
+
+- T1: self-match skip can leave a crossed book of one owner's own orders (document in player rules); hot-item advisory waits can exhaust the Prisma pool (load-probe); expiry timer first run after 5 min
+- T3: e2e assumes an empty frag:heap book (fresh DB in CI); qty input snaps to 1 on clear
+Task F: minor (deferred): /orders OPEN + closed reads not in one snapshot (possible duplicate row; dedupe by id); ledger.ts `reason: string` loses compile-time reason check
