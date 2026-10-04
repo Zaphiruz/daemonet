@@ -1,6 +1,7 @@
 export { connect, GameClient, TRANSIENT_KICKS, WorldView, DaemonHandle, OperatorApi, DaemonsApi } from './client.js';
 export type { ConnectOptions, OperatorScriptContext, DaemonScriptContext, Target, DaemonView, DaemonEntity, OperatorEntity } from './client.js';
 export { devToken, staticToken, type TokenSource } from './auth.js';
+export { ExchangeClient, ExchangeError, type ExchangeClientOptions, type ExchangeOffer, type ExchangeListingQuery, type ExchangeTrade } from './exchange.js';
 export { PortSocket, type PortControl, type PortLike } from './port-socket.js';
 export type { WebSocketLike, WebSocketCtor } from './client.js';
 export { DaemonetError } from './errors.js';
