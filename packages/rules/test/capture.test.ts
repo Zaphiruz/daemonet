@@ -22,7 +22,7 @@ import {
   publicChallenge,
   type ChainPayload,
 } from '../src/capture/index.js';
-import { challengeSize, type ChallengeTarget } from '../src/capture/size.js';
+import { challengeSize, MAX_CHALLENGE_SIZE, type ChallengeTarget } from '../src/capture/size.js';
 import { getTool, type Noise } from '../src/content/items.js';
 import { createRng } from '../src/rng.js';
 import { TYPES, type TypeId } from '../src/types.js';
@@ -47,7 +47,7 @@ const FAMILIES: TypeId[] = [...TYPES];
 /** Change the answer so it is still schema-valid but wrong (every family's answer shape is covered). */
 function mutate(answer: Record<string, unknown>): Record<string, unknown> {
   const [key, value] = Object.entries(answer)[0]!;
-  if (typeof value === 'number') return { [key]: value + 1 };
+  if (typeof value === 'number') return { [key]: value >= 2147483647 ? value - 1 : value + 1 };
   if (typeof value === 'string') {
     if (key === 'checksum' || key === 'hex' || key === 'contents') return { [key]: value === '' ? '00' : (value[0] === '0' ? '1' : '0') + value.slice(1) };
     if (key === 'allowed') return { [key]: (value[0] === '1' ? '0' : '1') + value.slice(1) };
@@ -81,6 +81,40 @@ describe('challengeSize', () => {
   it('never goes below 8 and clamps hp', () => {
     expect(challengeSize({ ...base, hpFraction: 0, statused: true }, getTool('dump'))).toBe(8);
     expect(challengeSize({ ...base, hpFraction: 5 }, sniff)).toBe(32);
+  });
+});
+
+describe('payload cap', () => {
+  const size = (c: ReturnType<typeof generateChallenge>) => JSON.stringify(publicChallenge(c)).length;
+
+  it('challengeSize clamps at MAX_CHALLENGE_SIZE', () => {
+    const huge: ChallengeTarget = { stage: 4, hpFraction: 1, clean: true, signature: 3, hardened: true, statused: false };
+    expect(MAX_CHALLENGE_SIZE).toBe(1024);
+    expect(challengeSize(huge, getTool('sniff'))).toBe(1024);
+    expect(challengeSize({ ...huge, stage: 5 }, getTool('sniff'))).toBe(1024);
+  });
+
+  it('every single family stays under 64 KiB at the maximum size', () => {
+    for (const type of TYPES)
+      fc.assert(
+        fc.property(fc.integer(), (seed) => {
+          const n = size(generateChallenge([type], MAX_CHALLENGE_SIZE, 2, createRng(seed)));
+          expect(n).toBeLessThan(65536);
+        }),
+        { numRuns: 40 },
+      );
+  });
+
+  it('every ordered pair as a chain stays under 64 KiB at the maximum size', () => {
+    for (const a of TYPES)
+      for (const b of TYPES)
+        fc.assert(
+          fc.property(fc.integer(), (seed) => {
+            const n = size(generateChallenge([a, b], MAX_CHALLENGE_SIZE, 2, createRng(seed)));
+            expect(n).toBeLessThan(65536);
+          }),
+          { numRuns: 6 },
+        );
   });
 });
 
@@ -145,7 +179,7 @@ describe('chained challenges', () => {
 
   it('resists a known-prefix repeating-XOR attack on packet -> glitch chains', () => {
     for (let seed = 0; seed < 32; seed++) {
-      const challenge = generateChallenge(['packet', 'glitch'], 24, 1, createRng(seed));
+      const challenge = generateChallenge(['packet', 'glitch'], 96, 1, createRng(seed));
       const chain = challenge.payload as ChainPayload;
       const cipher = fromHex(chain.sealed);
 

@@ -11,7 +11,8 @@ import { WORDS } from './crypto.js';
  * - `xor:<n>` (n in 1..255): every UTF-8 byte XOR n, then lowercase hex (so the result is always printable).
  * - `lenprefix`: `<L>:` followed by the text, where L is the text's length in UTF-8 BYTES written in decimal
  *   (so the first ':' always ends the prefix, even when the text itself contains ':').
- * The inner text is UTF-8 and may be empty. Answer: the inner text, exactly (no trimming).
+ * A generated challenge has 1 to 6 layers, at most 3 of them `hex`/`xor` (which double the length), so the payload
+ * stays under about 20x the inner text. The inner text is UTF-8 and may be empty. Answer: the inner text, exactly (no trimming).
  */
 export interface ProxyParams {
   layers: string[];
@@ -22,6 +23,8 @@ export interface ProxyPayload {
 export interface ProxyAnswer {
   inner: string;
 }
+
+const MAX_DOUBLING_LAYERS = 3;
 
 const b64 = (bytes: Uint8Array): string => btoa(String.fromCharCode(...bytes));
 
@@ -43,7 +46,16 @@ export const proxyFamily: ChallengeFamily<ProxyParams, ProxyPayload, ProxyAnswer
     inner = fromUtf8(utf8(inner.slice(0, size)));
     const count = Math.max(1, Math.min(6, Math.floor(size / 16)));
     const layers: string[] = [];
-    for (let i = 0; i < count; i++) layers.push(rng.pick(['hex', 'base64', 'lenprefix', `xor:${rng.int(1, 255)}`]));
+    let doublings = 0; // hex and xor double the length; at most MAX_DOUBLING_LAYERS per challenge bounds the payload size
+    for (let i = 0; i < count; i++) {
+      const layer = rng.pick(['hex', 'base64', 'lenprefix', `xor:${rng.int(1, 255)}`]);
+      const doubles = layer === 'hex' || layer.startsWith('xor:');
+      if (doubles && doublings >= MAX_DOUBLING_LAYERS) layers.push(rng.pick(['base64', 'lenprefix']));
+      else {
+        if (doubles) doublings++;
+        layers.push(layer);
+      }
+    }
     let payload = inner;
     for (const layer of layers) payload = wrap(layer, payload);
     return { params: { layers }, payload: { payload }, answer: { inner } };

@@ -120,7 +120,9 @@ export function unsealStage(sealed: string, firstAnswer: unknown): string {
   return fromUtf8(xorKeystream(fromHex(sealed), firstAnswer));
 }
 
-/** Types are the target daemon's types (1 or 2). Both stages of a chain use the same size and noise. */
+/** Types are the target daemon's types (1 or 2). A chain splits the size budget: each stage is generated at
+ * `max(8, round(size / 4))` with the same noise. Stage two is hex-sealed (doubling it), so a chain costs about
+ * three stages of that size; at the maximum size 1024 the worst measured chain stays well under 64 KiB. */
 export function generateChallenge(types: readonly TypeId[], size: number, noise: Noise, rng: Rng): Challenge {
   if (types.length === 1) {
     const stage = getFamily(types[0]!).generate(size, noise, rng);
@@ -128,8 +130,9 @@ export function generateChallenge(types: readonly TypeId[], size: number, noise:
   }
   if (types.length !== 2) throw new RangeError('a daemon has 1 or 2 types');
   const [a, b] = types as readonly [TypeId, TypeId];
-  const first = getFamily(a).generate(size, noise, rng);
-  const second = getFamily(b).generate(size, noise, rng);
+  const half = Math.max(8, Math.round(size / 4));
+  const first = getFamily(a).generate(half, noise, rng);
+  const second = getFamily(b).generate(half, noise, rng);
   const sealed = sealStage(JSON.stringify({ params: second.params, payload: second.payload }), first.answer);
   const payload: ChainPayload = { first: { params: first.params, payload: first.payload }, sealed };
   return { kind: 'chain', families: [a, b], params: {}, payload, answer: second.answer };
