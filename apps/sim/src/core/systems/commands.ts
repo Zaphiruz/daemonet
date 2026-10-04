@@ -85,7 +85,7 @@ function handle(world: World, input: Input, out: Out): void {
       const d = ownedDaemon(world, op, c.args.daemonId);
       if (d.active) throw new Rejection('E_STATE', 'already running');
       if (d.crashed) throw new Rejection('E_STATE', 'daemon has crashed; restore it first');
-      if (d.pending) throw new Rejection('E_STATE', 'daemon is being stored');
+      if (d.pending) throw new Rejection('E_STATE', 'daemon is busy');
       if (op.running.length >= RUNNING_MAX) throw new Rejection('E_STATE', `at most ${RUNNING_MAX} daemons can run`);
       requireSwapReady(world, op);
       world.activate(d, op);
@@ -192,7 +192,7 @@ function swap(world: World, op: Operator, c: Cmd<'swap'>, input: Input, out: Out
   const incoming = ownedDaemon(world, op, c.args.inId);
   if (incoming.active) throw new Rejection('E_STATE', 'incoming daemon is already running');
   if (incoming.crashed) throw new Rejection('E_STATE', 'incoming daemon has crashed');
-  if (incoming.pending) throw new Rejection('E_STATE', 'incoming daemon is being stored');
+  if (incoming.pending) throw new Rejection('E_STATE', 'daemon is busy');
   requireSwapReady(world, op);
   world.deactivate(outgoing);
   world.activate(incoming, op);

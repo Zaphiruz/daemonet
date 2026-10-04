@@ -7,8 +7,12 @@ export const SP1_SNIFF_REFILL = 8;
 /** leaking: energy lost per second. */
 export const LEAK_PER_SECOND = 2;
 const batteryItem = getItem('battery');
+function heldMultiplier(item: ReturnType<typeof getItem>): number {
+  if (item.kind !== 'held') throw new RangeError(`${item.id} is not a held item`);
+  return item.multiplier;
+}
 /** battery: energy regen multiplier, read from the item table (regenEnergy's tick count scales linearly). */
-const BATTERY_REGEN = batteryItem.kind === 'held' ? batteryItem.multiplier : 1;
+const BATTERY_REGEN = heldMultiplier(batteryItem);
 
 export function restoreDaemon(d: Daemon): void {
   d.hp = d.stats.hp;

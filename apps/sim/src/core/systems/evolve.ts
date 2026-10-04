@@ -1,4 +1,4 @@
-import { applyEvolution, computeStats, evolutionOptions, getSpecies, statBlockFromArray, statBlockToArray, type EvolutionContext } from '@daemonet/rules';
+import { applyEvolution, computeStats, evolutionOptions, getSpecies, movesAtLevel, statBlockFromArray, statBlockToArray, type EvolutionContext } from '@daemonet/rules';
 import { distance } from '../grid.js';
 import { Rejection, type Daemon, type HistoryEntry, type Input, type Intent, type IntentResult, type Operator } from '../model.js';
 import type { Out } from '../out.js';
@@ -46,6 +46,7 @@ export function evolve(world: World, op: Operator, d: Daemon, formId: string, in
       operatorId: op.id,
       reqId: input.reqId,
       daemonId: d.id,
+      level: d.level,
       from: d.species,
       to: r.species,
       ivs: statBlockToArray(r.ivs),
@@ -78,6 +79,8 @@ export function completeEvolveIntent(world: World, op: Operator | undefined, int
   if (!op) return;
   if (!d || d.species !== intent.from) return out.ok(intent, { species: intent.to, changes: intent.changes });
   const sp = getSpecies(intent.to);
+  const liveHp = d.hp;
+  const liveMaxHp = d.stats.hp;
   d.species = sp.id;
   d.types = sp.types;
   d.ivs = statBlockFromArray(intent.ivs);
@@ -85,10 +88,17 @@ export function completeEvolveIntent(world: World, op: Operator | undefined, int
   d.clean = intent.clean;
   d.signature = intent.signature;
   d.heldItem = intent.heldItem;
-  d.moves = [...intent.moves];
   d.trait = sp.traits[d.traitSlot];
   d.stats = computeStats({ base: sp.base, ivs: d.ivs, bonus: d.bonus, level: d.level, nature: d.nature });
-  d.hp = Math.min(intent.hp, d.stats.hp);
+  if (d.level === intent.level) {
+    d.moves = [...intent.moves];
+    d.hp = Math.min(intent.hp, d.stats.hp);
+  } else {
+    // A level-up landed while the evolve was pending: the intent's moves and HP are for the old level, so
+    // recompute moves for the new form and carry the live HP fraction (a crashed daemon stays at 0).
+    d.moves = movesAtLevel(sp, d.level);
+    d.hp = d.crashed || liveHp <= 0 ? 0 : Math.min(d.stats.hp, Math.max(1, Math.round((d.stats.hp * liveHp) / liveMaxHp)));
+  }
   d.cooldowns = {};
   d.history.push(...intent.history);
   out.emit({ e: 'evolved', daemon: d.id, from: intent.from, to: intent.to, changes: intent.changes }, { to: op.id });

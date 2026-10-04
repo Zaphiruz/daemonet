@@ -179,6 +179,8 @@ export type Intent =
       operatorId: string;
       reqId: string;
       daemonId: string;
+      /** The daemon's level when the intent was created (a level-up before completion changes moves and HP). */
+      level: number;
       from: string;
       to: string;
       ivs: number[];

@@ -16,7 +16,7 @@ const EVOLVED_HISTORY = [{ at: '2026-09-30T00:00:00.000Z', kind: 'evolved' as co
 
 function evolve(id: string, operatorId: string, daemonId: string): Intent {
   return {
-    id, kind: 'evolve', operatorId, reqId: 'r', daemonId, from: 'echolet', to: 'tracerat', ivs: [21, 20, 20, 21, 20, 20, 20, 20], bonus: [0, 0, 0, 0, 0, 0, 0, 0],
+    id, kind: 'evolve', operatorId, reqId: 'r', daemonId, level: 16, from: 'echolet', to: 'tracerat', ivs: [21, 20, 20, 21, 20, 20, 20, 20], bonus: [0, 0, 0, 0, 0, 0, 0, 0],
     clean: false, signature: 0, heldItem: null, moves: ['ping', 'traceroute', 'sigstop', 'synflood'], hp: 40, changes: [{ kind: 'iv', stat: 'hp', from: 20, to: 21 }], history: EVOLVED_HISTORY,
   };
 }

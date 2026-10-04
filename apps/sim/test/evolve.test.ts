@@ -391,4 +391,44 @@ describe('final-review fixes', () => {
     world.addOperator(await store.loadOrCreateOperator('alice', 'test', { x: 4.5, y: 5.5 }));
     expect(world.daemons.get('alice-d0')!.pending).toBe(true);
   });
+
+  it('a level-up during a pending evolve recomputes moves and keeps the level-up HP', async () => {
+    const world = setup();
+    const store = await seededStore(world);
+    const d = world.daemons.get('alice-d0')!;
+    d.hp = Math.floor(d.stats.hp / 2);
+    const intent = evolveIntent(step(world, evolveCmd('tracerat')));
+    awardXp(world, ['alice-d0'], 100_000, new Out());
+    expect(d.level).toBeGreaterThan(16);
+    const liveFraction = d.hp / d.stats.hp;
+    world.completeIntent(intent.id, await store.applyIntent(intent, { seedId: 'seed0001' }));
+    expect(d.species).toBe('tracerat');
+    expect(d.moves).toEqual(movesAtLevel(getSpecies('tracerat'), d.level));
+    expect(d.stats.hp).toBeGreaterThan(intent.hp);
+    expect(Math.abs(d.hp / d.stats.hp - liveFraction)).toBeLessThan(0.05);
+    expect(d.hp).toBeGreaterThan(intent.hp);
+  });
+
+  it('a level-up during a pending evolve keeps a crashed daemon at 0 HP', async () => {
+    const world = setup();
+    const store = await seededStore(world);
+    const d = world.daemons.get('alice-d0')!;
+    d.hp = 0;
+    d.crashed = true;
+    const intent = evolveIntent(step(world, evolveCmd('tracerat')));
+    awardXp(world, ['alice-d0'], 100_000, new Out());
+    world.completeIntent(intent.id, await store.applyIntent(intent, { seedId: 'seed0001' }));
+    expect(d.hp).toBe(0);
+    expect(d.crashed).toBe(true);
+  });
+
+  it('run and swap reject a pending daemon with a neutral message', () => {
+    const world = setup();
+    world.addOperator(operatorRecord('bob'));
+    world.daemons.get('bob-d1')!.pending = true;
+    expect(step(world, input('bob', { cmd: 'run', actor: self, args: { daemonId: 'bob-d1' } })).replies[0]).toMatchObject({ code: 'E_STATE', message: 'daemon is busy' });
+    step(world, input('bob', { cmd: 'run', actor: self, args: { daemonId: 'bob-d0' } }));
+    world.operators.get('bob')!.swapReadyTick = 0;
+    expect(step(world, input('bob', { cmd: 'swap', actor: self, args: { outId: 'bob-d0', inId: 'bob-d1' } })).replies[0]).toMatchObject({ code: 'E_STATE', message: 'daemon is busy' });
+  });
 });
