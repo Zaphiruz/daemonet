@@ -4,7 +4,7 @@ const external = process.env.E2E_BASE_URL;
 
 /**
  * End-to-end smoke against a locally running sim (port 3000) and api (port 3001) started with
- * AUTH_DEV_BYPASS=true — see OPERATIONS.md "Local development". The built client is served by
+ * AUTH_DEV_BYPASS=true and one shared REDIS_URL (the org step needs the sim and the api on the same bus) — see OPERATIONS.md "Local development". The built client is served by
  * `vite preview`, which proxies /api and /ws to them. With E2E_BASE_URL set (CI), nothing is started:
  * the run targets that URL, i.e. the production frontend image (Caddy with the production CSP headers).
  */

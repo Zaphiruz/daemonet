@@ -179,7 +179,7 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await expect(pa.getByTestId('cluster-members').locator('li')).toHaveCount(1, { timeout: 10_000 });
 
   // orgs: A (granted bits while online — the balance arrives over the bus) founds one; the tag shows in the top bar and on chat lines
-  const tag = name.slice(-4).toUpperCase();
+  const tag = Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, 'X');
   expect((await pa.request.post('/api/dev/bits', { data: { amount: 10000 }, headers: { 'x-requested-with': 'daemonet' } })).ok()).toBeTruthy();
   await pa.getByTestId('tab-org').click();
   await pa.getByTestId('org-name').fill(`Org ${name}`);

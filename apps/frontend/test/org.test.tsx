@@ -13,10 +13,14 @@ const mocks = vi.hoisted(() => ({
   rename: vi.fn(),
   history: vi.fn(),
   boardSkip: undefined as unknown,
+  mineArgs: [] as unknown[],
 }));
 vi.mock('../src/api.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/api.ts')>()),
-  useOrgMineQuery: () => mocks.mine,
+  useOrgMineQuery: (...args: unknown[]) => {
+    mocks.mineArgs = args;
+    return mocks.mine;
+  },
   useOrgLeaderboardQuery: (_id: string, opts?: { skip?: boolean }) => {
     mocks.boardSkip = opts?.skip;
     return mocks.board;
@@ -217,10 +221,9 @@ describe('OrgPanel without an org', () => {
 });
 
 describe('OrgPanel as a member', () => {
-  const asRank = (rank: OrgRank, id = 'me') => {
+  const asRank = (rank: OrgRank) => {
     const org = orgView({ ownerId: 'me', members: [member('me', 'alice', 'OWNER'), member('off', 'olly', 'OFFICER'), member('mem', 'mia', 'MEMBER')] });
-    const meRank = id === 'me' ? rank : rank;
-    org.members = org.members.map((m) => (m.operatorId === 'me' ? { ...m, rank: meRank } : m));
+    org.members = org.members.map((m) => (m.operatorId === 'me' ? { ...m, rank } : m));
     setMine({ org, rank });
     setBoard([row('me', 'alice', rank, 5, 3, 1, 2), row('off', 'olly', 'OFFICER', 9, 1), row('mem', 'mia', 'MEMBER', 2, 7, 4, 1)]);
     return fakeClient({ org: { id: 'o1', name: 'Red Team', tag: 'RED1', rank } });
@@ -364,6 +367,32 @@ describe('OrgPanel as a member', () => {
     f.raw.self.org = null;
     view.rerender(<OrgPanel client={f.client} />);
     expect(mocks.mine.refetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('OrgPanel freshness', () => {
+  it('refetches /orgs/mine on every mount, so a remount after a live membership change is not served the cached org', () => {
+    setMine({ org: orgView(), rank: 'OWNER' });
+    const f = fakeClient({ org: { id: 'o1', name: 'Red Team', tag: 'RED1', rank: 'OWNER' } });
+    render(<OrgPanel client={f.client} />);
+    expect(mocks.mineArgs[1]).toMatchObject({ refetchOnMountOrArgChange: true });
+    cleanup();
+    f.raw.self.org = null; // kicked while another tab was open
+    mocks.mineArgs = [];
+    render(<OrgPanel client={f.client} />);
+    expect(mocks.mineArgs[1]).toMatchObject({ refetchOnMountOrArgChange: true });
+  });
+
+  it('drops a pending confirmation when the live membership changes under it', () => {
+    setMine({ org: orgView(), rank: 'OWNER' });
+    setBoard([row('me', 'alice', 'OWNER', 1), row('off', 'olly', 'OFFICER', 1)]);
+    const f = fakeClient({ org: { id: 'o1', name: 'Red Team', tag: 'RED1', rank: 'OWNER' } });
+    const view = render(<OrgPanel client={f.client} />);
+    fireEvent.click(within(screen.getByTestId('org-members')).getAllByRole('button', { name: 'make owner' })[0]!);
+    expect(screen.getByTestId('org-confirm')).toBeTruthy();
+    f.raw.self.org = { id: 'o1', name: 'Red Team', tag: 'RED1', rank: 'MEMBER' };
+    view.rerender(<OrgPanel client={f.client} />);
+    expect(screen.queryByTestId('org-confirm')).toBeNull();
   });
 });
 

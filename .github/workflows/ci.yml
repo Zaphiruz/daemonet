@@ -60,8 +60,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # one shared bus: the sim and the api must see each other (org membership, balances and renames go over it)
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       DATABASE_URL: postgresql://daemonet:daemonet@127.0.0.1:5432/daemonet_e2e
+      # inherited by the sim and api started below (the Caddy image only proxies to them)
+      REDIS_URL: redis://127.0.0.1:6379/4
       AUTH_DEV_BYPASS: "true"
       LOG_LEVEL: warn
     steps:

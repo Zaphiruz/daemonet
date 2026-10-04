@@ -295,7 +295,7 @@ Open `http://localhost:5173`, use **dev login** with any name (it becomes sub `d
 operator a `dev:<name>` headless bot gets). The sandbox page is built by `pnpm --filter @daemonet/frontend sdk`
 (run automatically by `build`; run it once before `pnpm web`).
 
-End-to-end smoke (headless Chromium, with the sim and api above running and `FRONTEND_ORIGIN=http://127.0.0.1:4173`):
+End-to-end smoke (headless Chromium, with the sim and api above running — both with the same `REDIS_URL`; the org step needs it, since balance and membership pushes travel over the bus — and `FRONTEND_ORIGIN=http://127.0.0.1:4173`):
 
 ```bash
 pnpm --filter @daemonet/frontend build

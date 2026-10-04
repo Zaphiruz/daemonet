@@ -38,7 +38,7 @@ interface Pending {
 
 /** Orgs (SP4 spec §7): create, invites, members by rank, sortable leaderboard, tag change and operator rename; prices come from the api. */
 export function OrgPanel({ client }: { client: GameClient }) {
-  const mine = useOrgMineQuery();
+  const mine = useOrgMineQuery(undefined, { refetchOnMountOrArgChange: true });
   const [act] = useOrgActionMutation();
   const [rename] = useRenameMutation();
   const [name, setName] = useState('');
@@ -64,6 +64,7 @@ export function OrgPanel({ client }: { client: GameClient }) {
   useEffect(() => {
     if (seen.current === liveKey) return;
     seen.current = liveKey;
+    setPending(null); // a confirmation was asked under the old membership
     void mine.refetch();
   }, [liveKey, mine]);
 
