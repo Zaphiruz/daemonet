@@ -227,11 +227,18 @@ export function describeListingError(err: unknown, action: 'buy' | 'list' | 'unl
   return describeApiError(err);
 }
 
+/** A daemon of a closed trade: what it was when offered (no full view of a daemon that has left either Disk). */
+export interface TradeDaemonSummary {
+  id: string;
+  species: string;
+  level: number;
+}
 export interface TradeSide {
   id: string;
   name: string | null;
   confirmed: boolean;
-  offer: { bits: number; items: Record<string, number>; daemons: ListedDaemon[] };
+  /** Daemons are full views while the trade is OPEN, summaries once it is closed. */
+  offer: { bits: number; items: Record<string, number>; daemons: Array<ListedDaemon | TradeDaemonSummary> };
 }
 export interface Trade {
   id: string;

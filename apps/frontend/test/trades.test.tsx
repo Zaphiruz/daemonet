@@ -262,6 +262,22 @@ describe('TradesPanel: the table', () => {
     expect(document.body.innerHTML).not.toMatch(/github\.com/i);
   });
 
+  it('closed trades say what each side gave (daemons as species and level only)', () => {
+    q.trades.data = [
+      trade({
+        id: 'T0', status: 'DONE', updatedAt: '2026-10-01T00:00:00.000Z',
+        me: side('me', 'Me', { bits: 32, daemons: [{ id: 'd1', species: 'pingling', level: 8 }] }),
+        them: side('o3', 'Old', { items: { 'frag:heap': 2 } }),
+      }),
+      trade({ id: 'T9', status: 'CANCELLED', them: side('o4', 'Gone') }),
+    ];
+    render(<TradesPanel client={client(1000)} />);
+    const row = screen.getByTestId('trade-closed-Old').textContent!;
+    expect(row).toContain('you gave 32 bits, Pingling L8');
+    expect(row).toContain('they gave frag:heap ×2');
+    expect(screen.getByTestId('trade-closed-Gone').textContent).toContain('you gave nothing');
+  });
+
   it('the confirm line states exactly what you give and what you receive, with the fee', () => {
     q.trades.data = [trade({ them: side('o1', 'Bob', { bits: 100, items: { 'frag:heap': 2 } }), me: side('me', 'Me', { bits: 32, daemons: [listed('d1')] }) })];
     render(<TradesPanel client={client(1000)} />);

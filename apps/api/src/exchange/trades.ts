@@ -21,6 +21,16 @@ export interface Offer {
   bits: number;
   items: Record<string, number>;
   daemonIds: string[];
+  /**
+   * What the offered daemons were when offered (stored by setOffer; a locked Disk daemon cannot level or evolve): a
+   * closed trade shows these, never a full view of a daemon that has left either Disk.
+   */
+  daemons?: DaemonSummary[];
+}
+export interface DaemonSummary {
+  id: string;
+  species: string;
+  level: number;
 }
 const EMPTY: Offer = { bits: 0, items: {}, daemonIds: [] };
 const isEmpty = (o: Offer): boolean => o.bits === 0 && Object.keys(o.items).length === 0 && o.daemonIds.length === 0;
@@ -149,7 +159,9 @@ export async function setOffer(prisma: PrismaClient, bus: Bus, operatorId: strin
       const res = await tx.daemon.updateMany({ where: { id, operatorId, location: 'DISK', OR: [{ lockedBy: null }, { lockedBy: lock }] }, data: { lockedBy: lock } });
       if (res.count !== 1) throw badRequest('a daemon you offered is not on your Disk, or is already on the Exchange');
     }
-    const mine = t.aId === operatorId ? { aOffer: offer as unknown as Prisma.InputJsonValue } : { bOffer: offer as unknown as Prisma.InputJsonValue };
+    const rows = new Map((await tx.daemon.findMany({ where: { id: { in: offer.daemonIds } }, select: { id: true, species: true, level: true } })).map((d) => [d.id, d]));
+    const stored: Offer = { ...offer, daemons: offer.daemonIds.map((id) => ({ id, species: rows.get(id)!.species, level: rows.get(id)!.level })) };
+    const mine = t.aId === operatorId ? { aOffer: stored as unknown as Prisma.InputJsonValue } : { bOffer: stored as unknown as Prisma.InputJsonValue };
     return tx.trade.update({ where: { id: t.id }, data: { ...mine, aConfirmed: false, bConfirmed: false, version: { increment: 1 }, updatedAt: at } });
   }, TX_OPTIONS);
   publish(bus, log, trade);
@@ -302,16 +314,21 @@ export async function expireTrades(prisma: PrismaClient, bus: Bus, now = new Dat
 }
 
 /**
- * Trades as a participant sees them: `me` and `them`, with the offered daemons expanded for inspection. While a trade
- * is open its daemons are shown as long as the trade holds them; once it is closed, only the daemons the viewer owns
- * now (nobody keeps watching a daemon that went, or stayed, on the other side's Disk).
+ * Trades as a participant sees them: `me` and `them`. While a trade is open its daemons are expanded for inspection
+ * (as long as the trade holds them); once it is closed, each side's daemons are shown as `{ id, species, level }` only,
+ * so the history says what each side gave without anyone watching a daemon that went, or stayed, on the other Disk.
  */
 export async function tradeViews(prisma: PrismaClient, trades: Trade[], viewerId: string) {
   const offers = trades.flatMap((t) => [offerOf(t.aOffer), offerOf(t.bOffer)]);
   const daemons = new Map((await prisma.daemon.findMany({ where: { id: { in: offers.flatMap((o) => o.daemonIds) } } })).map((d) => [d.id, d]));
   const names = new Map((await prisma.operator.findMany({ where: { id: { in: [...new Set(trades.flatMap((t) => [t.aId, t.bId]))] } }, select: { id: true, name: true } })).map((o) => [o.id, o.name]));
-  const shown = (t: Trade, ownerId: string, d: Daemon | undefined): d is Daemon =>
-    !!d && (t.status === 'OPEN' ? d.operatorId === ownerId && d.lockedBy === lockValue(t.id) : d.operatorId === viewerId);
+  const held = (t: Trade, ownerId: string, d: Daemon | undefined): d is Daemon => !!d && d.operatorId === ownerId && d.lockedBy === lockValue(t.id);
+  const summary = (offer: Offer, id: string): DaemonSummary[] => {
+    const stored = offer.daemons?.find((d) => d.id === id);
+    if (stored) return [{ id, species: stored.species, level: stored.level }];
+    const row = daemons.get(id); // a trade stored before summaries were: the daemon as it is now, if it still exists
+    return row ? [{ id, species: row.species, level: row.level }] : [];
+  };
   const side = (t: Trade, id: string, offer: Offer, confirmed: boolean) => ({
     id,
     name: names.get(id) ?? null,
@@ -319,9 +336,10 @@ export async function tradeViews(prisma: PrismaClient, trades: Trade[], viewerId
     offer: {
       bits: offer.bits,
       items: offer.items,
-      daemons: offer.daemonIds.flatMap((d) => {
+      daemons: offer.daemonIds.flatMap((d): Array<ReturnType<typeof daemonView> | DaemonSummary> => {
+        if (t.status !== 'OPEN') return summary(offer, d);
         const row = daemons.get(d);
-        return shown(t, id, row) ? [daemonView(row)] : [];
+        return held(t, id, row) ? [daemonView(row)] : [];
       }),
     },
   });

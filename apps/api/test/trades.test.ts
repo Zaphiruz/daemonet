@@ -183,6 +183,8 @@ describe.skipIf(!url)('Exchange direct trades (needs DATABASE_URL)', () => {
     expect((await tradeRow(t.id)).version).toBe(2);
 
     expect((await a.cancel(t.id)).body.status).toBe('CANCELLED');
+    // a cancelled trade still says what was offered (summaries only)
+    expect((await b.list()).body.find((x: { id: string }) => x.id === t.id).them.offer.daemons).toEqual([{ id: d1, species: 'initling', level: 5 }]);
     expect(await lockOf(d1)).toBeNull();
     expect(await lockOf(d2)).toBe(`listing:${listing.id}`); // only this trade's locks are cleared
     expect((await a.offer(t.id, { bits: 1 })).status).toBe(400);
@@ -257,9 +259,15 @@ describe.skipIf(!url)('Exchange direct trades (needs DATABASE_URL)', () => {
     expect(exchangeView(push.detail!, b.id)).toEqual({ tradeId: t.id, status: 'DONE' });
     expect((await a.confirm(t.id, offered.version)).status).toBe(400); // done is done
     expect((await a.cancel(t.id)).status).toBe(400);
-    // a closed trade shows only the daemons the viewer owns now (no peeking at the other side's Disk afterwards)
-    const [seen] = (await a.list()).body;
-    expect(seen).toMatchObject({ status: 'DONE', me: { offer: { bits: 160, daemons: [] } }, them: { offer: { daemons: [{ id: b0 }] } } });
+    // a closed trade keeps what each side gave, as { id, species, level } only (no full view of a daemon that left)
+    for (const viewer of [a, b]) {
+      const [seen] = (await viewer.list()).body;
+      const mine = viewer === a ? { bits: 160, items: { 'frag:packet': 3 }, ids: [a0, a1] } : { bits: 32, items: { 'frag:heap': 2 }, ids: [b0] };
+      const theirs = viewer === a ? [b0] : [a0, a1];
+      expect(seen).toMatchObject({ status: 'DONE', me: { offer: { bits: mine.bits, items: mine.items } } });
+      expect(seen.me.offer.daemons).toEqual(mine.ids.map((id) => ({ id, species: 'initling', level: 5 })));
+      expect(seen.them.offer.daemons).toEqual(theirs.map((id) => ({ id, species: 'initling', level: 5 })));
+    }
     // the new owners can trade them on
     const c = await trader('carol');
     const { body: t2 } = await b.open(c.id);

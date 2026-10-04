@@ -105,10 +105,15 @@ export function TradesPanel({ client }: { client?: GameClient }) {
         {rows
           .filter((t) => t.status !== 'OPEN')
           .map((t) => (
-            <div key={t.id} className="mono flex justify-between gap-2 border-b border-neutral-900 py-0.5 text-neutral-500" data-testid={`trade-closed-${t.them.name ?? t.them.id}`}>
-              <span className="min-w-0 truncate">with {t.them.name ?? 'an operator'}</span>
-              <span>{t.status.toLowerCase()}</span>
-              <span>{new Date(t.updatedAt).toLocaleString()}</span>
+            <div key={t.id} className="mono border-b border-neutral-900 py-0.5 text-neutral-500" data-testid={`trade-closed-${t.them.name ?? t.them.id}`}>
+              <div className="flex justify-between gap-2">
+                <span className="min-w-0 truncate">with {t.them.name ?? 'an operator'}</span>
+                <span>{t.status.toLowerCase()}</span>
+                <span>{new Date(t.updatedAt).toLocaleString()}</span>
+              </div>
+              <div className="text-neutral-600">
+                you gave {describeGiven(t.me)}; they gave {describeGiven(t.them)}
+              </div>
             </div>
           ))}
       </section>
@@ -129,9 +134,14 @@ function OfferView({ side }: { side: TradeSide }) {
       ))}
       {offer.daemons.map((d) => (
         <div key={d.id}>
-          {getSpecies(d.species).name} L{d.level} · ivs {ivTotal(d.ivs)}
-          {d.clean ? ' · clean' : ''}
-          {d.signature > 0 ? ` · T${d.signature}` : ''}
+          {getSpecies(d.species).name} L{d.level}
+          {'ivs' in d && (
+            <>
+              {` · ivs ${ivTotal(d.ivs)}`}
+              {d.clean ? ' · clean' : ''}
+              {d.signature > 0 ? ` · T${d.signature}` : ''}
+            </>
+          )}
         </div>
       ))}
     </div>
