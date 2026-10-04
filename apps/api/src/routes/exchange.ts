@@ -90,7 +90,7 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
   app.post('/api/exchange/orders', auth, async (req) => {
     const body = parse(OrderBody, req.body);
     if (!isTradable(body.item)) throw badRequest('unknown item');
-    const { order, fills } = await placeOrder(prisma, bus, req.operator!.id, body, new Date(), log);
+    const { order, fills } = await placeOrder(prisma, bus, req.operator!.id, body, log);
     return {
       order: { id: order.id, item: order.item, side: order.side, price: order.price, qty: order.qty, remaining: order.remaining, status: order.status, expiresAt: order.expiresAt },
       fills: fills.map((f) => ({ price: f.price, qty: f.qty, fee: f.fee })),

@@ -36,7 +36,9 @@ export function ExchangePanel({ client }: { client: GameClient }) {
   const me = client.self;
   const have = vault.data?.[item] ?? 0;
   const mine = orders.data ?? [];
-  const open = mine.filter((o) => o.status === 'OPEN').length;
+  // the api's cap counts OPEN orders that have not expired yet (expired ones are swept within five minutes)
+  const now = Date.now();
+  const open = mine.filter((o) => o.status === 'OPEN' && Date.parse(o.expiresAt) > now).length;
   const sim = book.data ? simulateOrder(book.data, mine.filter((o) => o.item === item), side, price, qty) : null;
   const full = orderPreview(side, price, qty);
   const top = book.data ? spread(book.data) : { bid: null, ask: null, spread: null };

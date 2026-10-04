@@ -281,6 +281,46 @@ describe.skipIf(!url)('Exchange order book (needs DATABASE_URL)', () => {
     expect(await buyer.bits()).toBe(100_000 - MAX_OPEN_ORDERS);
   });
 
+  it('the open-order cap counts only orders that have not expired yet (unswept expired ones do not block)', async () => {
+    const buyer = await trader('cx', 1000);
+    const past = new Date(Date.now() - 60_000);
+    await prisma!.order.createMany({
+      data: Array.from({ length: MAX_OPEN_ORDERS }, (_, i) => ({
+        id: `cx-${i}`, operatorId: buyer.id, item: 'frag:packet', side: 'BUY' as const, price: 1, qty: 1, remaining: 1, status: 'OPEN' as const,
+        createdAt: new Date(past.getTime() - ORDER_TTL_MS), expiresAt: past,
+      })),
+    });
+    expect((await buyer.order('BUY', 1, 1)).status).toBe(200);
+  });
+
+  it('time priority is the time an order reached the book (taken after the book lock), not when its request arrived', async () => {
+    const early = await trader('tp-a', 0, { 'frag:packet': 1 });
+    const holder = await trader('tp-b', 0);
+    const buyer = await trader('tp-c', 1000);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const hasLock = new Promise<void>((r) => (locked = r));
+    // another placement holds the book: `early`'s request arrives now but must wait for it
+    const holding = prisma!.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 AS "locked" FROM pg_advisory_xact_lock(${0x45584348}::int4, hashtext(${'frag:packet'}))`;
+      locked();
+      await gate;
+      // ...and puts its own SELL on the book while `early` is still waiting
+      await tx.order.create({ data: { id: 'tp-held', operatorId: holder.id, item: 'frag:packet', side: 'SELL', price: 30, qty: 1, remaining: 1, status: 'OPEN', createdAt: new Date(), expiresAt: new Date(Date.now() + ORDER_TTL_MS) } });
+    }, { timeout: 20_000 });
+    await hasLock;
+    const placing = early.order('SELL', 30, 1);
+    await new Promise((r) => setTimeout(r, 300));
+    release();
+    await holding;
+    expect((await placing).status).toBe(200);
+    // the held order was on the book first, so it fills first
+    const r = await buyer.order('BUY', 30, 1);
+    expect(r.body.fills).toHaveLength(1);
+    expect((await prisma!.fill.findFirstOrThrow()).sellerId).toBe(holder.id);
+  });
+
   it('cancel racing a fill: the escrow is returned or traded, never both', async () => {
     const buyer = await trader('cf-b', 100_000);
     const seller = await trader('cf-s', 0, { 'frag:packet': 100 });

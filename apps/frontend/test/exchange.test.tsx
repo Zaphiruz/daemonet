@@ -288,6 +288,18 @@ describe('ExchangePanel', () => {
     expect(screen.getByTestId('order-why').textContent).toContain(`${MAX_OPEN_ORDERS} open orders`);
   });
 
+  it('the open-order cap counts only orders that have not expired (as the api does)', () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    q.orders.data = [
+      ...Array.from({ length: MAX_OPEN_ORDERS }, (_, i) => order({ id: `x${i}`, item: 'frag:socket', expiresAt: past })),
+      order({ id: 'live', item: 'frag:socket' }),
+    ];
+    render(<ExchangePanel client={client(100_000)} />);
+    fireEvent.click(screen.getByTestId('side-SELL'));
+    expect((screen.getByTestId('order-place') as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByTestId('my-orders').textContent).toContain(`(1/${MAX_OPEN_ORDERS} open)`);
+  });
+
   it('lists the player`s orders with progress, cancels an open one once, and shows a failed cancel', async () => {
     const d = deferred<unknown>();
     q.cancel.mockReturnValue({ unwrap: () => d.promise });

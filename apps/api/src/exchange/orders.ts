@@ -62,12 +62,15 @@ const inRange = (n: number, max: number) => Number.isSafeInteger(n) && n >= 1 &&
  * order's price. A BUY filled below its limit gets the difference back; the seller pays the 1/16 fee out of the
  * proceeds. Whatever is left rests on the book for ORDER_TTL_MS.
  */
-export async function placeOrder(prisma: PrismaClient, bus: Bus, operatorId: string, input: PlaceOrderInput, now = new Date(), log: PublishLog = consoleBusLogger) {
+export async function placeOrder(prisma: PrismaClient, bus: Bus, operatorId: string, input: PlaceOrderInput, log: PublishLog = consoleBusLogger, clock: () => Date = () => new Date()) {
   if (!inRange(input.price, MAX_PRICE) || !inRange(input.qty, MAX_QTY)) throw badRequest(`price 1-${MAX_PRICE}, qty 1-${MAX_QTY}`);
   const buying = input.side === 'BUY';
   const out = new Outbox();
   const order = await prisma.$transaction(async (tx) => {
     await lockBook(tx, input.item);
+    // The order's time (its priority among equal prices, the fills' time, expiry checks) is read once the book is ours:
+    // a request that arrived earlier but waited for the lock must not jump ahead of orders placed while it waited.
+    const now = clock();
     // Under the book lock this item's resting orders cannot change (every placement, cancel and expiry of the item
     // takes it), so the makers this order will meet are known before any operator row is locked. Each supplies at
     // least one, so `qty` rows are enough.
@@ -94,7 +97,8 @@ export async function placeOrder(prisma: PrismaClient, bus: Bus, operatorId: str
     await lockOperators(tx, [operatorId, ...matches.map((m) => m.maker.operatorId)]);
 
     // Under the operator lock: concurrent placements of this operator (on any item) have committed or wait for us.
-    if ((await tx.order.count({ where: { operatorId, status: 'OPEN' } })) >= MAX_OPEN_ORDERS) throw badRequest(`at most ${MAX_OPEN_ORDERS} open orders`);
+    // Orders past their expiry count no more (the sweep returns their escrow within five minutes).
+    if ((await tx.order.count({ where: { operatorId, status: 'OPEN', expiresAt: { gt: now } } })) >= MAX_OPEN_ORDERS) throw badRequest(`at most ${MAX_OPEN_ORDERS} open orders`);
     const id = crypto.randomUUID();
     if (buying) await debit(tx, out, operatorId, input.price * input.qty, EXCHANGE_LEDGER_REASONS.escrow, id);
     else await vaultTake(tx, operatorId, input.item, input.qty);
