@@ -328,6 +328,9 @@ export class Game {
       st.phase = 'ready';
       this.send(st, { t: 'authOk', seq: 0, d: { operatorId: rec.id, role: st.role, resumeToken: session.resumeToken, tick: session.world.tick } });
       if (!(st.role === 'controller' && this.tryResume(st, session, d.resumeToken, d.lastTick))) this.snapshot(st);
+      // A running mute is part of the state a client starts from (it relays to sandboxed scripts too).
+      const until = this.chat.mutedUntil(rec.id);
+      if (until) this.send(st, { t: 'muted', seq: 0, d: { until } });
       this.log.info({ sub: claims.sub, role: st.role, ip: st.conn.ip, subnet: session.world.subnet.id }, 'operator connected');
     } catch (err) {
       this.log.error({ err: (err as Error).message }, 'auth: store unavailable');

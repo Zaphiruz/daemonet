@@ -573,6 +573,23 @@ describe('chat through the Game', () => {
     await g.game.shutdown();
   });
 
+  it('tells a joining connection about a running mute right after the snapshot (controllers, spectators, takeovers)', async () => {
+    const g = setupGame();
+    const rec = await g.store.loadOrCreateOperator('dev-alice', 'test', g.a.subnet.spawn);
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    g.store.mutes.set(rec.id, until);
+    const alice = await g.join('alice');
+    expect(alice.sent.map((m) => m.t)).toEqual(['authOk', 'snapshot', 'muted']);
+    expect(alice.of('muted')[0]!.d).toEqual({ until });
+    const watcher = await g.join('alice', 'spectator');
+    expect(watcher.sent.map((m) => m.t)).toEqual(['authOk', 'snapshot', 'muted']);
+    const again = await g.join('alice');
+    expect(again.of('muted').map((m) => m.d.until)).toEqual([until]);
+    const bob = await g.join('bob');
+    expect(bob.of('muted')).toHaveLength(0);
+    await g.game.shutdown();
+  });
+
   it('resyncs the mute of every connected session and the name filter when the bus reconnects', async () => {
     const bus = new ReconnectingBus();
     const g = setupGame(new MemoryStore(), bus);

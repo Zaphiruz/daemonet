@@ -199,6 +199,11 @@ export class ChatService {
     else this.muted.delete(operatorId);
   }
 
+  /** The running mute's end (ISO), or null. */
+  mutedUntil(operatorId: string): string | null {
+    return this.isMuted(operatorId) ? new Date(this.muted.get(operatorId)!).toISOString() : null;
+  }
+
   isMuted(operatorId: string): boolean {
     const until = this.muted.get(operatorId);
     if (until === undefined) return false;
