@@ -110,7 +110,8 @@ export function registerMiscRoutes(app: FastifyInstance, prisma: PrismaClient): 
     return rows.map((t) => ({ id: t.id, day: t.day, subnet: t.subnet, index: t.index, kind: t.kind, params: t.params, target: t.target, reward: t.reward, progress: t.progress, status: t.status, acceptedAt: t.acceptedAt, completedAt: t.completedAt }));
   });
 
-  app.get('/api/disk', auth, async (req) => {
+  // Read-only, so bots may read it with a bearer token too (SP5).
+  app.get('/api/disk', { ...auth, config: { bearer: true } }, async (req) => {
     const rows = await prisma.daemon.findMany({ where: { operatorId: req.operator!.id, location: 'DISK' }, orderBy: { slot: 'asc' } });
     return rows.map((d) => ({
       id: d.id, species: d.species, level: d.level, xp: d.xp, nature: d.nature, traitSlot: d.traitSlot, ivs: d.ivs, bonus: d.bonus,

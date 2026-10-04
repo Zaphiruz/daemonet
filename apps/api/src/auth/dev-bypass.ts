@@ -36,7 +36,8 @@ export function registerDevBypass(
     return reply.redirect(`${deps.frontendOrigin}/`);
   });
 
-  app.post('/api/dev/bits', { preHandler: app.requireAuth }, async (req) => {
+  // The dev helpers also take `dev:` bearer tokens, so bot tests can seed state.
+  app.post('/api/dev/bits', { preHandler: app.requireAuth, config: { bearer: true } }, async (req) => {
     const parsed = BitsBody.safeParse(req.body);
     if (!parsed.success) throw badRequest('body must be { amount: integer 1-1000000 }');
     const operatorId = req.operator!.id;
@@ -55,7 +56,7 @@ export function registerDevBypass(
     return { bits: Number(bits), note: 'a running sim session is told over the bus (or picks it up on its next resync)' };
   });
 
-  app.post('/api/dev/daemon', { preHandler: app.requireAuth }, async (req) => {
+  app.post('/api/dev/daemon', { preHandler: app.requireAuth, config: { bearer: true } }, async (req) => {
     const parsed = SeedBody.safeParse(req.body);
     if (!parsed.success) throw badRequest('body must be { species, level 1-64 }');
     let species;

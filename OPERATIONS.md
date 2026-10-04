@@ -43,7 +43,7 @@ Set too high and clients can spoof their IP through `X-Forwarded-For`. Re-check 
 added or removed (for example a new load balancer), then `restart sim`. Acceptance step 5 verifies
 it from the logs.
 
-Each entrypoint applies **only its own keys** from Vault (the sim: the first 10, `apps/sim/env-filter.mjs`; the api: `DATABASE_URL`, the 8 api-only keys above (including `AUTHENTIK_WEB_ISSUER_URL`), `AUTH_REQUIRED_GROUP`, `TRUST_PROXY_HOPS`, `LOG_LEVEL`, `PORT`, `REDIS_URL` — 14 keys, `apps/api/env-filter.mjs`).
+Each entrypoint applies **only its own keys** from Vault (the sim: the first 10, `apps/sim/env-filter.mjs`; the api: `DATABASE_URL`, the 8 api-only keys above (including `AUTHENTIK_WEB_ISSUER_URL`), `AUTH_REQUIRED_GROUP`, `TRUST_PROXY_HOPS`, `LOG_LEVEL`, `PORT`, `REDIS_URL`, and the bot provider's `AUTHENTIK_ISSUER_URL` and `AUTHENTIK_BOT_CLIENT_ID` (bearer tokens, SP5) — 16 keys, `apps/api/env-filter.mjs`).
 Anything else in the document (`AUTH_DEV_BYPASS`, `NODE_ENV`, `NODE_OPTIONS`,
 `NODE_TLS_REJECT_UNAUTHORIZED`, `LD_PRELOAD`, `PATH`, new keys nobody allowlisted) is dropped and its
 NAME logged as `Ignored non-allowlisted key(s)`. Adding a new setting means adding it to the

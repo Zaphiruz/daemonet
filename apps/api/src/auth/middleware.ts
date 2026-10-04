@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { AppError, forbidden, unauthorized } from '../errors.js';
+import { authUnavailable, forbidden, unauthorized, type AppError } from '../errors.js';
 import { BearerError, type BearerVerifier } from './bearer.js';
 import type { SessionStore } from './session.js';
 
@@ -13,6 +13,13 @@ export interface RequestOperator {
 declare module 'fastify' {
   interface FastifyRequest {
     operator?: RequestOperator;
+  }
+  interface FastifyContextConfig {
+    /**
+     * Opt-in: this route also accepts bots' `Authorization: Bearer` tokens (SP5 spec §3 — the Exchange, `/api/me`,
+     * read-only `/api/disk`, and the dev-bypass helpers). Every other route refuses a bearer request with a generic 401.
+     */
+    bearer?: boolean;
   }
   interface FastifyInstance {
     requireAuth: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
@@ -30,7 +37,7 @@ export interface AuthMiddlewareDeps {
   bearer: BearerVerifier | null;
   /**
    * Resolves the operator row for a bearer subject, creating it on first sight (with `isAdmin` from the token's
-   * groups, as a first login would). Returns the row's current `isAdmin`; an existing row is never changed here.
+   * groups, as a first login would). An existing row is never changed here (a bot request cannot promote or demote).
    */
   operatorForSub: (sub: string, groupAdmin: boolean) => Promise<{ id: string; isAdmin: boolean }>;
 }
@@ -42,14 +49,13 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /** What every refused credential looks like on the wire; the reason goes to the log (carry-forward #8). */
 export const AUTH_FAILED = 'authentication failed';
-const authUnavailable = () => new AppError(503, 'unavailable', 'authentication temporarily unavailable');
 
 const BEARER = /^Bearer[ \t]+(\S+)[ \t]*$/i;
 
 export function makeRequireAuth(deps: AuthMiddlewareDeps) {
   /** Logs why (never the token, the header or the query string) and returns the generic 401. */
-  const refuse = (req: FastifyRequest, reason: string, unavailable = false): AppError => {
-    req.log.warn({ reason: reason.slice(0, 200), unavailable }, 'bearer authentication failed');
+  const refuse = (req: FastifyRequest, reason: string, unavailable = false, level: 'info' | 'warn' = 'warn'): AppError => {
+    req.log[level]({ reason: reason.slice(0, 200), unavailable }, 'bearer authentication failed');
     return unavailable ? authUnavailable() : unauthorized(AUTH_FAILED);
   };
 
@@ -59,10 +65,12 @@ export function makeRequireAuth(deps: AuthMiddlewareDeps) {
     if (header !== undefined) {
       // Bots only. A request that ALSO carries a session cookie is ambiguous (which identity, and does CSRF apply?):
       // refuse it rather than pick one.
-      if (cookieToken) throw refuse(req, 'both a session cookie and an Authorization header');
+      // Client mistakes rather than attacks on a verifier: logged at info.
+      if (cookieToken) throw refuse(req, 'both a session cookie and an Authorization header', false, 'info');
       const m = BEARER.exec(header);
-      if (!m) throw refuse(req, 'malformed Authorization header');
-      if (!deps.bearer) throw refuse(req, 'bearer tokens are not accepted');
+      if (!m) throw refuse(req, 'malformed Authorization header', false, 'info');
+      if (req.routeOptions.config.bearer !== true) throw refuse(req, 'route does not accept bearer tokens', false, 'info');
+      if (!deps.bearer) throw refuse(req, 'bearer tokens are not accepted', false, 'info');
       const token = m[1]!;
       let claims;
       try {
@@ -75,8 +83,8 @@ export function makeRequireAuth(deps: AuthMiddlewareDeps) {
       }
       // No CSRF check: a browser cannot attach an Authorization header cross-site (no CORS), and cookies are refused above.
       const op = await deps.operatorForSub(claims.sub, claims.groups.includes(deps.adminGroup));
-      // Admin needs BOTH the operator row (carry-forward #17: per request, from Operator.isAdmin) and the token's group.
-      req.operator = { id: op.id, isAdmin: op.isAdmin && claims.groups.includes(deps.adminGroup), via: 'bearer' };
+      // A bot never acts as an admin (SP5 spec §3): admin rights stay with browser sessions (Operator.isAdmin, #17).
+      req.operator = { id: op.id, isAdmin: false, via: 'bearer' };
       return;
     }
     if (!cookieToken) throw unauthorized('no session');
@@ -95,6 +103,7 @@ export function makeRequireAuth(deps: AuthMiddlewareDeps) {
 export function makeRequireAdmin() {
   return async function requireAdmin(req: FastifyRequest): Promise<void> {
     if (!req.operator) throw unauthorized('no session');
-    if (!req.operator.isAdmin) throw forbidden('admin required');
+    // Admin actions are browser-only: a bot's bearer token never carries admin rights (SP5 spec §3).
+    if (req.operator.via === 'bearer' || !req.operator.isAdmin) throw forbidden('admin required');
   };
 }

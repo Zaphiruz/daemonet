@@ -29,6 +29,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@daemonet/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@daemonet/bus':
         specifier: workspace:*
         version: link:../../packages/bus
@@ -47,9 +50,6 @@ importers:
       fastify:
         specifier: ^5.12.5
         version: 5.12.5
-      jose:
-        specifier: ^6.2.12
-        version: 6.2.12
       openid-client:
         specifier: ^6.8.8
         version: 6.8.8
@@ -59,6 +59,10 @@ importers:
       zod:
         specifier: ^4.6.5
         version: 4.6.5
+    devDependencies:
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
 
   apps/frontend:
     dependencies:
@@ -126,6 +130,9 @@ importers:
 
   apps/sim:
     dependencies:
+      '@daemonet/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@daemonet/bus':
         specifier: workspace:*
         version: link:../../packages/bus
@@ -138,9 +145,6 @@ importers:
       '@daemonet/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      jose:
-        specifier: ^6.2.12
-        version: 6.2.12
       pino:
         specifier: ^10.3.1
         version: 10.4.0
@@ -157,12 +161,21 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.2
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
 
   examples/starter-bot:
     dependencies:
       '@daemonet/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
+
+  packages/auth:
+    dependencies:
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
 
   packages/bus:
     dependencies:

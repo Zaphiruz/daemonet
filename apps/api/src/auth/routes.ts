@@ -136,7 +136,7 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AuthRouteDeps): v
     return { ok: true, endSessionUrl };
   });
 
-  app.get('/api/me', { preHandler: app.requireAuth }, async (req) => {
+  app.get('/api/me', { preHandler: app.requireAuth, config: { bearer: true } }, async (req) => {
     const op = await deps.prisma.operator.findUniqueOrThrow({
       where: { id: req.operator!.id },
       select: { id: true, name: true, starterClaimed: true, bits: true },

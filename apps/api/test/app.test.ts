@@ -1114,7 +1114,8 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(seeded.statusCode).toBe(200);
     await prisma!.daemon.update({ where: { id: seeded.json().id }, data: { lockedBy: 'listing:x' } });
     expect((await app.inject({ method: 'GET', url: '/api/disk', headers: bearer('dev:robo') })).json()[0]).toMatchObject({ lockedBy: 'listing:x' });
-    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: bearer('dev:robo') })).statusCode).toBe(403);
+    // spec §3 (over the brief's 403): admin routes do not accept bearer tokens at all
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: bearer('dev:robo') })).statusCode).toBe(401);
   });
 
   it('only shows the caller’s own vault', async () => {
@@ -1138,26 +1139,64 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     }
     // the scheme is case-insensitive (RFC 7235)
     expect((await app.inject({ method: 'GET', url: '/api/me', headers: { authorization: 'bearer good-token' } })).statusCode).toBe(200);
-    // a cookie request still needs the CSRF header to mutate; a bearer request does not
-    expect((await app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, payload: { source: 'x' } })).statusCode).toBe(403);
-    expect((await app.inject({ method: 'PUT', url: '/api/scripts/main', headers: { authorization: 'Bearer good-token' }, payload: { source: 'x' } })).statusCode).toBe(200);
+    // a cookie request still needs the CSRF header to mutate; a bearer request (on a route that takes one) does not
+    expect((await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, payload: { amount: 5 } })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: '/api/dev/bits', headers: { authorization: 'Bearer good-token' }, payload: { amount: 5 } })).statusCode).toBe(200);
     // and a bearer request cannot ride a cookie by adding the CSRF header either
-    expect((await app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, headers: { ...csrf, authorization: 'Bearer good-token' }, payload: { source: 'y' } })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: { ...csrf, authorization: 'Bearer good-token' }, payload: { amount: 5 } })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: csrf, payload: { amount: 5 } })).statusCode).toBe(200);
   });
 
-  it('bearer admin rights need both the operator row flag and the admin group in the token', async () => {
+  it('bearer scope: only the Exchange, /api/me, GET /api/disk (and the dev helpers) take bearer tokens; the cookie path is unchanged', async () => {
+    const { cookie } = await login();
+    const cookies = { [COOKIE_NAME]: cookie! };
+    const bearer = { authorization: 'Bearer good-token' };
+    for (const url of ['/api/exchange/vault', '/api/me', '/api/disk']) {
+      expect((await app.inject({ method: 'GET', url, headers: bearer })).statusCode, url).toBe(200);
+    }
+    const refused: Array<{ method: 'GET' | 'POST' | 'PUT' | 'DELETE'; url: string; payload?: object }> = [
+      { method: 'GET', url: '/api/scripts/main' },
+      { method: 'PUT', url: '/api/scripts/main', payload: { source: 'x' } },
+      { method: 'GET', url: '/api/chat/subnet:lo' },
+      { method: 'POST', url: '/api/chat/block', payload: { operatorId: 'x' } },
+      { method: 'GET', url: '/api/orgs/mine' },
+      { method: 'POST', url: '/api/orgs', payload: { name: 'Bot Org', tag: 'BOTS' } },
+      { method: 'POST', url: '/api/me/rename', payload: { name: 'botname' } },
+      { method: 'POST', url: '/api/ws/ticket' },
+      { method: 'GET', url: '/api/ledger' },
+      { method: 'GET', url: '/api/tickets' },
+      { method: 'GET', url: '/api/admin/economy' },
+      { method: 'POST', url: '/api/admin/chat/mute', payload: { operatorId: 'x', minutes: 5 } },
+    ];
+    for (const r of refused) {
+      const res = await app.inject({ ...r, headers: bearer });
+      expect(res.statusCode, `${r.method} ${r.url}`).toBe(401);
+      expect(res.json(), `${r.method} ${r.url}`).toEqual({ error: 'unauthorized', message: 'authentication failed' });
+      // a dev token is refused the same way
+      expect((await app.inject({ ...r, headers: { authorization: 'Bearer dev:robo' } })).statusCode, `${r.method} ${r.url}`).toBe(401);
+    }
+    expect(await prisma!.script.count()).toBe(0);
+    expect(await prisma!.org.count()).toBe(0);
+    // the same routes still work with the session cookie
+    for (const url of ['/api/scripts/main', '/api/orgs/mine', '/api/ledger', '/api/tickets', '/api/me', '/api/disk', '/api/exchange/vault']) {
+      expect((await app.inject({ method: 'GET', url, cookies })).statusCode, url).toBe(200);
+    }
+    expect((await app.inject({ method: 'PUT', url: '/api/scripts/main', cookies, headers: csrf, payload: { source: 'x' } })).statusCode).toBe(200);
+  });
+
+  it('a bearer request never has admin rights, and never changes the operator row’s isAdmin', async () => {
     const admin = { authorization: 'Bearer admin-token' };
-    // first sight creates the operator with isAdmin from the token's groups
-    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: admin })).statusCode).toBe(200);
-    expect((await prisma!.operator.findUniqueOrThrow({ where: { sub: 'bot-admin' } })).isAdmin).toBe(true);
-    // demoted in the database: the token's group alone is not enough, and the request does not re-promote
-    await prisma!.operator.update({ where: { sub: 'bot-admin' }, data: { isAdmin: false } });
-    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: admin })).statusCode).toBe(403);
+    // first sight creates the operator with isAdmin from the token's groups (as a first web login would)…
     expect((await app.inject({ method: 'GET', url: '/api/me', headers: admin })).json().isAdmin).toBe(false);
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { sub: 'bot-admin' } })).isAdmin).toBe(true);
+    // …but the bot itself is never an admin
+    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: admin })).statusCode).toBe(401);
+    // a request does not re-promote or demote the row
+    await prisma!.operator.update({ where: { sub: 'bot-admin' }, data: { isAdmin: false } });
+    await app.inject({ method: 'GET', url: '/api/me', headers: admin });
     expect((await prisma!.operator.findUniqueOrThrow({ where: { sub: 'bot-admin' } })).isAdmin).toBe(false);
-    // admin row, token without the admin group: refused
     await ensureOperator(prisma!, 'bot-1', true);
-    expect((await app.inject({ method: 'GET', url: '/api/admin/economy', headers: { authorization: 'Bearer good-token' } })).statusCode).toBe(403);
+    await app.inject({ method: 'GET', url: '/api/me', headers: { authorization: 'Bearer good-token' } });
     expect((await prisma!.operator.findUniqueOrThrow({ where: { sub: 'bot-1' } })).isAdmin).toBe(true);
   });
 });
@@ -1448,7 +1487,7 @@ async function fakeIdp() {
   const { generateKeyPair, SignJWT, exportJWK } = await import('jose');
   const { publicKey, privateKey } = await generateKeyPair('RS256');
   const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
-  const state = { up: true, jwksUp: true, userinfoUp: true, groups: ['daemonet-users'] as unknown, calls: [] as string[], withSignal: 0 };
+  const state = { up: true, jwksUp: true, userinfoUp: true, userinfoStatus: 200, groups: ['daemonet-users'] as unknown, calls: [] as string[], withSignal: 0 };
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const u = input instanceof Request ? input.url : String(input);
     state.calls.push(u);
@@ -1456,7 +1495,10 @@ async function fakeIdp() {
     if (!state.up) throw new TypeError(`fetch failed: connect ECONNREFUSED ${LEAK}`);
     if (u === `${BOT_ISSUER}.well-known/openid-configuration`) return Response.json({ jwks_uri: `${BOT_ISSUER}jwks/`, userinfo_endpoint: 'https://authentik.test/application/o/userinfo/' });
     if (u === `${BOT_ISSUER}jwks/`) return state.jwksUp ? Response.json({ keys: [jwk] }) : new Response(LEAK, { status: 502 });
-    if (u === 'https://authentik.test/application/o/userinfo/') return state.userinfoUp ? Response.json({ groups: state.groups }) : new Response(LEAK, { status: 500 });
+    if (u === 'https://authentik.test/application/o/userinfo/') {
+      if (!state.userinfoUp) return new Response(LEAK, { status: 500 });
+      return state.userinfoStatus === 200 ? Response.json({ groups: state.groups }) : new Response(LEAK, { status: state.userinfoStatus });
+    }
     return new Response('not found', { status: 404 });
   }) as typeof fetch;
   type Jwt = InstanceType<typeof SignJWT>;
@@ -1500,6 +1542,8 @@ describe('bearer verifier', () => {
       expect((err as BearerError).unavailable, label).toBe(false);
     };
     await rejects(await idp.sign(undefined, (j) => j.setExpirationTime(now - 60)), 'expired');
+    // 30 s clock tolerance
+    expect((await verify(await idp.sign(undefined, (j) => j.setExpirationTime(now - 10)))).sub).toBe('user-9');
     await rejects(await idp.sign(undefined, (j) => j.setNotBefore(now + 300)), 'not yet valid');
     const other = await generateKeyPair('RS256');
     const base = (key: CryptoKey, exp = true) => {
@@ -1518,6 +1562,12 @@ describe('bearer verifier', () => {
     await rejects(await idp.sign({}), 'group missing from claim and userinfo');
     idp.state.groups = 'daemonet-users';
     await rejects(await idp.sign({}), 'malformed userinfo groups');
+    idp.state.groups = ['daemonet-users'];
+    // userinfo refusing the token is a refusal (401), not an outage (503)
+    for (const status of [401, 403]) {
+      idp.state.userinfoStatus = status;
+      await rejects(await idp.sign({}), `userinfo ${status}`);
+    }
   });
 
   it('IdP failures are "unavailable", discovery and JWKS are retried after a failure, and every IdP fetch has a timeout signal', async () => {
@@ -1548,6 +1598,15 @@ describe('bearer verifier', () => {
     expect(idp.state.withSignal).toBe(idp.state.calls.length);
   });
 
+  it('concurrent first tokens share one discovery and one key set', async () => {
+    const idp = await fakeIdp();
+    const verify = createBearerVerifier({ issuer: BOT_ISSUER, audiences: ['bot-client'], requiredGroup: 'daemonet-users', fetch: idp.fetch });
+    const tokens = await Promise.all([1, 2, 3, 4, 5].map(() => idp.sign()));
+    expect((await Promise.all(tokens.map((t) => verify(t)))).every((c) => c.sub === 'user-9')).toBe(true);
+    expect(idp.state.calls.filter((c) => c.endsWith('openid-configuration'))).toHaveLength(1);
+    expect(idp.state.calls.filter((c) => c.endsWith('/jwks/'))).toHaveLength(1);
+  });
+
   it('combineBearer routes dev: tokens to the dev verifier only when it exists', async () => {
     expect(combineBearer(null, null)).toBeNull();
     const devOnly = combineBearer(null, createDevBearerVerifier('daemonet-users'))!;
@@ -1561,7 +1620,7 @@ describe('bearer verifier', () => {
 });
 
 describe.skipIf(!url)('API bearer hardening', () => {
-  it('maps IdP outages to a generic 503 and recovers, keeps 401s generic, never logs tokens, and rate-limits bearer requests', async () => {
+  it('maps IdP outages to a generic 503 and recovers, keeps 401s generic, never logs tokens, and rate-limits per client IP and per operator', async () => {
     await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator", "ExchangeVault" CASCADE');
     const idp = await fakeIdp();
     const lines: string[] = [];
@@ -1571,46 +1630,64 @@ describe.skipIf(!url)('API bearer hardening', () => {
       bearer: combineBearer(createBearerVerifier({ issuer: BOT_ISSUER, audiences: ['bot-client'], requiredGroup: 'daemonet-users', fetch: idp.fetch }), null),
       logger: { ...loggerOptions('info'), stream: { write: (l: string) => void lines.push(l) } },
     });
+    // an admin route that (wrongly) opted in to bearer tokens is still refused by requireAdmin
+    app.get('/api/test/admin-bearer', { preHandler: [app.requireAuth, app.requireAdmin], config: { bearer: true } }, async () => ({ ok: true }));
     await app.ready();
-    let sent = 0;
-    const vault = (token: string) => {
-      sent++;
-      return app.inject({ method: 'GET', url: '/api/exchange/vault?token=QUERYSECRET', headers: { authorization: `Bearer ${token}` } });
-    };
+    const vault = (token: string, ip: string) =>
+      app.inject({ method: 'GET', url: '/api/exchange/vault?token=QUERYSECRET', remoteAddress: ip, headers: { authorization: `Bearer ${token}` } });
     const good = await idp.sign();
+    const other = await idp.sign(undefined, (j) => j.setSubject('user-10'));
     const expired = await idp.sign(undefined, (j) => j.setExpirationTime(Math.floor(Date.now() / 1000) - 60));
+    const A = '10.0.0.1';
 
     idp.state.up = false;
-    const down = await vault(good);
+    const down = await vault(good, A);
     expect(down.statusCode).toBe(503);
     expect(down.json()).toEqual({ error: 'unavailable', message: 'authentication temporarily unavailable' });
     expect(down.body).not.toContain(LEAK);
     idp.state.up = true;
-    const up = await vault(good);
+    const up = await vault(good, A); // operator user-9: 1
     expect(up.statusCode).toBe(200);
     expect(up.json()).toEqual({});
 
     for (const bad of [expired, 'dev:robo', 'garbage']) {
-      const r = await vault(bad);
+      const r = await vault(bad, A);
       expect(r.statusCode, bad).toBe(401);
       expect(r.json()).toEqual({ error: 'unauthorized', message: 'authentication failed' });
     }
+    const malformed = await app.inject({ method: 'GET', url: '/api/exchange/vault', remoteAddress: A, headers: { authorization: 'Basic Z2FyYmFnZQ==' } });
+    expect(malformed.statusCode).toBe(401);
 
-    // the Exchange limit (120 / minute per client IP) counts bearer requests, failed ones included
-    while (sent < 120) expect((await vault(good)).statusCode).toBe(200);
-    const limited = await vault(good);
-    expect(limited.statusCode).toBe(429);
-    expect(limited.json().error).toBe('rate_limited');
-    expect((await vault('garbage')).statusCode).toBe(429);
+    const admin = await idp.sign({ groups: ['daemonet-users', 'daemonet-admins'] }, (j) => j.setSubject('user-admin'));
+    expect((await app.inject({ method: 'GET', url: '/api/test/admin-bearer', headers: { authorization: `Bearer ${admin}` } })).statusCode).toBe(403);
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { sub: 'user-admin' } })).isAdmin).toBe(true);
+
+    // per operator: 120 / minute however many addresses it uses (each address stays under its own 120)
+    for (let i = 0; i < 60; i++) expect((await vault(good, '10.0.0.2')).statusCode).toBe(200);
+    for (let i = 0; i < 59; i++) expect((await vault(good, '10.0.0.3')).statusCode).toBe(200);
+    const perOperator = await vault(good, '10.0.0.4');
+    expect(perOperator.statusCode).toBe(429);
+    expect(perOperator.json().error).toBe('rate_limited');
+    // another operator on a busy address is unaffected
+    expect((await vault(other, '10.0.0.2')).statusCode).toBe(200);
+
+    // per client IP, before authentication: refused tokens count too, then even a good token is refused
+    const E = '10.0.0.5';
+    for (let i = 0; i < 120; i++) expect((await vault('garbage', E)).statusCode).toBe(401);
+    expect((await vault('garbage', E)).statusCode).toBe(429);
+    expect((await vault(other, E)).statusCode).toBe(429);
     await app.close();
 
     const all = lines.join('\n');
-    const logged = lines.map((l) => JSON.parse(l) as { msg?: string; reason?: string; unavailable?: boolean });
+    const logged = lines.map((l) => JSON.parse(l) as { msg?: string; level?: number; reason?: string; unavailable?: boolean });
     const failures = logged.filter((l) => l.msg === 'bearer authentication failed');
-    expect(failures.length).toBe(4);
-    expect(failures[0]).toMatchObject({ unavailable: true });
+    expect(failures[0]).toMatchObject({ unavailable: true, level: 40 });
     expect(failures[0]!.reason).toContain('identity provider unavailable');
-    expect(failures.slice(1).every((f) => typeof f.reason === 'string' && f.reason.length > 0)).toBe(true);
-    for (const secret of [good, expired, good.split('.')[2]!, expired.split('.')[2]!, 'dev:robo', 'garbage', 'QUERYSECRET']) expect(all).not.toContain(secret);
+    expect(failures.every((f) => typeof f.reason === 'string' && f.reason.length > 0)).toBe(true);
+    expect(failures.find((f) => f.reason === 'malformed Authorization header')?.level).toBe(30);
+    expect(failures.find((f) => f.reason?.startsWith('invalid token'))?.level).toBe(40);
+    for (const secret of [good, other, expired, admin, good.split('.')[2]!, expired.split('.')[2]!, 'dev:robo', 'garbage', 'Z2FyYmFnZQ==', 'QUERYSECRET']) {
+      expect(all).not.toContain(secret);
+    }
   });
 });

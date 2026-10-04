@@ -4,6 +4,7 @@ WORKDIR /repo
 
 FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json ./
+COPY packages/auth/package.json packages/auth/
 COPY packages/rules/package.json packages/rules/
 COPY packages/bus/package.json packages/bus/
 COPY packages/shared/package.json packages/shared/
@@ -15,6 +16,7 @@ COPY examples/starter-bot/package.json examples/starter-bot/
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
+COPY packages/auth packages/auth
 COPY packages/rules packages/rules
 COPY packages/bus packages/bus
 COPY packages/db packages/db
@@ -27,6 +29,9 @@ WORKDIR /repo
 ENV NODE_ENV=production
 COPY --from=build --chown=node:node /repo/node_modules ./node_modules
 COPY --from=build --chown=node:node /repo/package.json ./
+COPY --from=build --chown=node:node /repo/packages/auth/package.json packages/auth/
+COPY --from=build --chown=node:node /repo/packages/auth/dist packages/auth/dist
+COPY --from=build --chown=node:node /repo/packages/auth/node_modules packages/auth/node_modules
 COPY --from=build --chown=node:node /repo/packages/rules/package.json packages/rules/
 COPY --from=build --chown=node:node /repo/packages/rules/dist packages/rules/dist
 COPY --from=build --chown=node:node /repo/packages/rules/node_modules packages/rules/node_modules

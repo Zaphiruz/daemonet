@@ -64,7 +64,9 @@ describe('createOidcVerifier resilience', () => {
 
   it('retries discovery after a failure instead of caching it', async () => {
     let calls = 0;
-    const fetchImpl = (async () => {
+    // Counts discovery requests only (the shared verifier fetches the JWKS through the same fetch).
+    const fetchImpl = (async (url: string | URL) => {
+      if (!String(url).includes('openid-configuration')) throw new TypeError('jwks unreachable');
       calls += 1;
       if (calls === 1) throw new TypeError('network down');
       return discoveryDoc();
@@ -82,6 +84,12 @@ describe('createOidcVerifier resilience', () => {
     await expect(v500(await token({ sub: 'u2' }))).rejects.toThrow(/identity provider unavailable/);
     const vText = make((async (url: string | URL) => (String(url).includes('openid-configuration') ? discoveryDoc() : new Response('<html>', { status: 200 }))) as typeof fetch);
     await expect(vText(await token({ sub: 'u2' }))).rejects.toBeInstanceOf(AuthError);
+  });
+
+  it('requires exp (shared @daemonet/auth rule) and allows 30 s of clock skew', async () => {
+    const noExp = await new SignJWT({ sub: 'u1', groups: [GROUP] }).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(ISSUER).setAudience(CLIENT).sign(privateKey);
+    await expect(verifier(noExp)).rejects.toThrow(/exp/);
+    expect((await verifier(await token({ sub: 'u1', groups: [GROUP] }, { exp: '-10s' }))).sub).toBe('u1');
   });
 
   it('rejects a token with no sub', async () => {
