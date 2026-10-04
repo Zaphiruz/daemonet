@@ -10,6 +10,7 @@ import type { OidcClient } from './auth/oidc.js';
 import { operatorForSub, registerAuthRoutes } from './auth/routes.js';
 import { createSessionStore } from './auth/session.js';
 import { AppError } from './errors.js';
+import { registerArenaRoutes } from './routes/arena.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerEconomyRoutes } from './routes/economy.js';
 import { registerExchangeRoutes } from './routes/exchange.js';
@@ -82,5 +83,6 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
   registerOrgRoutes(app, o.prisma, o.bus);
   registerIncidentRoutes(app, o.prisma, o.bus);
   registerExchangeRoutes(app, o.prisma, o.bus);
+  registerArenaRoutes(app, o.prisma);
   return app;
 }

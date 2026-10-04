@@ -1,6 +1,7 @@
 import { consoleBusLogger, createBus, type BusLogger } from '@daemonet/bus';
 import { createPrisma } from '@daemonet/db';
 import { buildApp } from './app.js';
+import { closeSeasons } from './arena/seasons.js';
 import { combineBearer, createBearerVerifier, createDevBearerVerifier } from './auth/bearer.js';
 import { createOidcClient } from './auth/oidc.js';
 import { loadConfig } from './config.js';
@@ -75,6 +76,24 @@ const expire = () => {
 expire();
 const expireTimer = setInterval(expire, 5 * 60_000);
 
+// Arena seasons end with the UTC month and close an hour later (payouts, soft reset). The sweep is idempotent and safe
+// to run in several processes, so a frequent check is fine: at boot, then every five minutes; one run at a time.
+let closingSeasons = false;
+const seasons = () => {
+  if (closingSeasons) return;
+  closingSeasons = true;
+  closeSeasons(prisma, bus, new Date(), app.log)
+    .then((closed) => {
+      if (closed > 0) app.log.info({ closed }, 'closed arena seasons');
+    })
+    .catch((err: unknown) => app.log.error({ err: { name: (err as Error)?.name, code: (err as { code?: unknown })?.code } }, 'arena season close failed'))
+    .finally(() => {
+      closingSeasons = false;
+    });
+};
+seasons();
+const seasonTimer = setInterval(seasons, 5 * 60_000);
+
 let stopping = false;
 async function shutdown(signal: string) {
   if (stopping) return;
@@ -82,6 +101,7 @@ async function shutdown(signal: string) {
   app.log.info({ signal }, 'shutting down');
   clearInterval(pruneTimer);
   clearInterval(expireTimer);
+  clearInterval(seasonTimer);
   await app.close();
   await bus.close();
   await prisma.$disconnect();
