@@ -8,6 +8,8 @@ import { scanLevel } from '../src/panels/CodexPanel.tsx';
 
 const ledger = vi.hoisted(() => ({ data: undefined as unknown, skip: [] as unknown[], refetch: vi.fn() }));
 const tickets = vi.hoisted(() => ({ board: undefined as unknown, history: undefined as unknown, skip: [] as unknown[], refetch: vi.fn(() => Promise.resolve()) }));
+const vault = vi.hoisted(() => ({ data: undefined as unknown, skip: [] as unknown[], refetch: vi.fn() }));
+const diskRows = vi.hoisted(() => ({ data: [] as unknown[] }));
 vi.mock('../src/api.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/api.ts')>()),
   useLedgerQuery: (_a: unknown, opts: { skip?: boolean }) => {
@@ -19,10 +21,16 @@ vi.mock('../src/api.ts', async (importOriginal) => ({
     return { data: opts?.skip ? undefined : tickets.board, refetch: tickets.refetch };
   },
   useTicketHistoryQuery: (_a: unknown, opts: { skip?: boolean }) => ({ data: opts?.skip ? undefined : tickets.history, refetch: vi.fn() }),
-  useDiskQuery: () => ({ data: [], refetch: vi.fn() }),
+  useVaultQuery: (_a: unknown, opts: { skip?: boolean }) => {
+    vault.skip.push(opts?.skip);
+    return { data: opts?.skip ? undefined : vault.data, refetch: vault.refetch };
+  },
+  useDiskQuery: () => ({ data: diskRows.data, refetch: vi.fn() }),
 }));
 vi.mock('../src/render/draw.ts', () => ({ spriteCanvas: () => document.createElement('canvas') }));
 
+import { api } from '../src/api.ts';
+import { store } from '../src/store.ts';
 import { DiskPanel } from '../src/panels/DiskPanel.tsx';
 import { HostPanel } from '../src/panels/HostPanel.tsx';
 import { RamPanel } from '../src/panels/RamPanel.tsx';
@@ -30,6 +38,9 @@ import { RamPanel } from '../src/panels/RamPanel.tsx';
 beforeEach(() => {
   ledger.data = undefined;
   ledger.skip = [];
+  vault.data = undefined;
+  vault.skip = [];
+  diskRows.data = [];
   tickets.board = undefined;
   tickets.history = undefined;
   tickets.skip = [];
@@ -84,17 +95,19 @@ function fakeClient(self: Record<string, unknown> = {}, over: { role?: 'controll
   const buy: Mock = vi.fn(() => Promise.resolve({ ok: true }));
   const craft: Mock = vi.fn(() => Promise.resolve({ ok: true }));
   const decompile: Mock = vi.fn(() => Promise.resolve({ ok: true }));
+  const deposit: Mock = vi.fn(() => Promise.resolve({ ok: true }));
+  const withdraw: Mock = vi.fn(() => Promise.resolve({ ok: true }));
   const client = {
     subnet: 'lo',
     role: over.role ?? 'controller',
     self: { x: over.x ?? host.x, y: over.y ?? host.y, bits: 1000, diskCapacity: 256, tickets: [], ticketsToday: 0, research: {}, ram: [], running: [], capture: null, inventory: {}, ...self },
-    operator: { buy, craft, decompile, hold: vi.fn(), unhold: vi.fn(), evolve: vi.fn(), run: vi.fn(), recall: vi.fn(), store: vi.fn(), useRestore: vi.fn(), load: vi.fn(() => Promise.resolve({})) },
+    operator: { buy, craft, decompile, deposit, withdraw, hold: vi.fn(), unhold: vi.fn(), evolve: vi.fn(), run: vi.fn(), recall: vi.fn(), store: vi.fn(), useRestore: vi.fn(), load: vi.fn(() => Promise.resolve({})) },
   };
-  return { client: client as unknown as GameClient, buy, craft, decompile };
+  return { client: client as unknown as GameClient, buy, craft, decompile, deposit, withdraw };
 }
 
 /** The Host panel opens on tickets; the shop and craft tests start on their own view. */
-function renderHost(client: GameClient, view: 'shop' | 'craft' | 'ledger' = 'shop') {
+function renderHost(client: GameClient, view: 'shop' | 'craft' | 'ledger' | 'vault' = 'shop') {
   const r = render(<HostPanel client={client} />);
   fireEvent.click(screen.getByTestId(`host-${view}`));
   return r;
@@ -253,6 +266,67 @@ describe('HostPanel limits and feedback', () => {
   });
 });
 
+describe('HostPanel vault', () => {
+  it('queries only on the vault view, lists tradable inventory and the vault, and deposits / withdraws qty', async () => {
+    vault.data = { 'frag:signal': 3 };
+    const { client, deposit, withdraw } = fakeClient({ inventory: { 'frag:signal': 2, sniff: 1, 'not-an-item': 5, 'frag:null': 0 } });
+    render(<HostPanel client={client} />);
+    expect(vault.skip.every((s) => s === true)).toBe(true);
+    fireEvent.click(screen.getByTestId('host-vault'));
+    expect(vault.skip.at(-1)).toBe(false);
+    expect(screen.getByTestId('vault').textContent).toContain('1 at a time');
+    expect(screen.queryByTestId('deposit-not-an-item')).toBeNull(); // not tradable
+    expect(screen.queryByTestId('deposit-frag:null')).toBeNull(); // none held
+    expect(screen.getByTestId('vault-frag:signal').textContent).toContain('×3');
+    fireEvent.click(btn('deposit-frag:signal'));
+    expect(deposit).toHaveBeenCalledWith('frag:signal', 1);
+    await flush();
+    fireEvent.click(btn('withdraw-frag:signal'));
+    expect(withdraw).toHaveBeenCalledWith('frag:signal', 1);
+    await flush();
+  });
+
+  it('invalidates the Vault tag after an ack, so the list refreshes', async () => {
+    const dispatch = vi.spyOn(store, 'dispatch');
+    const { client } = fakeClient({ inventory: { sniff: 2 } });
+    renderHost(client, 'vault');
+    fireEvent.click(btn('deposit-sniff'));
+    await flush();
+    expect(dispatch).toHaveBeenCalledWith(api.util.invalidateTags(['Vault']));
+  });
+
+  it('disables with a reason: short of qty, away from the host, spectators, in flight; shows empty and errors inline', async () => {
+    vault.data = {};
+    const { client, deposit } = fakeClient({ inventory: { sniff: 1 } });
+    renderHost(client, 'vault');
+    expect(screen.getByTestId('vault').textContent).toContain('empty');
+    fireEvent.change(screen.getByTestId('qty'), { target: { value: '2' } });
+    expect(btn('deposit-sniff').disabled).toBe(true);
+    expect(btn('deposit-sniff').title).toContain('not enough');
+    fireEvent.change(screen.getByTestId('qty'), { target: { value: '1' } });
+    let settle!: (e?: Error) => void;
+    deposit.mockImplementation(() => new Promise((res, rej) => (settle = (e) => (e ? rej(e) : res({ ok: true })))));
+    fireEvent.click(btn('deposit-sniff'));
+    expect(btn('deposit-sniff').disabled).toBe(true);
+    expect(btn('deposit-sniff').title).toContain('previous');
+    fireEvent.click(btn('deposit-sniff'));
+    expect(deposit).toHaveBeenCalledTimes(1);
+    settle(new Error('host is busy'));
+    await flush();
+    expect(screen.getByTestId('host-error').textContent).toContain('host is busy');
+    cleanup();
+    const away = fakeClient({ inventory: { sniff: 1 } }, { x: host.x + 20 });
+    renderHost(away.client, 'vault');
+    expect(btn('deposit-sniff').disabled).toBe(true);
+    expect(btn('deposit-sniff').title).toContain('host');
+    cleanup();
+    vault.data = { sniff: 1 };
+    renderHost(fakeClient({}, { role: 'spectator' }).client, 'vault');
+    expect(btn('withdraw-sniff').disabled).toBe(true);
+    expect(btn('withdraw-sniff').title).toContain('spectators');
+  });
+});
+
 describe('craftCheck aggregation', () => {
   it('sums an any slot that resolves to an already-named type', () => {
     const r = { id: 'x', output: { item: 'tap' as const }, bits: 1, fragments: { packet: 2, any: 3 } } as unknown as Parameters<typeof craftCheck>[0];
@@ -341,6 +415,22 @@ describe('DiskPanel capacity', () => {
   it('shows the operator disk capacity, not a constant', () => {
     render(<DiskPanel client={fakeClient({ diskCapacity: 288 }).client} />);
     expect(screen.getByText(/Disk 0\/288/)).toBeTruthy();
+  });
+});
+
+describe('DiskPanel locks', () => {
+  const row = (id: string, lockedBy: string | null) => ({
+    id, species: 'echolet', level: 5, clean: false, signature: 0, slot: 1, hp: 10, moves: ['ping'], ivs: [1], heldItem: null, patched: false, moveTypeUses: [], crashes: 0, history: [], lockedBy,
+    log: { originalOperatorId: 'x', capturedAt: '2026-10-01T00:00:00Z', subnet: 'lo', spawnIndex: null, tool: 'sniff' },
+  });
+  it('shows on the Exchange for a locked daemon and disables its load button with a reason', () => {
+    diskRows.data = [row('a', 'order1'), row('b', null)];
+    render(<DiskPanel client={fakeClient().client} />);
+    expect(screen.getAllByText('on the Exchange')).toHaveLength(1);
+    const loads = screen.getAllByRole('button', { name: 'load into RAM' }) as HTMLButtonElement[];
+    expect(loads[0]!.disabled).toBe(true);
+    expect(loads[0]!.title).toContain('Exchange');
+    expect(loads[1]!.disabled).toBe(false);
   });
 });
 

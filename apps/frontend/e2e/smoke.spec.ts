@@ -131,6 +131,14 @@ test('with dev bits: buy a tap at the host, decompile a seeded daemon into fragm
   await expect(page.getByTestId('log')).toContainText('decompiled tracerat');
   await expect(page.getByTestId('log')).toContainText('-16 bits (craft)');
 
+  // vault: deposit one of the fragments, see it in the vault, take it back
+  await page.getByTestId('tab-host').click();
+  await page.getByTestId('host-vault').click();
+  await page.getByTestId('deposit-frag:signal').click();
+  await expect(page.getByTestId('vault-frag:signal')).toContainText('×1', { timeout: 10_000 });
+  await page.getByTestId('withdraw-frag:signal').click();
+  await expect(page.getByTestId('vault-frag:signal')).toHaveCount(0, { timeout: 10_000 });
+
   // tickets: accept the first (always a tool-free clear ticket on lo), see it open, abandon it
   await page.getByTestId('tab-host').click();
   await page.getByTestId('host-tickets').click();

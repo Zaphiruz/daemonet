@@ -27,6 +27,7 @@ export function DiskPanel({ client }: { client: GameClient }) {
                 {d.clean && <span className="ml-1 text-white">clean</span>}
                 {d.signature > 0 && <span className="ml-1 text-fuchsia-300">T{d.signature}</span>}
                 {d.patched && <span className="ml-1 text-amber-300">patched</span>}
+                {d.lockedBy && <span className="ml-1 text-sky-300">on the Exchange</span>}
                 {d.heldItem && <span className="mono ml-1 text-xs text-neutral-400">holds {d.heldItem}</span>}
               </div>
               <div className="mono text-xs text-neutral-500">
@@ -34,7 +35,8 @@ export function DiskPanel({ client }: { client: GameClient }) {
               </div>
               <button
                 className="mt-1 text-xs text-neutral-300 hover:text-white disabled:opacity-40"
-                disabled={!manual || !atHost || me.ram.length >= RAM_SLOTS}
+                disabled={!manual || !atHost || me.ram.length >= RAM_SLOTS || d.lockedBy !== null}
+                title={d.lockedBy ? 'locked on the Exchange: cancel the order first' : undefined}
                 onClick={() => run(client.operator.load(d.id).then(() => disk.refetch()), 'load')}
               >
                 load into RAM

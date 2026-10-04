@@ -1,15 +1,16 @@
-import { BUY_MAX_QTY, CRAFT_MAX_QTY, DISK_MAX, DISK_STEP, OPEN_TICKETS_MAX, RECIPES, SHOP, TICKETS_PER_DAY, diskExpansionPrice, getItem, type TypeId } from '@daemonet/rules';
+import { BUY_MAX_QTY, CRAFT_MAX_QTY, DISK_MAX, DISK_STEP, OPEN_TICKETS_MAX, RECIPES, SHOP, TICKETS_PER_DAY, diskExpansionPrice, getItem, isTradable, type TypeId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useRef, useState } from 'react';
-import { useBoardQuery, useLedgerQuery, useTicketHistoryQuery } from '../api.ts';
+import { api, useBoardQuery, useLedgerQuery, useTicketHistoryQuery, useVaultQuery } from '../api.ts';
 import { run } from '../components/WorldCanvas.tsx';
 import { craftCheck, formatBits, fragmentTypes } from '../game/economy.ts';
+import { store } from '../store.ts';
 import { nearHost } from './RamPanel.tsx';
 
-const VIEWS = ['tickets', 'shop', 'craft', 'ledger'] as const;
+const VIEWS = ['tickets', 'shop', 'craft', 'vault', 'ledger'] as const;
 type View = (typeof VIEWS)[number];
 
-/** Everything that happens at a host node: the NPC shop, Disk expansion, crafting, and the bits ledger. */
+/** Everything that happens at a host node: the NPC shop, Disk expansion, crafting, the Exchange vault, tickets and the bits ledger. */
 export function HostPanel({ client }: { client: GameClient }) {
   const me = client.self;
   const manual = client.role === 'controller';
@@ -22,6 +23,7 @@ export function HostPanel({ client }: { client: GameClient }) {
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const ledger = useLedgerQuery(undefined, { skip: view !== 'ledger', refetchOnMountOrArgChange: true });
+  const vault = useVaultQuery(undefined, { skip: view !== 'vault', refetchOnMountOrArgChange: true });
   const board = useBoardQuery(client.subnet, { skip: view !== 'tickets', refetchOnMountOrArgChange: true });
   const history = useTicketHistoryQuery(undefined, { skip: view !== 'tickets', refetchOnMountOrArgChange: true });
   const diskPrice = diskExpansionPrice(me.diskCapacity);
@@ -48,6 +50,9 @@ export function HostPanel({ client }: { client: GameClient }) {
     };
     void p.then(done, fail);
   };
+
+  // the vault list refreshes after the sim acks: invalidating the tag refetches the mounted query (and drops a stale cache)
+  const move = (dir: 'deposit' | 'withdraw', item: string) => submit(() => client.operator[dir](item, qty).then(() => store.dispatch(api.util.invalidateTags(['Vault']))), dir);
 
   return (
     <div className="space-y-3 p-3 text-sm">
@@ -227,6 +232,53 @@ export function HostPanel({ client }: { client: GameClient }) {
               </div>
             );
           })}
+        </section>
+      )}
+
+      {view === 'vault' && (
+        <section className="space-y-2" data-testid="vault">
+          <p className="text-xs text-neutral-500">The Exchange trades what is in your vault. Deposits and withdrawals happen here at the host ({qty} at a time).</p>
+          <div>
+            <h3 className="mb-1 text-xs uppercase tracking-wide text-neutral-500">inventory</h3>
+            {Object.entries(me.inventory)
+              .filter(([id, n]) => n > 0 && isTradable(id))
+              .map(([id, n]) => (
+                <div key={id} className="mono flex items-center justify-between rounded border border-neutral-800 px-2 py-0.5 text-xs">
+                  <span>
+                    {id} ×{n}
+                  </span>
+                  <button
+                    className="rounded bg-sky-800 px-2 hover:bg-sky-700 disabled:opacity-40"
+                    disabled={!can || n < qty}
+                    title={why([n < qty, 'not enough in your inventory'])}
+                    onClick={() => move('deposit', id)}
+                    data-testid={`deposit-${id}`}
+                  >
+                    deposit
+                  </button>
+                </div>
+              ))}
+          </div>
+          <div>
+            <h3 className="mb-1 text-xs uppercase tracking-wide text-neutral-500">vault</h3>
+            {Object.keys(vault.data ?? {}).length === 0 && <p className="text-xs text-neutral-500">empty</p>}
+            {Object.entries(vault.data ?? {}).map(([id, n]) => (
+              <div key={id} className="mono flex items-center justify-between rounded border border-neutral-800 px-2 py-0.5 text-xs" data-testid={`vault-${id}`}>
+                <span>
+                  {id} ×{n}
+                </span>
+                <button
+                  className="rounded bg-neutral-800 px-2 hover:bg-neutral-700 disabled:opacity-40"
+                  disabled={!can || n < qty}
+                  title={why([n < qty, 'not enough in your vault'])}
+                  onClick={() => move('withdraw', id)}
+                  data-testid={`withdraw-${id}`}
+                >
+                  withdraw
+                </button>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 

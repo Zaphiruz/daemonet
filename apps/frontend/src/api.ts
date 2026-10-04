@@ -37,6 +37,8 @@ export interface DiskDaemon {
   crashes: number;
   history: Array<{ at: string; kind: string; detail: string }>;
   log: { originalOperatorId: string; capturedAt: string; subnet: string; tool: string; spawnIndex: number | null };
+  /** Set while the daemon is locked on the Exchange (it cannot be loaded). */
+  lockedBy: string | null;
 }
 export type OrgRank = 'OWNER' | 'OFFICER' | 'MEMBER';
 export interface OrgMemberRow {
@@ -241,12 +243,13 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
     disk: b.query<DiskDaemon[], void>({ query: () => '/disk', providesTags: ['Disk'] }),
     ledger: b.query<LedgerEntry[], void>({ query: () => '/ledger' }),
+    vault: b.query<Record<string, number>, void>({ query: () => '/exchange/vault', providesTags: ['Vault'] }),
     board: b.query<{ day: string; subnet: string; tickets: BoardTicket[]; acceptedToday: number }, string>({ query: (subnet) => `/tickets/board?subnet=${encodeURIComponent(subnet)}`, providesTags: ['Tickets'] }),
     ticketHistory: b.query<TicketHistory[], void>({ query: () => '/tickets', providesTags: ['Tickets'] }),
     chatHistory: b.query<ChatHistoryLine[], ChatHistoryArgs>({ query: chatHistoryUrl }),
@@ -319,7 +322,7 @@ export const {
   useRenameMutation,
   useIncidentsQuery,
   useStartIncidentMutation,
-  useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
+  useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useVaultQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */
 export class TicketError extends Error {
