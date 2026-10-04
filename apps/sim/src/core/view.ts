@@ -116,6 +116,7 @@ export function toSelf(world: World, op: Operator): OperatorSelf {
         title: boardTicket(t.subnet, t.day, t.index)?.title ?? t.kind,
       })),
     ticketsToday: op.ticketsToday,
+    ticketsDay: op.ticketsDay,
     research: { ...op.research },
     ram: op.ram.map((id) => toRamDaemon(world, world.daemons.get(id)!)).sort((a, b) => a.slot - b.slot),
     running: [...op.running],

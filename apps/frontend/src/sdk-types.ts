@@ -21,7 +21,7 @@ declare module '@daemonet/sdk' {
   export interface OpenTicket { id: string; day: string; subnet: string; index: number; kind: 'clear' | 'capture' | 'deliver' | 'evolve'; params: unknown; target: number; reward: number; progress: number; title: string }
   export interface OperatorSelf extends Positioned {
     id: string; name: string | null; starterClaimed: boolean; bits: number; diskCapacity: number; ram: RamDaemon[]; running: string[];
-    tickets: OpenTicket[]; ticketsToday: number; research: Record<string, number>;
+    tickets: OpenTicket[]; ticketsToday: number; ticketsDay?: string; research: Record<string, number>;
     inventory: Record<string, number>; swapReadyTick: number; capture: { captureId: string; targetId: string; deadlineTick: number } | null;
   }
   export class Query<T extends Positioned> {
@@ -62,7 +62,7 @@ declare module '@daemonet/sdk' {
     on(name: 'bits', handler: (ev: { delta: number; reason: string; balance: number }) => void): () => void;
     on(name: 'decompiled', handler: (ev: { daemon: string; species: string; fragments: Record<string, number> }) => void): () => void;
     on(name: 'ticketProgress', handler: (ev: { ticketId: string; progress: number; target: number }) => void): () => void;
-    on(name: 'ticketDone', handler: (ev: { ticketId: string; reward: number }) => void): () => void;
+    on(name: 'ticketDone', handler: (ev: { ticketId: string; reward: number; unpaid?: boolean }) => void): () => void;
     on(name: string, handler: (value: any) => void): () => void;
   }
 }

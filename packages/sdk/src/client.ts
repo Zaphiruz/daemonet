@@ -121,7 +121,7 @@ export class WorldView {
   /** Today's helpdesk board at this subnet's host (deterministic content; accept with operator.acceptTicket). */
   get tickets(): TicketDef[] {
     try {
-      return ticketBoard(this.client.subnet, dayKey(new Date().toISOString()));
+      return ticketBoard(this.client.subnet, this.client.serverDay);
     } catch {
       return [];
     }
@@ -258,8 +258,8 @@ export class OperatorApi {
   decompile(daemonId: string, confirm = false) {
     return this.client.command({ cmd: 'decompile', actor: 'self', args: { daemonId, confirm } });
   }
-  /** Accept a ticket from today's board at this host (`index` 0-7). */
-  acceptTicket(index: number, subnet = this.client.subnet, day = dayKey(new Date().toISOString())) {
+  /** Accept a ticket from today's board at this host (`index` 0-7); `day` defaults to the server's day. */
+  acceptTicket(index: number, subnet = this.client.subnet, day = this.client.serverDay) {
     return this.client.command({ cmd: 'acceptTicket', actor: 'self', args: { day, subnet, index } });
   }
   abandonTicket(ticketId: string) {
@@ -315,6 +315,13 @@ export class GameClient {
   subnet = '';
   self!: OperatorSelf;
   readonly entities = new Map<string, Entity>();
+  /**
+   * The server's UTC day (YYYY-MM-DD, the day of today's ticket boards): taken from the latest snapshot / self, so a
+   * skewed local clock cannot pick the wrong board. Falls back to the local clock only before the first snapshot.
+   */
+  get serverDay(): string {
+    return this.self?.ticketsDay ?? dayKey(new Date().toISOString());
+  }
   readonly world = new WorldView(this);
   readonly operator = new OperatorApi(this);
   readonly daemons = new DaemonsApi(this);

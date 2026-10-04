@@ -408,8 +408,12 @@ export class PrismaStore implements Store {
           await tx.daemon.updateMany({ where: { id: d.id, operatorId: rec.id, location: 'RAM', species: d.species }, data: { ...checkpointFields(d, rec.inventoryInFlight), history: json(d.history) } });
         }
         for (const t of rec.tickets) {
-          // Only an OPEN row's progress, and never lowered (a completion already set it to the target).
-          await tx.ticket.updateMany({ where: { id: t.id, operatorId: rec.id, status: 'OPEN', progress: { lt: t.progress } }, data: { progress: t.progress } });
+          // Only an OPEN row's progress, never lowered (a completion already set it to the target) and never past the
+          // target (MemoryStore parity).
+          const row = await tx.ticket.findFirst({ where: { id: t.id, operatorId: rec.id, status: 'OPEN' }, select: { target: true } });
+          if (!row) continue;
+          const progress = Math.min(row.target, t.progress);
+          await tx.ticket.updateMany({ where: { id: t.id, operatorId: rec.id, status: 'OPEN', progress: { lt: progress } }, data: { progress } });
         }
       }
     });

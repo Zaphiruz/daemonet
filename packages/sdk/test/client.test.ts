@@ -1,4 +1,6 @@
+import { ticketBoard } from '@daemonet/rules';
 import { describe, expect, it } from 'vitest';
+import { GameClient } from '../src/client.js';
 import { connect, type TokenSource } from '../src/index.js';
 
 class FakeWs {
@@ -138,5 +140,29 @@ describe('host-page hooks', () => {
     client.sendFrame(raw);
     expect(last().sent.some((s) => JSON.parse(s).d?.reqId === 'r1')).toBe(true);
     client.close();
+  });
+});
+
+describe('serverDay', () => {
+  it('follows the server day from the snapshot and deltas, not the local clock', async () => {
+    FakeWs.instances = [];
+    const p = connect({ url: 'ws://x', auth, WebSocket: Ws });
+    await tick();
+    const ws = last();
+    ws.serverSend({ t: 'authOk', seq: 1, d: { operatorId: 'op1', role: 'controller', resumeToken: 'r', tick: 1 } });
+    ws.serverSend({ t: 'snapshot', seq: 2, d: { tick: 1, subnet: 'lo', self: { ...self, ticketsDay: '2031-01-02' }, entities: [] } });
+    const client = await p;
+    expect(client.serverDay).toBe('2031-01-02');
+    expect(client.world.tickets).toEqual(ticketBoard('lo', '2031-01-02'));
+    void client.operator.acceptTicket(0).catch(() => {});
+    expect(JSON.parse(ws.sent.at(-1)!).d.args).toEqual({ day: '2031-01-02', subnet: 'lo', index: 0 });
+    ws.serverSend({ t: 'delta', seq: 3, d: { tick: 2, upserts: [], removes: [], events: [], self: { ...self, ticketsDay: '2031-01-03' } } });
+    expect(client.serverDay).toBe('2031-01-03');
+    client.close();
+  });
+
+  it('falls back to the local clock before any snapshot', () => {
+    const client = new GameClient({ url: 'ws://x', auth, WebSocket: Ws as never });
+    expect(client.serverDay).toBe(new Date().toISOString().slice(0, 10));
   });
 });

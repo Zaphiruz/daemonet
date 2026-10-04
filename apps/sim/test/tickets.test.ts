@@ -185,6 +185,7 @@ describe('progress and payout', () => {
     expect(away.progress).toBe(0);
     // the store answers definitively that the row is no longer open (already paid elsewhere): never paid again, never retried
     world.completeIntent(r.intents[0]!.id, { ok: false, reason: 'no open ticket' });
+    expect(step(world).events.map((e) => e.event)).toContainEqual({ e: 'ticketDone', ticketId: t.id, reward: 0, unpaid: true });
     expect(op.tickets.map((x) => x.id)).toEqual([away.id]);
     expect(op.bits).toBe(0);
     expect(step(world).intents).toEqual([]);
@@ -384,6 +385,8 @@ describe('ticket exploits', () => {
     expect(world.checkpoint('alice').tickets).toEqual([]);
     expect(toSelf(world, op).tickets).toEqual([]);
     expect(toSelf(world, op).ticketsToday).toBe(1);
+    expect(toSelf(world, op).ticketsDay).toBe(op.ticketsDay);
+    expect(op.ticketsDay).toBe(DAY);
   });
 });
 
@@ -522,6 +525,33 @@ describe('tickets in the runtime', () => {
     const events = conn.of('delta').flatMap((m) => m.d.events);
     expect(events.filter((e) => e.e === 'ticketDone')).toEqual([{ e: 'ticketDone', ticketId: 'tk-1', reward: 128 }]);
     expect(events).toContainEqual({ e: 'bits', delta: 128, reason: 'ticket', balance: 128 });
+    await g.shutdown();
+  });
+
+  it('a refused payout is logged at warn and the operator is told the ticket closed unpaid', async () => {
+    const store = new MemoryStore();
+    const apply = store.applyIntent.bind(store);
+    store.applyIntent = async (intent, ctx) => (intent.kind === 'completeTicket' ? { ok: false, reason: 'no open ticket' } : apply(intent, ctx));
+    const warnings: Array<{ obj: Record<string, unknown>; msg: string }> = [];
+    const log = { info() {}, error() {}, warn: (obj: Record<string, unknown>, msg: string) => void warnings.push({ obj, msg }) };
+    const { a, game: g } = game(store, { log });
+    const id = await player(store, 'rex');
+    store.tickets.set('tk-r', row(id, 'tk-r'));
+    const conn = await join(g, 'rex');
+    for (let i = 0; i < 4; i++) {
+      tick(g);
+      await settle();
+    }
+    await g.flush();
+    tick(g);
+    const refusal = warnings.find((w) => w.obj.reason === 'no open ticket');
+    expect(refusal).toBeDefined();
+    expect(refusal!.obj).toMatchObject({ operator: id, ticket: `${DAY}:testb:0`, reason: 'no open ticket' });
+    expect(refusal!.obj.intent).toEqual(expect.any(String));
+    const events = conn.of('delta').flatMap((m) => m.d.events);
+    expect(events).toContainEqual({ e: 'ticketDone', ticketId: 'tk-r', reward: 0, unpaid: true });
+    expect(a.operators.get(id)!.bits).toBe(0);
+    expect(a.operators.get(id)!.tickets).toEqual([]);
     await g.shutdown();
   });
 

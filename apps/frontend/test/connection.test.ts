@@ -351,6 +351,9 @@ describe('ticket events', () => {
     c.emit('ticketDone', { ticketId: 't1', reward: 64 });
     expect(t.texts()).toContain('event:ticket t1 done: +64 bits');
     expect(t.invalidateTickets).toHaveBeenCalledTimes(1);
+    c.emit('ticketDone', { ticketId: 't2', reward: 0, unpaid: true });
+    expect(t.texts()).toContain('event:ticket t2 closed without payout');
+    expect(t.invalidateTickets).toHaveBeenCalledTimes(2);
   });
 });
 

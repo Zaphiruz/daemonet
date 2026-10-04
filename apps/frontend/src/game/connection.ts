@@ -172,7 +172,7 @@ export function createConnection(deps: ConnectionDeps) {
     on('decompiled', (e) => deps.log.push('event', `decompiled ${e.species} into ${Object.entries(e.fragments).map(([k, v]) => `${v} ${k}`).join(', ')}`));
     on('ticketProgress', (e) => deps.log.push('event', `ticket ${e.ticketId}: ${e.progress}/${e.target}`));
     on('ticketDone', (e) => {
-      deps.log.push('event', `ticket ${e.ticketId} done: +${e.reward} bits`);
+      deps.log.push('event', e.unpaid ? `ticket ${e.ticketId} closed without payout` : `ticket ${e.ticketId} done: +${e.reward} bits`);
       deps.invalidateTickets?.();
     });
     // a snapshot after the first one (travel) swaps the whole world: re-render without waiting for the next tick

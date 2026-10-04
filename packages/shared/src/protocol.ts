@@ -1,4 +1,4 @@
-import { BUY_MAX_QTY, CRAFT_MAX_QTY, STATUS_IDS, TYPES } from '@daemonet/rules';
+import { BOARD_SIZE, BUY_MAX_QTY, CRAFT_MAX_QTY, STATUS_IDS, TYPES } from '@daemonet/rules';
 import { z } from 'zod';
 
 /** Upstream limits (UTF-8 bytes). submitCapture gets the larger limit. */
@@ -44,7 +44,7 @@ export const Command = z.discriminatedUnion('cmd', [
     args: z.object({ recipeId: Id, qty: z.number().int().min(1).max(CRAFT_MAX_QTY).default(1), using: TypeIdSchema.optional() }),
   }),
   z.object({ cmd: z.literal('decompile'), actor: Self, args: z.object({ daemonId: Id, confirm: z.boolean().default(false) }) }),
-  z.object({ cmd: z.literal('acceptTicket'), actor: Self, args: z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), subnet: Id, index: z.number().int().min(0).max(7) }) }),
+  z.object({ cmd: z.literal('acceptTicket'), actor: Self, args: z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), subnet: Id, index: z.number().int().min(0).max(BOARD_SIZE - 1) }) }),
   z.object({ cmd: z.literal('abandonTicket'), actor: Self, args: z.object({ ticketId: Id }) }),
   z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
@@ -196,6 +196,8 @@ export const OperatorSelf = z.object({
   ),
   /** Tickets accepted today (UTC), of TICKETS_PER_DAY. */
   ticketsToday: z.number().int(),
+  /** The server's UTC day (YYYY-MM-DD) `ticketsToday` counts; the day of today's boards. */
+  ticketsDay: z.string().optional(),
   /** Codex research points per bestiary line (keys are line numbers). */
   research: z.record(z.string(), z.number().int()),
   ram: z.array(RamDaemon).max(8),
@@ -244,7 +246,8 @@ export const GameEvent = z.discriminatedUnion('e', [
   z.object({ e: z.literal('bits'), delta: z.number().int(), reason: z.string(), balance: z.number().int() }),
   z.object({ e: z.literal('decompiled'), daemon: Id, species: z.string(), fragments: z.record(z.string(), z.number().int()) }),
   z.object({ e: z.literal('ticketProgress'), ticketId: Id, progress: z.number().int(), target: z.number().int() }),
-  z.object({ e: z.literal('ticketDone'), ticketId: Id, reward: z.number().int() }),
+  /** `unpaid`: the store refused the payout (the row was no longer open); the ticket is closed with reward 0. */
+  z.object({ e: z.literal('ticketDone'), ticketId: Id, reward: z.number().int(), unpaid: z.boolean().optional() }),
 ]);
 export type GameEvent = z.infer<typeof GameEvent>;
 

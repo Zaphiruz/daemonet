@@ -496,7 +496,7 @@ export class MemoryStore implements Store {
         t.progress = t.target;
         t.completedAt = this.now();
         op.bits += intent.reward;
-        this.ledger.push({ operatorId: op.id, delta: intent.reward, reason: 'ticket', ref: intent.ticketId, at: new Date().toISOString() });
+        this.ledger.push({ operatorId: op.id, delta: intent.reward, reason: 'ticket', ref: intent.ticketId, at: this.now() });
         break;
       }
     }

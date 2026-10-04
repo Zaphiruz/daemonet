@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import { ticketKey } from '@daemonet/rules';
 import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
 import { INTEREST_RADIUS, distance, entitiesNear, isEconomyIntent, toSelf, type Input, type Intent, type IntentResult, type OperatorRecord, type World } from '../core/index.js';
 import type { TokenVerifier } from './auth.js';
@@ -646,11 +647,19 @@ export class Game {
           if (this.stopping) return this.abandon(intent);
         }
       }
+      if (intent.kind === 'completeTicket' && !result.ok) this.logRefusedPayout(world, intent, result.reason);
       world.completeIntent(intent.id, result);
       if (intent.kind === 'evolve' && result.ok) this.shareDiscovery(world, intent, result.discovered === true);
       if (intent.kind === 'travel' && result.ok) this.moveOperator(world, intent);
     };
     this.track(run());
+  }
+
+  /** A definitive refusal of a ticket payout: the ticket closes unpaid, so it must leave a trace. */
+  private logRefusedPayout(world: World, intent: Extract<Intent, { kind: 'completeTicket' }>, reason: string): void {
+    const t = world.operators.get(intent.operatorId)?.tickets.find((x) => x.id === intent.ticketId);
+    const ticket = t ? ticketKey(t.day, t.subnet, t.index) : intent.ticketId;
+    this.log.warn({ intent: intent.id, operator: intent.operatorId, ticket, reason }, 'ticket payout refused: ticket closed without payout');
   }
 
   /**

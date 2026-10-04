@@ -478,6 +478,15 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(after.ram[0]).toMatchObject({ species: 'tracerat', ivs: [21, 20, 20, 21, 20, 20, 20, 20], hp: 40, moves: ['ping', 'traceroute', 'sigstop', 'synflood'], history: EVOLVED_HISTORY });
     });
 
+    it('clamps checkpointed ticket progress to the target', async () => {
+      const a = await store.loadOrCreateOperator('sub-t9', 'lo', SPAWN);
+      const t0 = acceptLo(a.id, 0);
+      expect(await store.applyIntent(t0, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      const rec = await store.loadOrCreateOperator('sub-t9', 'lo', SPAWN);
+      await store.checkpoint([{ ...rec, tickets: [{ ...rec.tickets[0]!, progress: t0.target + 5 }] }]);
+      expect((await store.loadOrCreateOperator('sub-t9', 'lo', SPAWN)).tickets[0]!.progress).toBe(t0.target);
+    });
+
     it('accepts, abandons and pays tickets: one DONE row, one ledger row, and the load carries the day', async () => {
       const a = await store.loadOrCreateOperator('sub-t1', 'lo', SPAWN);
       const ctx = { seedId: 'abcd1234' };

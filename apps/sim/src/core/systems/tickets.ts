@@ -17,8 +17,7 @@ import { HOST_RADIUS } from './commands.js';
 export type TicketEvent = { kind: 'clear'; type: TypeId } | { kind: 'capture'; line: number; level: number } | { kind: 'evolve' };
 
 /** Rolls the per-day counter (and the day's accepted keys) over at UTC midnight. */
-function today(world: World, op: Operator): string {
-  const day = dayKey(world.now());
+function today(world: World, op: Operator, day = dayKey(world.now())): string {
   if (op.ticketsDay !== day) {
     op.ticketsDay = day;
     op.ticketsToday = 0;
@@ -127,8 +126,9 @@ export function advanceTickets(world: World, op: Operator, ev: TicketEvent, out:
 
 /** Per tick: deliveries complete at the destination host (checked in the destination world); complete tickets settle. */
 export function checkTickets(world: World, out: Out): void {
+  const day = dayKey(world.now());
   for (const op of world.operators.values()) {
-    today(world, op);
+    today(world, op, day);
     for (const t of [...op.tickets]) {
       if (t.pending) continue;
       const arrived = t.params.kind === 'deliver' && t.params.to === world.subnet.id && distance(op, world.subnet.host) <= HOST_RADIUS;
@@ -165,7 +165,12 @@ export function completeTicketIntent(world: World, op: Operator, intent: TicketI
       op.tickets = op.tickets.filter((x) => x.id !== intent.ticketId);
       // No ticket on the operator: it was rebuilt from a store record taken after the commit, whose balance already
       // holds the reward (the analogue of `ownsDaemon`), so it is not credited a second time.
-      if (!result.ok || !t) return;
+      if (!t) return;
+      if (!result.ok) {
+        // Closed without a payout: tell the operator rather than letting the ticket silently vanish.
+        out.emit({ e: 'ticketDone', ticketId: intent.ticketId, reward: 0, unpaid: true }, { to: op.id });
+        return;
+      }
       op.bits += intent.reward;
       out.emit({ e: 'ticketDone', ticketId: intent.ticketId, reward: intent.reward }, { to: op.id });
       out.emit({ e: 'bits', delta: intent.reward, reason: 'ticket', balance: op.bits }, { to: op.id });

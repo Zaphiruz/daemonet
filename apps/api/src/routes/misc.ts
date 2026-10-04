@@ -29,10 +29,10 @@ export function codexPayload(discoveries: readonly DiscoveryRow[], research: Rea
   const discovered = new Set(discoveries.map((d) => d.formId));
   const mask = <T extends { id: string; hidden: boolean; requirement: unknown }>(row: T): T =>
     row.hidden && !discovered.has(row.id) ? { ...row, requirement: null } : row;
-  const hints = BESTIARY_WITH_RULES.filter((r) => r.hidden && !discovered.has(r.id) && (research[String(r.line)] ?? 0) >= SCAN_HINTS && r.requirement !== null && r.requirement.length > 0).map((r) => ({
-    formId: r.id,
-    kind: (r.requirement![0] as { kind: string }).kind,
-  }));
+  const hints = BESTIARY_WITH_RULES.flatMap((r) => {
+    const first = r.requirement?.[0] as { kind: string } | undefined;
+    return r.hidden && !discovered.has(r.id) && (research[String(r.line)] ?? 0) >= SCAN_HINTS && first ? [{ formId: r.id, kind: first.kind }] : [];
+  });
   return {
     types: TYPES,
     chart: Object.fromEntries(TYPES.map((a) => [a, Object.fromEntries(TYPES.map((d) => [d, typeMultiplier(a, [d])]))])),
