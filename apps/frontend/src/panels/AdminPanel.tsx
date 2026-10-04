@@ -272,10 +272,11 @@ function Market() {
         last 24 h: {day.salesCount} daemons sold · {day.trades} trades · <span className="text-red-300">{day.feesDestroyed} bits destroyed by the fee</span>
       </p>
       {day.items.map((i) => (
-        <div key={i.item} className="flex justify-between border-b border-neutral-900 py-0.5">
+        <div key={i.item} className="flex justify-between border-b border-neutral-900 py-0.5" data-testid={`market-item-${i.item}`}>
           <span>{i.item}</span>
           <span>×{i.qty}</span>
           <span>{i.bits} bits</span>
+          <span className="text-red-300">fee {i.fees}</span>
           <span className="text-neutral-500">last {i.last}</span>
         </div>
       ))}

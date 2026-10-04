@@ -122,6 +122,7 @@ export interface MarketView {
     sales: Array<{ species: string; level: number; price: number; soldAt: string }>;
     salesCount: number;
     trades: number;
+    /** Bits the 1/16 fee destroyed: order-book fills, listing sales and done trades (floored per fill, sale and side). */
     feesDestroyed: number;
   };
 }

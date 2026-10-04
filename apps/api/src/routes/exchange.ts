@@ -215,7 +215,8 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
   app.post<{ Params: { id: string } }>('/api/exchange/trades/:id/cancel', auth, async (req) => view(req.operator!.id, await cancelTrade(prisma, bus, req.operator!.id, tradeId(req.params.id), undefined, log)));
 
   /**
-   * Admin market view: what is open, what traded in the last 24 hours and the bits the fee destroyed. Admins only, from
+   * Admin market view: what is open, what traded in the last 24 hours and the bits the fee destroyed (order-book fills,
+   * listing sales and done trades). Admins only, from
    * a browser session: the route does not opt into bearer auth (a bot token never carries admin rights, #17). Only
    * aggregates plus the 16 latest sales (species, level, price, time: no operator ids or names); everything is summed in
    * the database, in one REPEATABLE READ snapshot, with every result set bounded (#33).
@@ -225,7 +226,7 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
     const stamp = since.toISOString();
     const r = await prisma.$transaction(
       async (tx) => {
-        const [openOrders, activeListings, openTrades, trades, sales, salesCount, listingFees, items, fillFees] = await Promise.all([
+        const [openOrders, activeListings, openTrades, trades, sales, salesCount, listingFees, items, fillFees, tradeFees] = await Promise.all([
           tx.order.count({ where: { status: 'OPEN' } }),
           tx.listing.count({ where: { status: 'ACTIVE' } }),
           tx.trade.count({ where: { status: 'OPEN' } }),
@@ -244,8 +245,15 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
             GROUP BY "item" ORDER BY "bits" DESC, "item" LIMIT 256`,
           tx.$queryRaw<Array<{ fees: bigint }>>`
             SELECT COALESCE(SUM("fee"), 0)::bigint AS "fees" FROM "Fill" WHERE "at" >= (${stamp}::timestamptz AT TIME ZONE 'UTC')`,
+          // Trades done in the window (the same rows `trades` counts): each side's received bits lose floor(bits / 16),
+          // floored per side exactly as trades.ts credits them (feeOn on each offer's bits).
+          tx.$queryRaw<Array<{ fees: bigint }>>`
+            SELECT COALESCE(SUM(("aOffer"->>'bits')::bigint / ${FEE_DIVISOR} + ("bOffer"->>'bits')::bigint / ${FEE_DIVISOR}), 0)::bigint AS "fees" FROM "Trade"
+            WHERE "status" = 'DONE' AND "updatedAt" >= (${stamp}::timestamptz AT TIME ZONE 'UTC')`,
         ]);
-        return { openOrders, activeListings, openTrades, trades, sales, salesCount, listingFees: Number(listingFees[0]!.fees), items, fillFees: Number(fillFees[0]!.fees) };
+        return {
+          openOrders, activeListings, openTrades, trades, sales, salesCount, listingFees: Number(listingFees[0]!.fees), items, fillFees: Number(fillFees[0]!.fees), tradeFees: Number(tradeFees[0]!.fees),
+        };
       },
       { isolationLevel: 'RepeatableRead' },
     );
@@ -258,7 +266,7 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
         sales: r.sales,
         salesCount: r.salesCount,
         trades: r.trades,
-        feesDestroyed: r.fillFees + r.listingFees,
+        feesDestroyed: r.fillFees + r.listingFees + r.tradeFees,
       },
     };
   });

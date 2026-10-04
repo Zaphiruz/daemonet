@@ -518,6 +518,19 @@ describe.skipIf(!url)('Exchange direct trades (needs DATABASE_URL)', () => {
     const { body: listing } = await a.call('POST', '/listings', { daemonId: await a.seed(0), price: 160 });
     await b.call('POST', `/listings/${listing.id}/buy`);
     await a.open(b.id);
+    // a done trade that moved bits both ways: the fee is floored per side on the bits each receives (100 → 6, 30 → 1; never floor(130 / 16) = 8)
+    const c = await trader('carol', 100);
+    const e = await trader('erin', 30);
+    const { body: t } = await c.open(e.id);
+    await c.offer(t.id, { bits: 100 });
+    const { body: o } = await e.offer(t.id, { bits: 30 });
+    await c.confirm(t.id, o.version);
+    expect((await e.confirm(t.id, o.version)).body.status).toBe('DONE');
+    // a cancelled trade destroys nothing
+    const f = await trader('frank', 64);
+    const { body: t2 } = await f.open(c.id);
+    await f.offer(t2.id, { bits: 64 });
+    await f.cancel(t2.id);
     // Browser sessions only: admin rights come from Operator.isAdmin, and a bearer token (even root's) never carries them.
     const session = async (name: string, admin: boolean) => {
       const dev = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}${admin ? '&admin=true' : ''}` });
@@ -531,7 +544,7 @@ describe.skipIf(!url)('Exchange direct trades (needs DATABASE_URL)', () => {
     expect(r.headers['cache-control']).toBe('private, no-store');
     expect(r.json()).toMatchObject({
       openOrders: 1, activeListings: 0, openTrades: 1,
-      day: { items: [{ item: 'frag:packet', qty: 3, bits: 150, fees: 9, last: 50 }], salesCount: 1, sales: [{ species: 'initling', price: 160 }], trades: 0, feesDestroyed: 19 },
+      day: { items: [{ item: 'frag:packet', qty: 3, bits: 150, fees: 9, last: 50 }], salesCount: 1, sales: [{ species: 'initling', price: 160 }], trades: 1, feesDestroyed: 9 + 10 + 6 + 1 },
     });
     // Rights are re-read from the operator row on every request.
     const cookies = await session('root', true);

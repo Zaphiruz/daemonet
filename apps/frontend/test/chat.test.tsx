@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   addTerm: vi.fn(),
   deleteTerm: vi.fn(),
   economy: { data: undefined as unknown, error: undefined as unknown },
+  market: { data: undefined as unknown, error: undefined as unknown },
   adminDelete: vi.fn(),
   adminMute: vi.fn(),
 }));
@@ -30,6 +31,7 @@ vi.mock('../src/api.ts', async (importOriginal) => ({
   useAddFilterTermMutation: () => [mocks.addTerm],
   useDeleteFilterTermMutation: () => [mocks.deleteTerm],
   useAdminEconomyQuery: () => mocks.economy,
+  useAdminMarketQuery: () => mocks.market,
   useAdminDeleteMessageMutation: () => [mocks.adminDelete],
   useAdminMuteMutation: () => [mocks.adminMute],
 }));
@@ -366,5 +368,16 @@ describe('AdminPanel', () => {
     render(<AdminPanel />);
     fireEvent.click(screen.getByTestId('admin-view-economy'));
     expect(screen.getByText(/supply 100 bits across 2 operators/)).toBeTruthy();
+  });
+
+  it('shows the market view with the fee each item destroyed', () => {
+    mocks.market.data = {
+      openOrders: 1, activeListings: 2, openTrades: 3,
+      day: { items: [{ item: 'frag:packet', qty: 3, bits: 150, fees: 9, last: 50 }], sales: [], salesCount: 0, trades: 1, feesDestroyed: 16 },
+    };
+    render(<AdminPanel />);
+    fireEvent.click(screen.getByTestId('admin-view-market'));
+    expect(screen.getByTestId('admin-market').textContent).toContain('16 bits destroyed by the fee');
+    expect(screen.getByTestId('market-item-frag:packet').textContent).toContain('fee 9');
   });
 });
