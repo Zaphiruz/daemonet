@@ -203,3 +203,13 @@ Fixed before merge: no double charge for concurrent rename/tag; CI e2e gets Redi
 
 - T2: `invite` org push has no sim consumer yet; kicked member may receive live org chat up to 60 s if the membership push is lost (history cut off immediately)
 Task F: minor (deferred): membership announces can arrive out of order (≤60 s live org chat for a kicked member); `invite` push has no consumer; any player can read any org's members/leaderboard (spec doesn't restrict — confirm intended); invite takes a raw operator id; a raw tx.bitsLedger.create outside the checked helper isn't type-caught
+
+## 2026-10-01-daemonet-sp4-plan4-incidents
+
+Fixed before merge: payouts re-derived from the full damage list; mid-load credits parked; telegraph hits; refused payouts marked; CLEARED retry; panels follow live store; one liveness rule; eviction waits for captures; recovery tests; openedAt on rewards; ops notes
+
+- T1: incidentOnly not enforced in travel yet (Task 2 must); frontend draws/lists incidentOnly gateways as normal travel options (Task 3 should hide/mark when no Incident open); payout sum ≤ pool only hand-checked (add sweep); backbone board test checks membership not picks; incidentPayouts roundabout share/raw
+Task 2: fix round 1 c1f82c4 re-review all addressed (full damage list re-derived in both stores; parked mid-load credits; telegraph hit; refused marked; CLEARED retry)
+- T2: a refusal before the CLEARED record lands isn't marked (one extra recovery attempt); CLEARED retry path untested; pending-credit map pruned only on park
+- T3: AdminPanel duplicates IncidentsPanel row markup; no >16-row cap test; admin start not audit-logged; server-wide `cleared` event carries participant operatorIds
+Task F: minor (deferred): refusal before the CLEARED row lands isn't marked (one extra recovery attempt); restart inside an Incident window skips that slot; admin start colliding with a scheduled slot changes the announced boss; server-wide `cleared` event carries participant operatorIds (decide before SP5)
