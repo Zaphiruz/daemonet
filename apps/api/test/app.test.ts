@@ -13,6 +13,7 @@ import { loadConfig } from '../src/config.js';
 import { ensureOperator } from '../src/auth/routes.js';
 import { loggerOptions } from '../src/log.js';
 import { pruneChat } from '../src/routes/chat.js';
+import { EXCHANGE_IP_RATE } from '../src/routes/exchange.js';
 import { ORG_MAX_INVITES } from '../src/routes/orgs.js';
 import { KEPT_VERSIONS, MAX_SCRIPT_BYTES } from '../src/routes/scripts.js';
 
@@ -1671,9 +1672,10 @@ describe.skipIf(!url)('API bearer hardening', () => {
     // another operator on a busy address is unaffected
     expect((await vault(other, '10.0.0.2')).statusCode).toBe(200);
 
-    // per client IP, before authentication: refused tokens count too, then even a good token is refused
+    // per client IP (EXCHANGE_IP_RATE, a multiple of the per-operator budget), before authentication: refused tokens
+    // count too, then even a good token is refused
     const E = '10.0.0.5';
-    for (let i = 0; i < 120; i++) expect((await vault('garbage', E)).statusCode).toBe(401);
+    for (let i = 0; i < EXCHANGE_IP_RATE.max; i++) expect((await vault('garbage', E)).statusCode).toBe(401);
     expect((await vault('garbage', E)).statusCode).toBe(429);
     expect((await vault(other, E)).statusCode).toBe(429);
     await app.close();
