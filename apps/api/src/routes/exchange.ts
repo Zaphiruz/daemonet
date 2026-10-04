@@ -5,6 +5,7 @@ import { normalizeIP } from '@fastify/rate-limit';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { badRequest, notFound, rateLimited } from '../errors.js';
+import { browseListings, buyListing, cancelListing, createListing, daemonView } from '../exchange/listings.js';
 import { MAX_PRICE, MAX_QTY, bookFor, cancelOrder, placeOrder } from '../exchange/orders.js';
 
 /** Exchange request budget per operator (SP5 spec: 120 / minute), shared by every Exchange route. */
@@ -26,13 +27,26 @@ const OrderBody = z.object({
 export const CLOSED_ORDERS_SHOWN = 64;
 const OrdersQuery = z.object({ status: z.enum(['OPEN', 'FILLED', 'CANCELLED', 'EXPIRED']).optional() });
 
+const ListBody = z.object({ daemonId: z.string().min(1).max(64), price: z.number().int().min(1).max(MAX_PRICE) });
+const bool = z.enum(['true', 'false']).transform((v) => v === 'true');
+const BrowseQuery = z.object({
+  species: z.string().max(32).optional(),
+  line: z.coerce.number().int().min(1).max(50).optional(),
+  type: z.string().max(16).optional(),
+  clean: bool.optional(),
+  minSignature: z.coerce.number().int().min(0).max(15).optional(),
+  maxPrice: z.coerce.number().int().min(1).optional(),
+  sort: z.enum(['price', 'new']).optional(),
+  page: z.coerce.number().int().min(0).max(1000).optional(),
+});
+
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const r = schema.safeParse(value);
   if (!r.success) throw badRequest(r.error.issues[0]?.message ?? 'invalid request');
   return r.data;
 }
 
-/** Exchange (SP5): the vault view and the order book; listings and trades are added by plans 3–4. */
+/** Exchange (SP5): the vault view, the order book and daemon listings; trades are added by plan 4. */
 export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClient, bus: Bus): void {
   // Two budgets, each shared by every Exchange route: per client IP in onRequest, before authentication, so refused
   // tokens count too (it throttles guessing); per operator after requireAuth, so one operator cannot exceed the budget
@@ -117,5 +131,35 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
     if (req.params.id.length > 64) throw notFound('no such order');
     await cancelOrder(prisma, bus, req.operator!.id, req.params.id, log);
     return { ok: true };
+  });
+
+  // ---- daemon listings
+  app.get<{ Querystring: unknown }>('/api/exchange/listings', auth, async (req) => browseListings(prisma, parse(BrowseQuery, req.query)));
+
+  /** The caller's listings, newest first (64); the daemon is shown only while the listing is ACTIVE. */
+  app.get('/api/exchange/listings/mine', auth, async (req) => {
+    const rows = await prisma.listing.findMany({ where: { sellerId: req.operator!.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 64 });
+    const daemons = new Map((await prisma.daemon.findMany({ where: { id: { in: rows.filter((r) => r.status === 'ACTIVE').map((r) => r.daemonId) } } })).map((d) => [d.id, d]));
+    return rows.map((r) => {
+      const d = r.status === 'ACTIVE' ? daemons.get(r.daemonId) : undefined;
+      return { id: r.id, price: r.price, status: r.status, species: r.species, level: r.level, createdAt: r.createdAt, expiresAt: r.expiresAt, soldAt: r.soldAt, daemon: d ? daemonView(d) : null };
+    });
+  });
+
+  app.post('/api/exchange/listings', auth, async (req) => {
+    const body = parse(ListBody, req.body);
+    const l = await createListing(prisma, req.operator!.id, body.daemonId, body.price);
+    return { id: l.id, price: l.price, expiresAt: l.expiresAt };
+  });
+
+  app.delete<{ Params: { id: string } }>('/api/exchange/listings/:id', auth, async (req) => {
+    if (req.params.id.length > 64) throw notFound('no such listing');
+    await cancelListing(prisma, req.operator!.id, req.params.id);
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/exchange/listings/:id/buy', auth, async (req) => {
+    if (req.params.id.length > 64) throw notFound('no such listing');
+    return buyListing(prisma, bus, req.operator!.id, req.params.id, undefined, log);
   });
 }

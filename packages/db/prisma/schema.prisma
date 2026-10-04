@@ -146,7 +146,7 @@ model BitsLedger {
   delta      BigInt
   /// shop | disk | craft | ticket (the sim's store intents, SIM_LEDGER_REASONS) | admin (admin and dev grants) | org
   /// (org creation and tag change) | rename (operator rename) | exchange:escrow / exchange:refund / exchange:sale (the
-  /// api's order book)
+  /// api's order book; exchange:buy / exchange:sale for daemon listings)
   reason     String
   ref        String?
   at         DateTime @default(now())
@@ -163,6 +163,40 @@ model ExchangeVault {
   qty        Int
 
   @@id([operatorId, item])
+}
+
+enum ListingStatus {
+  ACTIVE
+  SOLD
+  CANCELLED
+  EXPIRED
+}
+
+/// Fixed-price daemon listing (SP5 spec §6). The daemon stays on the seller's Disk, locked, until sold or released.
+model Listing {
+  id        String        @id
+  sellerId  String
+  daemonId  String
+  price     Int
+  status    ListingStatus @default(ACTIVE)
+  /// snapshot for browsing and filters
+  species   String
+  line      Int
+  types     String[]
+  level     Int
+  clean     Boolean
+  signature Int
+  ivSum     Int
+  createdAt DateTime      @default(now())
+  expiresAt DateTime
+  buyerId   String?
+  soldAt    DateTime?
+
+  @@index([status, price])
+  @@index([status, species])
+  @@index([sellerId, status])
+  @@index([daemonId])
+  @@index([status, expiresAt])
 }
 
 enum OrderSide {
