@@ -123,6 +123,9 @@ export const DaemonEntity = z.object({
   signature: z.number().int().min(0).max(15),
   statuses: z.array(StatusSchema),
   hardened: z.boolean(),
+  /** Incident boss (kernel daemon); `shielded` while its adds are alive. */
+  boss: z.boolean().optional(),
+  shielded: z.boolean().optional(),
   /** Wild daemons only: what the viewer's Codex research reveals (design §7.2). */
   scan: z
     .object({
@@ -272,6 +275,20 @@ export const GameEvent = z.discriminatedUnion('e', [
   z.object({ e: z.literal('ticketProgress'), ticketId: Id, progress: z.number().int(), target: z.number().int() }),
   /** `unpaid`: the store refused the payout (the row was no longer open); the ticket is closed with reward 0. */
   z.object({ e: z.literal('ticketDone'), ticketId: Id, reward: z.number().int(), unpaid: z.boolean().optional() }),
+  /** Incident lifecycle, sent to everyone on the server (SP4 spec §8). */
+  z.object({
+    e: z.literal('incident'),
+    phase: z.enum(['open', 'fighting', 'shield', 'unshield', 'cleared', 'expired']),
+    id: Id,
+    n: z.number().int(),
+    species: z.string(),
+    endsAt: z.string(),
+    bossId: Id.nullable(),
+    participants: z.array(z.object({ operatorId: Id, name: z.string().nullable(), damage: z.number().int(), share: z.number(), reward: z.number().int() })).optional(),
+  }),
+  /** A blast lands on this circle at `atTick`: move your daemons (and yourself) out. */
+  z.object({ e: z.literal('telegraph'), x: Coord, y: Coord, radius: z.number(), atTick: z.number().int() }),
+  z.object({ e: z.literal('incidentReward'), incidentId: Id, reward: z.number().int(), share: z.number() }),
 ]);
 export type GameEvent = z.infer<typeof GameEvent>;
 

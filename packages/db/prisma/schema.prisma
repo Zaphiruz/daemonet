@@ -187,6 +187,27 @@ model DaemonArchive {
   @@index([originalOperatorId])
 }
 
+enum IncidentOutcome {
+  OPEN
+  CLEARED
+  EXPIRED
+}
+
+/// Incidents (SP4 spec §8): one row per boss window; participants are filled when it is cleared.
+model Incident {
+  id           String          @id
+  n            Int
+  species      String
+  openedAt     DateTime        @default(now())
+  endsAt       DateTime
+  closedAt     DateTime?
+  outcome      IncidentOutcome @default(OPEN)
+  /// [{ operatorId, name, damage, share, reward }]
+  participants Json            @default("[]")
+
+  @@index([openedAt])
+}
+
 enum OrgRank {
   OWNER
   OFFICER
