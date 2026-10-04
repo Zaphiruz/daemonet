@@ -65,6 +65,7 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(BESTIARY[0])).toBe(true);
     expect(Object.isFrozen(BESTIARY[0]!.types)).toBe(true);
     expect(Object.isFrozen(BESTIARY.find((r) => r.requirement)!.requirement)).toBe(true);
+    expect(Object.isFrozen(SPECIES.find((s) => s.requirement)!.requirement)).toBe(true);
     expect(Object.isFrozen(ROLE_TRAITS.tank)).toBe(true);
     expect(Object.isFrozen(EVOLUTION_ITEMS[0])).toBe(true);
     expect(Object.isFrozen(BEATS.kernel)).toBe(true);

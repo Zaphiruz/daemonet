@@ -56,7 +56,7 @@ function mutate(answer: Record<string, unknown>): Record<string, unknown> {
   if (Array.isArray(value)) {
     if (key === 'leaked') return { [key]: [...value, 0] }; // ids start at 1, so 0 is never leaked
     if (key === 'race') return { [key]: [value[0] === -1 ? 0 : -1, value[1]] };
-    return { [key]: [...value, typeof value[0] === 'number' ? 1 : 'x'] };
+    return { [key]: [...value, key === 'output' ? 'x' : 1] };
   }
   const entries = Object.entries(value as Record<string, string>);
   if (entries.length === 0) return { [key]: { extra: 'CLOSED' } };

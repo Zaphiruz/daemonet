@@ -2,7 +2,7 @@ import { MAX_MOVES, STAT_KEYS, statBlock, type StatBlock, type StatKey } from '.
 import { deepFreeze } from '../freeze.js';
 import { createRng } from '../rng.js';
 import type { TypeId } from '../types.js';
-import { BESTIARY, type BestiaryRow, type Role } from './bestiary.js';
+import { BESTIARY, type BestiaryRow, type Requirement, type Role } from './bestiary.js';
 import { TYPE_MOVES } from './moves.js';
 import { ROLE_TRAITS } from './traits.js';
 
@@ -31,6 +31,10 @@ export interface SpeciesDef {
   capstone: boolean;
   evolvesFrom: string | null;
   evolvesAt: number | null;
+  /** Extra conditions beyond the level (bestiary spec §4); null = level only. */
+  requirement: readonly Requirement[] | null;
+  /** Requirement is not shown in the Codex until someone discovers it. */
+  hidden: boolean;
 }
 
 /** Base-stat totals by tree depth; capstones are 600; starter lines run 5% under at every stage. */
@@ -131,6 +135,8 @@ export const SPECIES: readonly SpeciesDef[] = deepFreeze(
       capstone: row.capstone,
       evolvesFrom: row.evolvesFrom,
       evolvesAt: row.evolvesAt,
+      requirement: row.requirement,
+      hidden: row.hidden,
     }),
   ),
 );
