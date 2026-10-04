@@ -102,6 +102,14 @@ model Daemon {
   crashed            Boolean
   location           Location
   slot               Int
+  heldItem           String?
+  patched            Boolean  @default(false)
+  /// lifetime move uses per type, TYPES order (16)
+  moveTypeUses       Int[]
+  crashes            Int      @default(0)
+  arenaWins          Int      @default(0)
+  /// [{ at, kind: captured|evolved|clean|signature|patched, detail }]
+  history            Json     @default("[]")
   // capture log
   originalOperatorId String
   capturedAt         DateTime
@@ -120,6 +128,13 @@ model SubnetSeed {
   subnet    String
   seed      String
   startedAt DateTime @default(now())
+}
+
+/// First operator to meet a hidden evolution requirement (reveals it in the Codex).
+model Discovery {
+  formId       String   @id
+  operatorId   String
+  discoveredAt DateTime @default(now())
 }
 
 model AppliedAction {
