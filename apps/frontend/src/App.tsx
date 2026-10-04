@@ -1,11 +1,14 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { useMeQuery } from './api.ts';
+import { ArenaHud } from './components/ArenaHud.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { WorldCanvas } from './components/WorldCanvas.tsx';
+import { useArena } from './game/arena.ts';
 import { open, useConnection } from './game/connection.ts';
 import { CodexPanel, ItemsPanel } from './panels/CodexPanel.tsx';
 import { IncidentsPanel } from './panels/IncidentsPanel.tsx';
+import { ArenaPanel } from './panels/ArenaPanel.tsx';
 import { AdminPanel } from './panels/AdminPanel.tsx';
 import { ChatPanel } from './panels/ChatPanel.tsx';
 import { DiskPanel } from './panels/DiskPanel.tsx';
@@ -19,7 +22,7 @@ import { RamPanel } from './panels/RamPanel.tsx';
 // Monaco is big: load it (and its workers) only when the Script tab is first opened, never on the login page.
 const ScriptPanel = lazy(() => import('./panels/ScriptPanel.tsx'));
 
-const TABS = ['play', 'ram', 'disk', 'host', 'items', 'codex', 'exchange', 'chat', 'org', 'incidents', 'script', 'log', 'admin'] as const;
+const TABS = ['play', 'ram', 'disk', 'host', 'items', 'codex', 'exchange', 'arena', 'chat', 'org', 'incidents', 'script', 'log', 'admin'] as const;
 type Tab = (typeof TABS)[number];
 
 export function Login() {
@@ -56,6 +59,7 @@ export function App() {
   const me = useMeQuery();
   const conn = useConnection();
   const [tab, setTab] = useState<Tab>('play');
+  const arena = useArena();
   // auto-open only from `idle`: kicked / failed are terminal and must not loop
   useEffect(() => {
     if (me.data && conn.status === 'idle') void open('controller').catch(() => {});
@@ -71,7 +75,7 @@ export function App() {
     <div className="flex h-full flex-col">
       <TopBar me={me.data} />
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1">
+        <div className="relative min-w-0 flex-1">
           {client ? (
             <ErrorBoundary label="world view">
               <WorldCanvas />
@@ -88,6 +92,11 @@ export function App() {
                 </>
               )}
             </p>
+          )}
+          {client?.self?.arena && (
+            <ErrorBoundary label="arena hud">
+              <ArenaHud self={client.self} tick={client.tick} result={arena.lastResult} onForfeit={client.role === 'controller' ? () => void client.arena.forfeit().catch(() => {}) : null} />
+            </ErrorBoundary>
           )}
         </div>
         <aside className="flex w-[26rem] shrink-0 flex-col border-l border-neutral-800">
@@ -107,6 +116,7 @@ export function App() {
             {tab === 'items' && client?.self && <ItemsPanel inventory={client.self.inventory} />}
             {tab === 'codex' && <CodexPanel />}
             {tab === 'exchange' && (client?.self ? <ExchangePanel client={client} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
+            {tab === 'arena' && (client?.self ? <ArenaPanel client={client} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
             {tab === 'chat' && (client?.self ? <ChatPanel client={client} isAdmin={isAdmin} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
             {tab === 'org' && (client?.self ? <OrgPanel client={client} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
             {tab === 'incidents' && <IncidentsPanel />}

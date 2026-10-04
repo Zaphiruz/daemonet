@@ -123,3 +123,23 @@ export function resultText(r: ArenaResultInfo): string {
   const rating = r.counted ? ` · ${Math.round(r.ratingBefore)} → ${Math.round(r.ratingAfter)}` : r.mode === 'ranked' ? ' · not counted · rating unchanged' : '';
   return `${head}${rating}${r.reward > 0 ? ` · +${r.reward} bits` : ''}`;
 }
+
+/**
+ * The last result as the Arena tab words it. The `arenaResult` event of a ranked match that the store had not settled yet
+ * (or could not) reads `counted: false` just like a definitive uncounted match; `/api/arena/matches` tells them apart by
+ * match id: a row with `counted` is settled (at the row's ratings), a row without it was not counted, and no row yet
+ * means the result is still pending.
+ */
+export function reconcileResult(
+  last: ArenaResultInfo,
+  rows: ReadonlyArray<{ id: string; counted: boolean; a: { id: string; before: number; after: number; reward: number }; b: { id: string; before: number; after: number; reward: number } }> | undefined,
+  selfId: string,
+): { text: string; pending: boolean } {
+  const row = rows?.find((r) => r.id === last.id);
+  if (row) {
+    const mine = row.a.id === selfId ? row.a : row.b;
+    return { text: resultText({ ...last, counted: row.counted, ratingBefore: row.counted ? mine.before : last.ratingBefore, ratingAfter: row.counted ? mine.after : last.ratingAfter, reward: mine.reward }), pending: false };
+  }
+  if (last.mode === 'ranked' && !last.counted) return { text: `${resultText({ ...last, mode: 'unranked' })} · result pending`, pending: true };
+  return { text: resultText(last), pending: false };
+}

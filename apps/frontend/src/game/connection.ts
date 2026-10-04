@@ -2,6 +2,7 @@ import { GameClient, TRANSIENT_KICKS, type ConnectOptions, type TokenSource } fr
 import { useSyncExternalStore } from 'react';
 import { api, fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
 import { store } from '../store.ts';
+import { arenaStore, resultText, type ArenaStore } from './arena.ts';
 import { capture as appCapture, type CaptureStore } from './capture.ts';
 import { chatStore, setMe, type ChatStore } from './chat.ts';
 import { clusterStore, type ClusterStore } from './clusters.ts';
@@ -63,6 +64,10 @@ export interface ConnectionDeps {
   invalidateTrades?(): void;
   /** Refetches /api/incidents (after a reconnect, when an Incident ended): the API re-seeds the store. Optional. */
   invalidateIncidents?(): void;
+  /** Holds the arena queue, incoming challenges and the last result (events arrive before any panel mounts). Optional. */
+  arena?: ArenaStore;
+  /** Refetches the standing, ladder and match-history queries (a match finished; also after a reconnect). Optional. */
+  invalidateArena?(): void;
 }
 
 /** Backoff for a first connection that failed: doubles from RETRY_MIN_MS up to RETRY_MAX_MS. */
@@ -141,6 +146,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.exchange?.clear();
     deps.listings?.clear();
     deps.trades?.clear();
+    deps.arena?.clear();
     deps.incident?.resync();
     client.close();
     set({ status, kickReason: reason, client: null });
@@ -219,6 +225,9 @@ export function createConnection(deps: ConnectionDeps) {
       deps.invalidateExchange?.();
       deps.invalidateListings?.();
       deps.invalidateTrades?.();
+      // a queue entry may not have survived the outage; a result or challenge may have been missed
+      deps.arena?.onQueued(null, undefined, Date.now());
+      deps.invalidateArena?.();
       set({ status: 'online' });
       deps.log.push('system', 'reconnected');
     });
@@ -265,6 +274,25 @@ export function createConnection(deps: ConnectionDeps) {
         deps.log.push('event', `Exchange: ${describeFill(fill)}`);
       } else deps.log.push('event', `Exchange: ${e.kind}`);
       deps.invalidateExchange?.();
+    });
+    // arena state is captured here, not in the Arena tab: queue changes, challenges and results arrive whether or not it is open
+    on('arenaQueued', (e) => {
+      deps.arena?.onQueued(e.mode, e.reason, Date.now());
+      if (!e.mode && e.reason) deps.log.push('event', `Arena: left the queue (${e.reason})`);
+    });
+    on('arenaMatch', (e) => {
+      deps.arena?.onMatch();
+      deps.log.push('event', `Arena: ${e.mode} match against ${e.opponent.name ?? 'an operator'} (${Math.round(e.opponent.rating)})`);
+    });
+    on('arenaResult', (e) => {
+      deps.arena?.onResult(e);
+      deps.log.push('event', `Arena: ${resultText(e)}`);
+      // the standing, ladder and history changed (the result may arrive after the return home, or long after the match)
+      deps.invalidateArena?.();
+    });
+    on('arenaChallenge', (c) => {
+      deps.arena?.onChallenge(c);
+      deps.log.push('event', `${c.name ?? 'an operator'} challenges you to a ${c.mode} match (arena tab)`);
     });
     on('ticketDone', (e) => {
       deps.log.push('event', e.unpaid ? `ticket ${e.ticketId} closed without payout` : `ticket ${e.ticketId} done: +${e.reward} bits`);
@@ -330,6 +358,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.stopSandbox();
     deps.capture.clear();
     deps.clusters?.clear();
+    deps.arena?.clear();
     deps.incident?.resync();
     state.client?.close();
     set({ status: 'connecting', role, client: null, kickReason: null });
@@ -366,6 +395,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.exchange?.clear();
     deps.listings?.clear();
     deps.trades?.clear();
+    deps.arena?.clear();
     deps.incident?.resync();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
@@ -398,6 +428,7 @@ const connection = createConnection({
   exchange: exchangeStore,
   listings: listingStore,
   trades: tradeStore,
+  arena: arenaStore,
   stopSandbox,
   invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
   invalidateTickets: () => store.dispatch(api.util.invalidateTags(['Tickets'])),
@@ -405,6 +436,7 @@ const connection = createConnection({
   invalidateExchange: () => store.dispatch(api.util.invalidateTags(['Orders', 'Book', 'Vault'])),
   invalidateListings: () => store.dispatch(api.util.invalidateTags(['Listings', 'Disk', 'Ledger'])),
   invalidateTrades: () => store.dispatch(api.util.invalidateTags(['Trades', 'Disk', 'Vault', 'Ledger'])),
+  invalidateArena: () => store.dispatch(api.util.invalidateTags(['Arena'])),
 });
 
 // the sandbox only starts a script on a live socket

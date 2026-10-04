@@ -116,8 +116,8 @@ export function DiskPanel({ client }: { client: GameClient }) {
               </div>
               <button
                 className="mt-1 text-xs text-neutral-300 hover:text-white disabled:opacity-40"
-                disabled={!manual || !atHost || me.ram.length >= RAM_SLOTS || !!d.lockedBy}
-                title={d.lockedBy ? (inTrade ? 'in a trade: cancel the trade or take it off the table first' : listingId ? 'locked on the Exchange: unlist it first' : 'locked on the Exchange: cancel the order first') : undefined}
+                disabled={!manual || !atHost || !!me.arena || me.ram.length >= RAM_SLOTS || !!d.lockedBy}
+                title={me.arena ? 'unavailable in an arena match' : d.lockedBy ? (inTrade ? 'in a trade: cancel the trade or take it off the table first' : listingId ? 'locked on the Exchange: unlist it first' : 'locked on the Exchange: cancel the order first') : undefined}
                 onClick={() => run(client.operator.load(d.id).then(() => disk.refetch()), 'load')}
               >
                 load into RAM

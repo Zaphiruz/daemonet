@@ -1,4 +1,4 @@
-import { getSubnet, INCIDENT_SUBNET, TICK_HZ, type SubnetDef } from '@daemonet/rules';
+import { ARENA_SUBNET, getSubnet, INCIDENT_SUBNET, TICK_HZ, type SubnetDef } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { signatureColor, spriteFor, SPRITE_SIZE } from '@daemonet/sprites';
 import type { Controls } from '../game/controls.ts';
@@ -96,13 +96,16 @@ export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): voi
       }
     }
   }
-  const host = worldToScreen(cam, def.host.x, def.host.y);
-  ctx.strokeStyle = COLORS.host;
-  ctx.lineWidth = 2;
-  ctx.strokeRect(host.sx - s, host.sy - s, 2 * s, 2 * s);
-  ctx.fillStyle = COLORS.host;
-  ctx.font = `${Math.max(10, s * 0.6)}px ui-monospace`;
-  ctx.fillText('host', host.sx - s, host.sy - s - 4);
+  // the sandbox has no host services: nothing to mark
+  if (def.id !== ARENA_SUBNET) {
+    const host = worldToScreen(cam, def.host.x, def.host.y);
+    ctx.strokeStyle = COLORS.host;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(host.sx - s, host.sy - s, 2 * s, 2 * s);
+    ctx.fillStyle = COLORS.host;
+    ctx.font = `${Math.max(10, s * 0.6)}px ui-monospace`;
+    ctx.fillText('host', host.sx - s, host.sy - s - 4);
+  }
   // the Incident-only gateway is closed unless an Incident is live (the same rule as the banner and the gateway card)
   const incidentLive = isIncidentLive(incidentStore.get().current, Date.now());
   for (const g of def.gateways) {

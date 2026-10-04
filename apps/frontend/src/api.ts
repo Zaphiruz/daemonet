@@ -1,4 +1,5 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
+import { arenaStore } from './game/arena.ts';
 import { chatStore } from './game/chat.ts';
 import { clusterStore } from './game/clusters.ts';
 import { exchangeStore, listingStore, tradeStore, type Book } from './game/exchange.ts';
@@ -365,6 +366,52 @@ export interface PlaceOrderArgs {
   qty: number;
 }
 
+export interface ArenaMe {
+  season: string;
+  seasonEndsAt: string;
+  rating: number;
+  rd: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  band: { min: number; payout: number };
+  payoutEligible: boolean;
+  matchesForPayout: number;
+  rewardedWinsToday: number;
+  dailyWins: number;
+  winBits: number;
+}
+export interface LadderRow {
+  rank: number;
+  operatorId: string;
+  name: string | null;
+  tag: string | null;
+  rating: number;
+  rd: number;
+  wins: number;
+  losses: number;
+  draws: number;
+}
+interface ArenaMatchSide {
+  id: string;
+  name: string | null;
+  before: number;
+  after: number;
+  reward: number;
+}
+export interface ArenaMatchRow {
+  id: string;
+  season: string;
+  mode: 'ranked' | 'unranked';
+  reason: string;
+  counted: boolean;
+  durationMs: number;
+  endedAt: string;
+  winnerId: string | null;
+  a: ArenaMatchSide;
+  b: ArenaMatchSide;
+}
+
 /** All mutations carry the CSRF header the API requires. */
 /** A history page: the newest lines, or those before the `(at, id)` cursor of the oldest line held. */
 export interface ChatHistoryArgs {
@@ -392,7 +439,7 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault', 'Orders', 'Book', 'Listings', 'Ledger', 'Trades'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault', 'Orders', 'Book', 'Listings', 'Ledger', 'Trades', 'Arena'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
@@ -466,6 +513,12 @@ export const api = createApi({
     rename: b.mutation<{ ok: boolean; name: string; bits: number }, { name: string }>({ query: (body) => ({ url: '/me/rename', method: 'POST', body }), invalidatesTags: ['Me', 'Org'] }),
     incidents: b.query<IncidentList, void>({ query: () => '/incidents', providesTags: ['Incidents'] }),
     startIncident: b.mutation<{ ok: boolean }, void>({ query: () => ({ url: '/admin/incidents/start', method: 'POST' }), invalidatesTags: ['Incidents'] }),
+    arenaMe: b.query<ArenaMe, void>({ query: () => '/arena/me', providesTags: ['Arena'] }),
+    ladder: b.query<{ season: string; rows: LadderRow[]; next: number | null }, { season?: string; cursor?: number }>({
+      query: ({ season, cursor }) => `/arena/ladder?${new URLSearchParams({ ...(season ? { season } : {}), ...(cursor ? { cursor: String(cursor) } : {}) }).toString()}`,
+      providesTags: ['Arena'],
+    }),
+    arenaMatches: b.query<ArenaMatchRow[], void>({ query: () => '/arena/matches?mine=1', providesTags: ['Arena'] }),
     script: b.query<ScriptDoc, void>({ query: () => '/scripts/main', providesTags: ['Script'] }),
     versions: b.query<ScriptVersion[], void>({ query: () => '/scripts/main/versions', providesTags: ['Script'] }),
     version: b.query<{ version: number; source: string }, number>({ query: (v) => `/scripts/main/versions/${v}` }),
@@ -487,6 +540,7 @@ export const api = createApi({
           exchangeStore.clear();
           listingStore.clear();
           tradeStore.clear();
+          arenaStore.clear();
         } catch {
           // a failed logout keeps the session and its caches
         }
@@ -528,6 +582,9 @@ export const {
   useSetOfferMutation,
   useConfirmTradeMutation,
   useCancelTradeMutation,
+  useArenaMeQuery,
+  useLadderQuery,
+  useArenaMatchesQuery,
   useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useVaultQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */

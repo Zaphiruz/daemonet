@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { api } from '../src/api.ts';
+import { arenaStore } from '../src/game/arena.ts';
 import { clusterStore } from '../src/game/clusters.ts';
 import { exchangeStore, listingStore, tradeStore } from '../src/game/exchange.ts';
 import { configureStore } from '@reduxjs/toolkit';
@@ -65,5 +66,32 @@ describe('session change', () => {
     expect(api.endpoints.listings.select({ sort: 'price', page: 0 })(store.getState()).data).toBeUndefined(); // the listings browser
     expect(api.endpoints.myListings.select()(store.getState()).data).toBeUndefined(); // and their own listings
     expect(api.endpoints.orgMine.select()(store.getState()).data).toBeUndefined(); // the previous operator's org, invites and prices
+  });
+});
+
+describe('arena state on logout', () => {
+  it('drops the cached standing, ladder and history and the arena store', async () => {
+    const NodeRequest = Request;
+    vi.stubGlobal('Request', class extends NodeRequest {
+      constructor(input: RequestInfo | URL, init?: RequestInit) {
+        super(typeof input === 'string' ? new URL(input, 'http://localhost') : input, init);
+      }
+    });
+    vi.stubGlobal('fetch', vi.fn(async (input: Request | string) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const body = url.includes('/auth/logout') ? { ok: true, endSessionUrl: null } : url.includes('/arena/ladder') ? { season: '2026-10', rows: [], next: null } : url.includes('/arena/me') ? { season: '2026-10', rating: 1500 } : [];
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    const store = configureStore({ reducer: { [api.reducerPath]: api.reducer }, middleware: (d) => d().concat(api.middleware) });
+    await store.dispatch(api.endpoints.arenaMe.initiate());
+    await store.dispatch(api.endpoints.ladder.initiate({}));
+    await store.dispatch(api.endpoints.arenaMatches.initiate());
+    arenaStore.onChallenge({ challengeId: 'c', from: 'bob', name: null, mode: 'ranked', expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    expect(api.endpoints.arenaMe.select()(store.getState()).data).toBeDefined();
+    await store.dispatch(api.endpoints.logout.initiate());
+    expect(api.endpoints.arenaMe.select()(store.getState()).data).toBeUndefined();
+    expect(api.endpoints.ladder.select({})(store.getState()).data).toBeUndefined();
+    expect(api.endpoints.arenaMatches.select()(store.getState()).data).toBeUndefined();
+    expect(arenaStore.get().challenges).toEqual([]);
   });
 });

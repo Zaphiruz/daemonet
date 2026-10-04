@@ -1,4 +1,4 @@
-import { RAM_SLOTS, RUNNING_MAX, STAT_KEYS, getSpecies, getSubnet } from '@daemonet/rules';
+import { ARENA_SUBNET, RAM_SLOTS, RUNNING_MAX, STAT_KEYS, getSpecies, getSubnet } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useDiskQuery } from '../api.ts';
 import { run } from '../components/WorldCanvas.tsx';
@@ -21,8 +21,9 @@ export function SpriteImg({ species, types, clean, signature, size = 32 }: { spe
   return <canvas ref={ref} width={size} height={size} className="shrink-0" />;
 }
 
-/** Within 2 tiles of the subnet's host (unknown subnet ids, as in tests, count as never at the host). */
+/** Within 2 tiles of the subnet's host (unknown subnet ids, as in tests, count as never at the host; the arena sandbox has no host). */
 export function nearHost(subnet: string, me: { x: number; y: number }): boolean {
+  if (subnet === ARENA_SUBNET) return false;
   try {
     const host = getSubnet(subnet).host;
     return Math.hypot(me.x - host.x, me.y - host.y) <= 2;
@@ -35,6 +36,8 @@ export function RamPanel({ client }: { client: GameClient }) {
   const me = client.self;
   const manual = client.role === 'controller';
   const atHost = nearHost(client.subnet, me);
+  // the server refuses store, load, decompile, evolve and held-item changes in a match: say so instead of offering them
+  const inMatch = !!me.arena;
   const disk = useDiskQuery();
   // daemons with a decompile request in flight: the button stays disabled until it settles (the daemon is gone, or it failed)
   const [decompiling, setDecompiling] = useState<ReadonlySet<string>>(new Set());
@@ -53,7 +56,7 @@ export function RamPanel({ client }: { client: GameClient }) {
   return (
     <div className="space-y-2 p-3 text-sm">
       <p className="text-xs text-neutral-500">
-        RAM {me.ram.length}/{RAM_SLOTS} · running {me.running.length}/{RUNNING_MAX} · {atHost ? 'at the host: store/load enabled' : 'store/load only at the host'}
+        RAM {me.ram.length}/{RAM_SLOTS} · running {me.running.length}/{RUNNING_MAX} · {inMatch ? 'in an arena match: store, load, evolve and held items are unavailable' : atHost ? 'at the host: store/load enabled' : 'store/load only at the host'}
       </p>
       {me.ram
         .slice()
@@ -86,11 +89,11 @@ export function RamPanel({ client }: { client: GameClient }) {
                 <HeldSlot
                   daemon={d}
                   inventory={me.inventory}
-                  disabled={!manual}
+                  disabled={!manual || inMatch}
                   onHold={(item) => run(client.operator.hold(d.id, item), 'hold')}
                   onUnhold={() => run(client.operator.unhold(d.id), 'unhold')}
                 />
-                <EvolveSection daemon={d} disabled={!manual || running} onEvolve={(form) => run(client.operator.evolve(d.id, form), 'evolve')} />
+                <EvolveSection daemon={d} disabled={!manual || running || inMatch} onEvolve={(form) => run(client.operator.evolve(d.id, form), 'evolve')} />
                 <div className="mt-1 flex gap-2 text-xs">
                   {running ? (
                     <button className="text-neutral-300 hover:text-white" disabled={!manual} onClick={() => run(client.operator.recall(d.id), 'recall')}>
@@ -109,14 +112,15 @@ export function RamPanel({ client }: { client: GameClient }) {
                   </button>
                   <button
                     className="text-neutral-300 hover:text-white disabled:opacity-40"
-                    disabled={!manual || running || !atHost}
+                    disabled={!manual || running || !atHost || inMatch}
+                    title={inMatch ? 'unavailable in an arena match' : undefined}
                     onClick={() => run(client.operator.store(d.id).then(() => disk.refetch()), 'store')}
                   >
                     store
                   </button>
                   <button
                     className="text-red-300 hover:text-red-200 disabled:opacity-40"
-                    disabled={!manual || running || !atHost || decompiling.has(d.id)}
+                    disabled={!manual || running || !atHost || inMatch || decompiling.has(d.id)}
                     onClick={() => {
                       const rare = d.clean || d.signature > 0;
                       const what = d.clean ? 'a clean image' : d.signature > 0 ? `signature T${d.signature}` : 'a daemon';
