@@ -238,3 +238,13 @@ Fixed before merge: my listings show every active one; resync never drops a Disk
 - T1: buyListing invariant break → plain 500 (add a log line naming the listing); slot-steal test polls DB-wide pg_locks
 - T3: 409 hint "(nothing was charged)" also shown for list/unlist; failed buy doesn't refetch listings; paging shows old query during the 400 ms debounce; e2e listing on page 0 of a price-sorted browse (use the species filter)
 Task F: minor (deferred): replayed load can't return its old slot (stays marked until resync); browse exposes originalOperatorId of the capturer (decide before launch); DiskPush is single add/remove (plan 4 trades: one push per daemon or widen deliberately)
+
+## 2026-10-02-daemonet-sp5-plan4-trades-sdk-admin
+
+Fixed before merge: review gate can't be skipped; admin fees include trades; Disk push pairs dropped; closed trades keep what was given; SDK types complete; balance gate advisory; traded-history helper; market indexes
+
+- T1: duplicated `traded` history append (trades.ts/listings.ts → helper in ledger.ts); 403 vs 404 trade existence oracle (brief-mandated, UUIDs)
+- T2: token fetched once before 429 retries; unparsable 2xx body returns null; no caller abort signal
+- T3: Listing (status, soldAt) / Fill `at` indexes for the 15 s admin poll; no flooring/window-boundary test cases; no Market component test
+- T4: offers-changed warning flashes after own offer; tradeChanged store unused by panels; draft items no longer in the vault have no remove control; describeGiven/describeReceived duplicate; "no trades" during first load
+Task F: minor (deferred): pre-change trades lack stored daemon summaries (fallback to current species/level); trade griefing by filling 4 open-trade slots (block + cancel mitigate; note in moderation docs); privacy policy for seller/counterparty ids to be stated once in the spec before SP6 leaderboards
