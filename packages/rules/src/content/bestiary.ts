@@ -21,7 +21,7 @@ export interface BestiaryRow {
   name: string;
   /** Bestiary line 1-50. */
   line: number;
-  /** 0 = base form; capstones are 4. */
+  /** Depth in the tree; detect capstones with `capstone` / `evolvesAt === 64` (capstones can be stage 3 or 4). */
   stage: number;
   types: readonly TypeId[];
   role: Role;
