@@ -25,7 +25,7 @@ import { ChatService } from './chat.js';
 import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
 import { diffEntities } from './interest.js';
 import { BitsPush, DiskPush, ExchangePush, exchangeView, IncidentStartPush, OrgMembershipPush, RenamePush } from './pushes.js';
-import { randomHex, withItems, type ArenaResultInput, type ArenaSettlement, type ArenaSideResult, type IncidentRow, type Store } from './store.js';
+import { definitiveStoreError, randomHex, withItems, type ArenaResultInput, type ArenaSettlement, type ArenaSideResult, type IncidentRow, type Store } from './store.js';
 
 /** Transport-independent connection. */
 export interface Conn {
@@ -718,11 +718,16 @@ export class Game {
     if (command.cmd.startsWith('arena')) {
       // Entering and leaving matches is the runtime's business (outside the tick, no per-tick budget; the service has
       // its own limits); only fighting goes through the match world's tick. Replied to the connection that sent it.
-      // Ranked matchmaking reads the cached rating: refresh it (a season may have turned since the session loaded).
-      if ((command.cmd === 'arenaQueue' || command.cmd === 'arenaChallenge') && command.args.mode === 'ranked') this.loadRating(session);
       const r = this.arenaCommand(session.operatorId, command);
-      if (isArenaError(r)) this.error(st, r.code, r.message, reqId);
-      else this.send(st, { t: 'ack', seq: 0, d: { reqId, result: r } });
+      if (isArenaError(r)) return this.error(st, r.code, r.message, reqId);
+      this.send(st, { t: 'ack', seq: 0, d: { reqId, result: r } });
+      // Ranked matchmaking reads the cached rating: refresh it (a season may have turned since the session loaded),
+      // for a challenge the target's too (an accept starts the match at once, from the cache).
+      if ((command.cmd === 'arenaQueue' || command.cmd === 'arenaChallenge') && command.args.mode === 'ranked') {
+        this.loadRating(session);
+        const target = command.cmd === 'arenaChallenge' ? this.sessions.get(command.args.operatorId) : undefined;
+        if (target) this.loadRating(target);
+      }
       return;
     }
     if (command.cmd === 'clusterInvite' && (this.arena.inMatch(session.operatorId) || this.arena.inMatch(command.args.operatorId))) {
@@ -1138,8 +1143,10 @@ export class Game {
    * Persists an arena result on the write chain with an until-known intent's patience (#26): the same idempotent
    * write (by match id) is retried until the store answers. Past the cap, or during shutdown once the bounded
    * schedule is spent, it is left to the store and logged loudly: null, and nothing is invented (whatever the store
-   * committed stays there and the next load reads it; checkpoints never write bits or `arenaWins`). A RangeError (a
-   * malformed result) is definitive.
+   * committed stays there; checkpoints never write bits or `arenaWins`). Outside shutdown both operators then reload
+   * from the store (as `reloadFromStore`), since an earlier attempt may have committed what memory now lacks. A
+   * definitive store error (malformed result, a non-transient Prisma error) stops at once; it reloads them too when
+   * an earlier attempt's outcome is unknown.
    */
   private async recordArena(input: ArenaResultInput): Promise<ArenaSettlement | null> {
     const started = Date.now();
@@ -1147,8 +1154,9 @@ export class Game {
       try {
         return await this.serialized(() => this.store.recordArenaResult(input));
       } catch (err) {
-        if (err instanceof RangeError) {
-          this.log.error({ match: input.matchId, err: err.message }, 'arena result refused by the store');
+        if (definitiveStoreError(err)) {
+          this.log.error({ match: input.matchId, attempts: attempt + 1, err: (err as Error).message }, 'arena result refused by the store');
+          if (attempt > 0 && !this.stopping) this.requireReload([input.aId, input.bId]);
           return null;
         }
         if (attempt < this.retryDelays.length || attempt % WARN_EVERY === 0) {
@@ -1160,6 +1168,7 @@ export class Game {
             { match: input.matchId, a: input.aId, b: input.bId, attempts: attempt + 1, err: (err as Error).message },
             'arena result still unknown after the retry cap: left to the store',
           );
+          if (!this.stopping) this.requireReload([input.aId, input.bId]);
           return null;
         }
         await sleep(delay ?? Math.min(MAX_RETRY_MS, this.retryDelays.at(-1) ?? MAX_RETRY_MS));
@@ -1464,11 +1473,22 @@ export class Game {
       'intent outcome still unknown after the retry cap: operator reloads from the store',
     );
     world.abandonIntent(intent.id);
-    const session = this.sessions.get(intent.operatorId);
-    if (!session) return;
-    session.reloadRequired = true;
-    for (const st of [...(session.controller ? [session.controller] : []), ...session.spectators]) this.kick(st, RELOAD_KICK, CLOSE.unavailable);
-    session.leaveAtTick = this.ticks;
+    this.requireReload([intent.operatorId]);
+  }
+
+  /**
+   * Memory may disagree with the store for these operators: each is kicked `reload required`, refuses reconnects until
+   * it has left, and leaves with a checkpoint that skips the inventory (never bits), so the reconnect loads the store's
+   * state as the truth. An operator still in an arena match is sent home first (`leave` → `drop`).
+   */
+  private requireReload(operatorIds: readonly string[]): void {
+    for (const id of operatorIds) {
+      const session = this.sessions.get(id);
+      if (!session) continue;
+      session.reloadRequired = true;
+      for (const st of [...(session.controller ? [session.controller] : []), ...session.spectators]) this.kick(st, RELOAD_KICK, CLOSE.unavailable);
+      session.leaveAtTick = this.ticks;
+    }
   }
 
   private abandon(intent: Intent): void {

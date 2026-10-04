@@ -228,6 +228,23 @@ export function arenaResultProblem(input: ArenaResultInput): string | null {
   return null;
 }
 
+/** Prisma error codes that say nothing about the request itself (connection, pool, transaction conflict / timeout). */
+const TRANSIENT_PRISMA_CODES: ReadonlySet<string> = new Set(['P2024', 'P2028', 'P2034']);
+
+/**
+ * True for a store error that retrying the same write can never fix: a RangeError (malformed input), a Prisma
+ * validation error, or a Prisma known-request error other than a connection (P1xxx), pool timeout, transaction
+ * timeout or serialization conflict. Checked by name and code, so the sim needs no Prisma import here.
+ */
+export function definitiveStoreError(err: unknown): boolean {
+  if (err instanceof RangeError) return true;
+  const name = (err as { name?: unknown } | null)?.name;
+  if (name === 'PrismaClientValidationError') return true;
+  if (name !== 'PrismaClientKnownRequestError') return false;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' && !code.startsWith('P1') && !TRANSIENT_PRISMA_CODES.has(code);
+}
+
 /** The UTC day `[gte, lt)` an instant falls in (the arena caps are per UTC day). */
 export function utcDayOf(at: Date): { gte: Date; lt: Date } {
   const gte = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));

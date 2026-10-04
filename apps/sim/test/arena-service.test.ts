@@ -6,9 +6,9 @@ import { World, type OperatorRecord } from '../src/core/index.js';
 import { Out } from '../src/core/out.js';
 import { ArenaService } from '../src/runtime/arena.js';
 import { createDevVerifier } from '../src/runtime/auth.js';
-import { Game, type Conn, type Logger } from '../src/runtime/game.js';
+import { Game, RELOAD_KICK, type Conn, type Logger } from '../src/runtime/game.js';
 import { gracefulShutdown } from '../src/runtime/shutdown.js';
-import { MemoryStore, type ArenaResultInput, type ArenaSettlement, type ArenaSideResult } from '../src/runtime/store.js';
+import { MemoryStore, definitiveStoreError, type ArenaResultInput, type ArenaSettlement, type ArenaSideResult } from '../src/runtime/store.js';
 import { TEST_SUBNET, TEST_SUBNET_B, input, makeWorld, operatorRecord, ownedRecord, self, step } from './helpers.js';
 
 const COUNTDOWN = msToTicks(3000);
@@ -23,6 +23,8 @@ function harness(names: string[], ratings: Record<string, number> = {}) {
   const recorded: ArenaResultInput[] = [];
   const credited: Array<{ id: string; r: ArenaSideResult }> = [];
   let storeDown = false;
+  /** While set, results wait for the store (`hold` / `release`). */
+  let gate: { promise: Promise<void>; open: () => void } | null = null;
   const where = new Map<string, World>();
   const events: Array<{ to: string; event: GameEvent }> = [];
   const sent: Array<{ to: string; msg: ServerMessage }> = [];
@@ -58,6 +60,7 @@ function harness(names: string[], ratings: Record<string, number> = {}) {
     rating: (id) => ratings[id] ?? 1500,
     record: async (input) => {
       recorded.push(input);
+      if (gate) await gate.promise;
       return storeDown ? null : store.recordArenaResult(input);
     },
     rated: (id, rating) => (ratings[id] = rating),
@@ -102,6 +105,15 @@ function harness(names: string[], ratings: Record<string, number> = {}) {
     ratings,
     settled,
     failStore: () => (storeDown = true),
+    hold: () => {
+      let open!: () => void;
+      const promise = new Promise<void>((r) => (open = r));
+      gate = { promise, open };
+    },
+    release: () => {
+      gate?.open();
+      gate = null;
+    },
     advance: (ms: number) => (now += ms),
     of: (e: GameEvent['e'], to?: string) => events.filter((x) => x.event.e === e && (!to || x.to === to)).map((x) => x.event),
   };
@@ -481,26 +493,57 @@ describe('ArenaService', () => {
 
   it('a result the store settles after the return is credited to the home daemons by the runtime', async () => {
     const h = harness(['alice', 'bob']);
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    const record = (h.arena as unknown as { deps: { record: (i: ArenaResultInput) => Promise<ArenaSettlement | null> } }).deps;
-    const settle = record.record;
-    record.record = async (i) => {
-      await gate;
-      return settle(i);
-    };
+    h.hold();
     h.arena.accept('bob', h.challenge('alice', 'bob', 'ranked'));
     h.arena.worlds()[0]!.arena!.dealt.add('alice-d0');
     h.tick(COUNTDOWN);
     h.arena.forfeit('bob');
     h.tick(RETURN + 2);
     expect(h.where.get('alice')).toBe(h.home);
-    release();
+    h.release();
     await h.settled();
     expect(h.credited.find((c) => c.id === 'alice')!.r).toMatchObject({ reward: ARENA_WIN_BITS, arenaWins: ['alice-d0'] });
     expect(h.home.daemons.get('alice-d0')!.arenaWins).toBe(1);
     expect(h.home.operators.get('alice')!.bits).toBe(ARENA_WIN_BITS);
     expect(h.of('arenaResult', 'alice')).toHaveLength(1);
+  });
+
+  it('a result that lands while the winner is already in its next match goes to the home record, not the copies', async () => {
+    const h = harness(['alice', 'bob']);
+    h.hold();
+    h.arena.accept('bob', h.challenge('alice', 'bob', 'ranked'));
+    h.arena.worlds()[0]!.arena!.dealt.add('alice-d0');
+    h.tick(COUNTDOWN);
+    h.arena.forfeit('bob');
+    h.tick(RETURN + 2);
+    expect(h.where.get('alice')).toBe(h.home);
+    // the next match starts before the store has answered for the first
+    h.arena.accept('bob', h.challenge('alice', 'bob', 'unranked'));
+    const next = h.arena.worlds()[0]!;
+    expect(h.where.get('alice')).toBe(next);
+    h.release();
+    await h.settled();
+    expect(h.credited.find((c) => c.id === 'alice')!.r).toMatchObject({ reward: ARENA_WIN_BITS, arenaWins: [] });
+    expect(h.arena.homeRecord('alice')!.ram.map((d) => d.arenaWins)).toEqual([1, 0]);
+    expect(next.daemons.get('alice-d0')!.arenaWins).toBe(0); // a copy
+    expect(next.operators.get('alice')!.bits).toBe(ARENA_WIN_BITS);
+    h.arena.forfeit('alice');
+    h.tick(RETURN + 2);
+    await h.settled();
+    expect(h.where.get('alice')).toBe(h.home);
+    expect([h.home.daemons.get('alice-d0')!.arenaWins, h.home.daemons.get('alice-d1')!.arenaWins]).toEqual([1, 0]);
+    expect(h.home.operators.get('alice')!.bits).toBe(ARENA_WIN_BITS);
+    expect(h.store.daemons.get('alice-d0')!.arenaWins).toBe(1);
+  });
+
+  it('only a definitive store error stops the retries at once', () => {
+    const prisma = (name: string, code?: string) => Object.assign(new Error('x'), { name, code });
+    expect(definitiveStoreError(new RangeError('bad'))).toBe(true);
+    expect(definitiveStoreError(prisma('PrismaClientValidationError'))).toBe(true);
+    expect(definitiveStoreError(prisma('PrismaClientKnownRequestError', 'P2003'))).toBe(true);
+    for (const code of ['P1001', 'P1017', 'P2024', 'P2028', 'P2034']) expect(definitiveStoreError(prisma('PrismaClientKnownRequestError', code))).toBe(false);
+    expect(definitiveStoreError(prisma('PrismaClientInitializationError'))).toBe(false);
+    expect(definitiveStoreError(new Error('connection reset'))).toBe(false);
   });
 
   it('a match that ends in its countdown is recorded as not live (never counted)', async () => {
@@ -990,6 +1033,89 @@ describe('arena matches in the runtime', () => {
       await game.shutdown();
     });
 
+    it('a lost reply followed by an outage past the cap: both operators reload from the store, which holds the committed result', async () => {
+      const store = new ArenaStore();
+      store.loseNextReply = true;
+      store.downAfterLoss = true;
+      const { game, join, connect, ticks, rankedWin } = await setup({ store, retryDelaysMs: [1, 1], unknownRetryLimit: 3 });
+      const a = await join('alice');
+      const b = await join('bob');
+      await rankedWin(a, b);
+      await game.flush();
+      expect(store.calls).toBe(3);
+      // memory never saw the committed result: both are kicked and must reload
+      for (const o of [a, b]) expect(o.conn.of('kick').at(-1)!.d.reason).toBe(RELOAD_KICK);
+      expect(a.conn.events('bits')).toEqual([]);
+      ticks(1);
+      await game.flush();
+      expect(game.worldOf(a.id)).toBeUndefined();
+      expect(game.worldOf(b.id)).toBeUndefined();
+      store.down = false;
+      const settled = [...store.arenaMatches.values()][0]!.settlement;
+      expect(settled.counted).toBe(true);
+      const again = await connect('alice');
+      const bob = await connect('bob');
+      await game.flush();
+      expect(again.of('authOk')).toHaveLength(1);
+      expect(bob.of('authOk')).toHaveLength(1);
+      const w = game.worldOf(a.id)!;
+      expect(w.subnet.id).toBe('test');
+      expect(w.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
+      expect(w.daemons.get('alice-d0')!.arenaWins).toBe(1);
+      const sessions = (game as unknown as { sessions: Map<string, { arenaRating: number | null }> }).sessions;
+      expect(sessions.get(a.id)!.arenaRating).toBe(settled.a.after);
+      expect(sessions.get(b.id)!.arenaRating).toBe(settled.b.after);
+      await game.shutdown();
+    });
+
+    it('a definitive store error stops at once and, with no earlier unknown attempt, reloads nobody', async () => {
+      const store = new ArenaStore();
+      store.failWith = Object.assign(new Error('foreign key'), { name: 'PrismaClientKnownRequestError', code: 'P2003' });
+      const { game, join, ticks, rankedWin } = await setup({ store, retryDelaysMs: [1, 1] });
+      const a = await join('alice');
+      const b = await join('bob');
+      await rankedWin(a, b);
+      await game.flush();
+      ticks(1);
+      expect(store.calls).toBe(1);
+      expect(a.conn.of('kick')).toEqual([]);
+      expect(a.conn.events('arenaResult')).toEqual([expect.objectContaining({ counted: false, reward: 0 })]);
+      await game.shutdown();
+    });
+
+    it('a ranked challenge refreshes both ratings, and only when the command succeeded', async () => {
+      const store = new MemoryStore();
+      const season = seasonIdOf(new Date());
+      const rate = (id: string, rating: number) => store.arenaRatings.set(`${id}:${season}`, { rating, rd: 80, vol: 0.06, wins: 0, losses: 0, draws: 0 });
+      for (const name of ['ann', 'ben']) {
+        store.operators.set(name, { id: name, sub: `dev-${name}`, name, starterClaimed: true, subnet: 'test', bits: 0, diskCapacity: 256, x: 5.5, y: 5.5, inventory: {} });
+        rate(name, 1500);
+      }
+      const reads: string[] = [];
+      const read = store.arenaRating.bind(store);
+      store.arenaRating = async (id, at) => {
+        reads.push(id);
+        return read(id, at);
+      };
+      const { game, join } = await setup({ store });
+      const ann = await join('ann');
+      const ben = await join('ben');
+      await game.flush();
+      reads.length = 0;
+      await ann.cmd({ cmd: 'arenaChallenge', actor: 'self', args: { operatorId: 'ann', mode: 'ranked' } }); // refused
+      await ann.cmd({ cmd: 'arenaQueue', actor: 'self', args: { mode: 'unranked' } });
+      await ann.cmd({ cmd: 'arenaLeave', actor: 'self', args: {} });
+      expect(reads).toEqual([]);
+      rate('ann', 1620);
+      rate('ben', 1580);
+      await ann.cmd({ cmd: 'arenaChallenge', actor: 'self', args: { operatorId: 'ben', mode: 'ranked' } });
+      expect(reads.sort()).toEqual(['ann', 'ben']);
+      await game.flush();
+      await ben.cmd({ cmd: 'arenaAccept', actor: 'self', args: { challengeId: ben.conn.of('arenaChallenge').at(-1)!.d.challengeId } });
+      expect(game.worldOf('ann')!.arena!.ratings).toEqual({ ann: 1620, ben: 1580 });
+      await game.shutdown();
+    });
+
     it('a winner whose controller is gone but whose session remains is credited in memory', async () => {
       const store = new ArenaStore();
       const { game, world, join, ticks, rankedWin } = await setup({ store, leaveAfterTicks: 1000 });
@@ -1031,7 +1157,7 @@ describe('arena matches in the runtime', () => {
       expect(store.operators.get(a.id)!.bits).toBe(ARENA_WIN_BITS);
     });
 
-    it('a store unreachable past the retry cap: logged loudly, nothing credited or invented, everyone goes home', async () => {
+    it('a store unreachable past the retry cap: logged loudly, nothing credited or invented, both reload', async () => {
       const store = new ArenaStore();
       store.down = true;
       const errors: string[] = [];
@@ -1039,15 +1165,22 @@ describe('arena matches in the runtime', () => {
       const { game, world, join, ticks, rankedWin } = await setup({ store, retryDelaysMs: [1, 1], unknownRetryLimit: 4, log });
       const a = await join('alice');
       const b = await join('bob');
-      await rankedWin(a, b);
+      const announced: GameEvent[] = [];
+      const emit = world.emitCarry.bind(world);
+      const arena = await rankedWin(a, b);
+      arena.emitCarry = (event, scope) => (announced.push(event), emit.call(arena, event, scope));
       await game.flush();
-      ticks(RETURN + 1);
       expect(store.calls).toBe(4);
       expect(errors).toContain('arena result still unknown after the retry cap: left to the store');
-      expect(a.conn.events('arenaResult')).toEqual([expect.objectContaining({ outcome: 'win', counted: false, reward: 0 })]);
-      expect(a.conn.events('bits')).toEqual([]);
-      expect(world.operators.get(a.id)!.bits).toBe(0);
-      expect(world.daemons.get('alice-d0')!.arenaWins).toBe(0);
+      // announced uncounted, nothing credited; both reload from the store (an attempt may have committed)
+      expect(announced.filter((e) => e.e === 'arenaResult')).toEqual([expect.objectContaining({ outcome: 'win', counted: false, reward: 0 }), expect.objectContaining({ outcome: 'loss', counted: false })]);
+      expect(announced.filter((e) => e.e === 'bits')).toEqual([]);
+      for (const o of [a, b]) expect(o.conn.of('kick').at(-1)!.d.reason).toBe(RELOAD_KICK);
+      ticks(1);
+      await game.flush();
+      expect(game.worldOf(a.id)).toBeUndefined(); // gone home and left, nothing invented
+      expect(store.operators.get(a.id)!.bits).toBe(0);
+      expect(store.daemons.get('alice-d0')!.arenaWins).toBe(0);
       await game.shutdown();
     });
 
@@ -1090,6 +1223,10 @@ class ArenaStore extends MemoryStore {
   calls = 0;
   down = false;
   loseNextReply = false;
+  /** The store goes down right after the lost reply. */
+  downAfterLoss = false;
+  /** Thrown by every attempt while set. */
+  failWith: Error | null = null;
   private gate: { promise: Promise<void>; open: () => void } | null = null;
   hold() {
     let open!: () => void;
@@ -1103,10 +1240,12 @@ class ArenaStore extends MemoryStore {
   override async recordArenaResult(input: ArenaResultInput): Promise<ArenaSettlement> {
     this.calls++;
     if (this.gate) await this.gate.promise;
+    if (this.failWith) throw this.failWith;
     if (this.down) throw new Error('store unreachable');
     const settlement = await super.recordArenaResult(input);
     if (this.loseNextReply) {
       this.loseNextReply = false;
+      if (this.downAfterLoss) this.down = true;
       throw new Error('connection reset');
     }
     return settlement;
