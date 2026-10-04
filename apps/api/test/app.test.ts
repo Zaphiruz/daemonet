@@ -68,7 +68,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   });
   beforeEach(async () => {
     oidc = fakeOidc();
-    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
   });
 
   /** Runs the full login: /login sets the PKCE cookie, /callback exchanges and sets the session cookie. */
@@ -206,6 +206,52 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect((await app.inject({ method: 'GET', url: '/api/ready' })).json()).toEqual({ ok: true });
   });
 
+  it('serves the capture rules for all 16 families in type order', async () => {
+    const { cookie } = await login();
+    const codex = (await app.inject({ method: 'GET', url: '/api/codex', cookies: { [COOKIE_NAME]: cookie! } })).json();
+    expect(codex.challenges.map((c: { type: string }) => c.type)).toEqual(codex.types);
+    expect(codex.challenges).toHaveLength(16);
+    for (const c of codex.challenges) {
+      expect(c.rules.length).toBeGreaterThan(20);
+      expect(c.rules).not.toMatch(/github|\{@link/i);
+    }
+    expect(codex.challenges.find((c: { type: string }) => c.type === 'cache').rules).toContain('LRU');
+  });
+
+  it('hides undiscovered hidden requirements in the codex and lists discoveries with the discoverer', async () => {
+    const { cookie } = await login();
+    const cookies = { [COOKIE_NAME]: cookie! };
+    const before = (await app.inject({ method: 'GET', url: '/api/codex', cookies })).json();
+    const hidden = before.bestiary.find((r: { id: string }) => r.id === 'anycastrel');
+    expect(hidden).toMatchObject({ hidden: true, requirement: null });
+    expect(before.species.find((r: { id: string }) => r.id === 'anycastrel').requirement).toBeNull();
+    expect(before.bestiary.find((r: { id: string }) => r.id === 'broadcaw').requirement).toEqual([{ kind: 'heldItem', item: 'jumboframe' }]);
+    expect(before.discovered).toEqual([]);
+    const op = await prisma!.operator.findFirstOrThrow();
+    await prisma!.operator.update({ where: { id: op.id }, data: { name: 'alice' } });
+    await prisma!.discovery.create({ data: { formId: 'anycastrel', operatorId: op.id } });
+    const after = (await app.inject({ method: 'GET', url: '/api/codex', cookies })).json();
+    expect(after.bestiary.find((r: { id: string }) => r.id === 'anycastrel').requirement).toEqual([{ kind: 'dominantIV', stat: 'speed' }]);
+    expect(after.discovered).toEqual(['anycastrel']);
+    expect(after.discoveries).toMatchObject([{ formId: 'anycastrel', operatorName: 'alice' }]);
+  });
+
+  it('dev route seeds a daemon on Disk for the session operator', async () => {
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=eve' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    expect((await app.inject({ method: 'POST', url: '/api/dev/daemon', cookies, payload: { species: 'pingling', level: 8 } })).statusCode).toBe(403);
+    const seeded = await app.inject({ method: 'POST', url: '/api/dev/daemon', cookies, headers: csrf, payload: { species: 'pingling', level: 8 } });
+    expect(seeded.statusCode).toBe(200);
+    expect(seeded.json()).toMatchObject({ species: 'pingling', level: 8, slot: 0 });
+    const disk = (await app.inject({ method: 'GET', url: '/api/disk', cookies })).json();
+    expect(disk).toHaveLength(1);
+    expect(disk[0]).toMatchObject({ species: 'pingling', level: 8, slot: 0, heldItem: null, patched: false, crashes: 0 });
+    expect(disk[0].history[0]).toMatchObject({ kind: 'captured', detail: 'dev seed' });
+    const bad = await app.inject({ method: 'POST', url: '/api/dev/daemon', cookies, headers: csrf, payload: { species: 'nope', level: 8 } });
+    expect(bad.statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/dev/daemon', cookies, headers: csrf, payload: { species: 'pingling', level: 0 } })).statusCode).toBe(400);
+  });
+
   it('expires sessions server-side', async () => {
     const { cookie } = await login();
     await prisma!.session.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
@@ -326,6 +372,7 @@ describe.skipIf(!url)('API without the dev bypass', () => {
       oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false, disableRateLimit: true,
     });
     expect((await app.inject({ method: 'GET', url: '/api/auth/dev?name=alice' })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/api/dev/daemon', headers: csrf, payload: { species: 'pingling', level: 8 } })).statusCode).toBe(404);
     await app.close();
   });
 });

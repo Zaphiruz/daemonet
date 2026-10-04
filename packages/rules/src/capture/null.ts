@@ -22,6 +22,14 @@ export interface NullAnswer {
 
 export const nullFamily: ChallengeFamily<NullParams, NullPayload, NullAnswer> = {
   type: 'null',
+  rules: [
+    'Null: chase pointers through a memory dump.',
+    'memory is an array of cells; a node is two consecutive cells [value, next] at an even address >= 2.',
+    'next is the address of the following node, or 0 (null) at the end. Cells 0 and 1 are always 0.',
+    'Start at params.head and follow `next` until 0. Values are 0-255.',
+    'With noise, an unreachable decoy chain is also present (noise 1: floor(n/4) nodes, noise 2: floor(n/2)).',
+    'Answer: the sum of the values of the reachable chain (`size` nodes).',
+  ].join('\n'),
   answerSchema: z.object({ sum: z.number().int().nonnegative() }),
   generate(size, noise, rng) {
     const decoys = [0, Math.floor(size / 4), Math.floor(size / 2)][noise]!;

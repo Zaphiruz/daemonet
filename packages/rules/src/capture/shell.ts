@@ -64,6 +64,17 @@ export function runPipeline(pipeline: string, lines: readonly string[]): string[
 
 export const shellFamily: ChallengeFamily<ShellParams, ShellPayload, ShellAnswer> = {
   type: 'shell',
+  rules: [
+    'Shell: evaluate a small pipeline over `lines`.',
+    'Stages (separated by " | "): `grep <word>` keeps lines containing the word as a plain, case-sensitive',
+    'substring (no patterns); `sort` sorts lines (code-point order); `uniq` drops consecutive duplicates;',
+    '`cut -d<c> -f<n>` keeps the n-th (1-based) field split by the single character c (lines with fewer fields',
+    'become ""); `wc -l` replaces the output with one line holding the count. Blank lines in the INPUT are',
+    'ignored (noise); an empty string produced by a stage (e.g. `cut`) is a line like any other and is kept.',
+    'A generated pipeline with no `grep`, `cut` or `wc` stage gets at most 512 input lines',
+    '(blank lines not counted), so the answer stays small enough to submit.',
+    'Answer: the output lines.',
+  ].join('\n'),
   answerSchema: z.object({ output: z.array(z.string()).max(16384) }),
   generate(size, noise, rng) {
     const stages: string[] = [];

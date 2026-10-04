@@ -602,3 +602,14 @@ describe('hand-computed family fixtures', () => {
     expect(run([alloc(4), free(4), { op: 'alloc', id: 4, size: 4096 }])).toEqual([4]);
   });
 });
+
+describe('capture rules text', () => {
+  it('every registered family carries non-empty player-facing rules without source links', () => {
+    for (const type of TYPES) {
+      expect(hasFamily(type)).toBe(true);
+      const { rules } = getFamily(type);
+      expect(rules.trim().length).toBeGreaterThan(20);
+      expect(rules).not.toMatch(/github|\{@link|https?:\/\//i);
+    }
+  });
+});

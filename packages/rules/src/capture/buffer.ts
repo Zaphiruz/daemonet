@@ -31,6 +31,12 @@ export function ringContents(capacity: number, ops: readonly string[]): string {
 
 export const bufferFamily: ChallengeFamily<BufferParams, BufferPayload, BufferAnswer> = {
   type: 'buffer',
+  rules: [
+    'Buffer: an overwriting ring buffer of bytes holding at most `capacity` (>= 1) bytes.',
+    'Every op is exactly `r` or `w:` followed by two lowercase hex digits (one byte).',
+    '`w:<hex byte>` appends (when full, the oldest byte is dropped first); `r` removes the oldest byte',
+    '(no-op when empty). Answer: the remaining bytes, oldest first, as lowercase hex (`""` when empty).',
+  ].join('\n'),
   answerSchema: z.object({ contents: z.string().regex(/^(?:[0-9a-f]{2})*$/).max(65536) }),
   generate(size, _noise, rng) {
     const capacity = Math.max(2, Math.floor(size / 4));

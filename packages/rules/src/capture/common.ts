@@ -12,6 +12,8 @@ export interface Stage<P = unknown, Y = unknown, A = unknown> {
 
 export interface ChallengeFamily<P = unknown, Y = unknown, A = unknown> {
   type: TypeId;
+  /** Player-facing rule text (plain text), served by the Codex. */
+  rules: string;
   answerSchema: z.ZodType<A>;
   generate(size: number, noise: Noise, rng: Rng): Stage<P, Y, A>;
   check(expected: A, submitted: A): boolean;

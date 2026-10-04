@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@daemonet/db';
-import { ITEMS, MOVES, NATURES, SPECIES, TRAITS, TYPES, typeMultiplier } from '@daemonet/rules';
+import { BESTIARY, ITEMS, MOVES, NATURES, SPECIES, TRAITS, TYPES, getFamily, typeMultiplier } from '@daemonet/rules';
 import type { FastifyInstance } from 'fastify';
 import { hashToken, randomToken } from '../auth/session.js';
 
@@ -7,17 +7,44 @@ export const TICKET_TTL_MS = 60_000;
 /** Readiness must answer even when the database hangs (carry-forward #10: the sim uses 2 s too). */
 export const READY_TIMEOUT_MS = 2_000;
 
-/** Static content the client renders (Codex) — served from the same package the sim enforces. */
-export function codexPayload() {
+export interface DiscoveryRow {
+  formId: string;
+  operatorId: string;
+  operatorName: string | null;
+  discoveredAt: Date;
+}
+
+/**
+ * Static content the client renders (Codex) — served from the same package the sim enforces.
+ * Hidden evolution requirements are blanked until someone has discovered the form (SP3a spec §4.3);
+ * `discovered` lists every form that has been evolved into at least once. `challenges` carries each
+ * capture family's player-facing rule text (the package is private, so the client cannot read the source).
+ */
+export function codexPayload(discoveries: readonly DiscoveryRow[]) {
+  const discovered = new Set(discoveries.map((d) => d.formId));
+  const mask = <T extends { id: string; hidden: boolean; requirement: unknown }>(row: T): T =>
+    row.hidden && !discovered.has(row.id) ? { ...row, requirement: null } : row;
   return {
     types: TYPES,
     chart: Object.fromEntries(TYPES.map((a) => [a, Object.fromEntries(TYPES.map((d) => [d, typeMultiplier(a, [d])]))])),
-    species: SPECIES,
+    species: SPECIES.map(mask),
+    bestiary: BESTIARY.map(mask),
     moves: MOVES,
     items: ITEMS,
     natures: NATURES,
     traits: TRAITS,
+    challenges: TYPES.map((type) => ({ type, rules: getFamily(type).rules })),
+    discovered: [...discovered],
+    discoveries: discoveries.map((d) => ({ formId: d.formId, operatorName: d.operatorName, discoveredAt: d.discoveredAt })),
   };
+}
+
+export async function listDiscoveries(prisma: PrismaClient): Promise<DiscoveryRow[]> {
+  const rows = await prisma.discovery.findMany({ orderBy: { discoveredAt: 'asc' } });
+  if (rows.length === 0) return [];
+  const ops = await prisma.operator.findMany({ where: { id: { in: rows.map((r) => r.operatorId) } }, select: { id: true, name: true } });
+  const names = new Map(ops.map((o) => [o.id, o.name]));
+  return rows.map((r) => ({ formId: r.formId, operatorId: r.operatorId, operatorName: names.get(r.operatorId) ?? null, discoveredAt: r.discoveredAt }));
 }
 
 async function databaseReachable(prisma: PrismaClient): Promise<boolean> {
@@ -43,13 +70,14 @@ export function registerMiscRoutes(app: FastifyInstance, prisma: PrismaClient): 
     return reply.code(503).send({ ok: false });
   });
 
-  app.get('/api/codex', auth, async () => codexPayload());
+  app.get('/api/codex', auth, async () => codexPayload(await listDiscoveries(prisma)));
 
   app.get('/api/disk', auth, async (req) => {
     const rows = await prisma.daemon.findMany({ where: { operatorId: req.operator!.id, location: 'DISK' }, orderBy: { slot: 'asc' } });
     return rows.map((d) => ({
       id: d.id, species: d.species, level: d.level, xp: d.xp, nature: d.nature, traitSlot: d.traitSlot, ivs: d.ivs, bonus: d.bonus,
       clean: d.clean, signature: d.signature, hp: d.hp, energy: d.energy, moves: d.moves, crashed: d.crashed, slot: d.slot,
+      heldItem: d.heldItem, patched: d.patched, moveTypeUses: d.moveTypeUses, crashes: d.crashes, history: d.history,
       log: { originalOperatorId: d.originalOperatorId, capturedAt: d.capturedAt, subnet: d.captureSubnet, tool: d.captureTool, spawnIndex: d.spawnIndex },
     }));
   });

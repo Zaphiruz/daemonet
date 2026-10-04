@@ -45,6 +45,18 @@ export const CLOUD_MAX_KEYS = 256;
 
 export const cloudFamily: ChallengeFamily<CloudParams, CloudPayload, CloudAnswer> = {
   type: 'cloud',
+  rules: [
+    'Cloud: consistent hashing with virtual nodes (`nodes` >= 1, `vnodes` >= 1).',
+    'Ring points: for each node and each i in [0, vnodes): position = FNV-1a-32 (as an unsigned integer) of the',
+    'UTF-8 string "<node>#<i>". The ring is sorted by position ascending; points with equal positions are ordered',
+    'by node name ascending (code-unit order), whatever the order of `nodes`.',
+    'A key maps to the node of the first ring point (in that order) whose position is >= FNV-1a-32(UTF-8 key)',
+    '(equal counts), and when the key\'s hash is above every point it wraps to the first point of the ring.',
+    'Keys starting with \'#\' are comments to ignore (noise). A key listed twice is one entry.',
+    'A generated challenge has at most 256 real keys (so the answer stays small enough to submit);',
+    'larger sizes add nodes to the ring instead (3-8 nodes, plus one per 128 of size).',
+    'Answer: key -> node for every real key.',
+  ].join('\n'),
   answerSchema: z.object({
     placement: z
       .record(z.string().max(256), z.string().max(256))

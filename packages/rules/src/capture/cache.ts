@@ -42,6 +42,20 @@ export function lruHits(capacity: number, trace: readonly string[]): number {
 
 export const cacheFamily: ChallengeFamily<CacheParams, CachePayload, CacheAnswer> = {
   type: 'cache',
+  rules: [
+    'Cache: count the hits of an LRU cache.',
+    '',
+    'Input: `capacity` (number of keys the cache holds; capacity >= 1) and `trace`, a list of accesses processed in array',
+    'order. The cache starts empty.',
+    '- A trace entry whose first character is \'#\' is a comment (noise): skip it entirely; it is not an',
+    '  access and changes nothing.',
+    '- Every other entry is an access to that exact key (case-sensitive string comparison).',
+    '- Hit: the key is already in the cache. Count one hit; the key becomes the most recently used.',
+    '- Miss: the key is not in the cache. If the cache already holds `capacity` keys, first evict the least',
+    '  recently used key (the one whose latest access, hit or insert, is oldest); then insert the key as the',
+    '  most recently used. Misses are not counted.',
+    'Answer: `{ hits }`, the total number of hits.',
+  ].join('\n'),
   answerSchema: z.object({ hits: z.number().int().nonnegative() }),
   generate(size, noise, rng) {
     const capacity = Math.max(2, Math.floor(size / 4));

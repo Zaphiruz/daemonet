@@ -49,6 +49,13 @@ export const SOCKET_MAX_STATES = 256;
 
 export const socketFamily: ChallengeFamily<SocketParams, SocketPayload, SocketAnswer> = {
   type: 'socket',
+  rules: [
+    'Socket: run a (server-side) TCP state machine per connection over a segment trace.',
+    '  CLOSED --SYN--> SYN_RCVD --ACK|SYNACK--> ESTABLISHED --FIN--> CLOSE_WAIT --FIN--> LAST_ACK --ACK--> CLOSED',
+    '  RST from any state -> CLOSED. Any other (state, flag) pair is ignored.',
+    'Every connection starts CLOSED. Answer: `states`, the final state of every id listed in `connections` (CLOSED if',
+    'no segment names it) plus every `conn` named by a segment, whether or not it is listed in `connections`.',
+  ].join('\n'),
   answerSchema: z.object({
     states: z
       .record(z.string().max(256), z.enum(['CLOSED', 'SYN_RCVD', 'ESTABLISHED', 'CLOSE_WAIT', 'LAST_ACK']))

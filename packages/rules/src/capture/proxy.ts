@@ -39,6 +39,18 @@ export function wrap(layer: string, text: string): string {
 
 export const proxyFamily: ChallengeFamily<ProxyParams, ProxyPayload, ProxyAnswer> = {
   type: 'proxy',
+  rules: [
+    'Proxy: unwrap nested encapsulation.',
+    '`layers[0]` was applied to the inner text first and the last layer was applied last, so `payload` is the',
+    'output of the LAST layer: unwrap from the last layer back to the first. Each layer maps text to text:',
+    '- `hex`: lowercase hex of the text\'s UTF-8 bytes.',
+    '- `base64`: standard base64 (RFC 4648 alphabet, `=` padding) of the text\'s UTF-8 bytes.',
+    '- `xor:<n>` (n in 1..255): every UTF-8 byte XOR n, then lowercase hex (so the result is always printable).',
+    '- `lenprefix`: `<L>:` followed by the text, where L is the text\'s length in UTF-8 BYTES written in decimal',
+    '  (so the first \':\' always ends the prefix, even when the text itself contains \':\').',
+    'A generated challenge has 1 to 6 layers, at most 3 of them `hex`/`xor` (which double the length), so the payload',
+    'stays under about 20x the inner text. The inner text is UTF-8 and may be empty. Answer: the inner text, exactly (no trimming).',
+  ].join('\n'),
   answerSchema: z.object({ inner: z.string().max(65536) }),
   generate(size, _noise, rng) {
     let inner = '';

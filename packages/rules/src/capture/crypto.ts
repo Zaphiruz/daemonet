@@ -35,6 +35,15 @@ export const WORDS = deepFreeze([
 
 export const cryptoFamily: ChallengeFamily<CryptoParams, CryptoPayload, CryptoAnswer> = {
   type: 'crypto',
+  rules: [
+    'Crypto: recover a repeating-XOR key from known plaintext, then decrypt.',
+    'Plaintext is `size` characters of lowercase words and single spaces (ASCII).',
+    'Key length k = min(16, 2 + floor(size / 32)); key bytes are 1-255.',
+    'ciphertext[i] = plaintext[i] XOR key[i mod k], sent as hex.',
+    'params.known gives k consecutive plaintext characters starting at `offset`',
+    '(offset 0 with noise 0; a random offset otherwise).',
+    'Answer: the full plaintext.',
+  ].join('\n'),
   answerSchema: z.object({ plaintext: z.string().max(65536) }),
   generate(size, noise, rng) {
     let text = '';

@@ -54,6 +54,22 @@ export function deliveryOrder(params: SignalParams, signals: readonly SignalEven
 
 export const signalFamily: ChallengeFamily<SignalParams, SignalPayload, SignalAnswer> = {
   type: 'signal',
+  rules: [
+    'Signal: delivery order with a mask.',
+    '',
+    'Input: `signals` (each `{ t, sig }`), `masked` (a list of signal numbers) and `unmaskAt`.',
+    '1. Handle the signals in ascending `t`; signals with equal `t` are handled in their array order.',
+    '2. Before the mask is lifted, a signal whose number is in `masked` is not delivered: it becomes',
+    '   pending. Pending signals coalesce: the pending set holds each number at most once, however many',
+    '   times it arrived. A signal not in `masked` is delivered immediately (appended to the answer), even',
+    '   if the same number is delivered many times.',
+    '3. The mask is lifted exactly once, at time `unmaskAt`: before handling the first signal with',
+    '   `t` >= `unmaskAt` (so before any signal arriving at `unmaskAt`), all pending signals are delivered',
+    '   in ascending signal number and the pending set is emptied. If no signal has `t` >= `unmaskAt`, this',
+    '   happens after the last signal. From then on nothing is masked: every signal is delivered as it is',
+    '   handled.',
+    'Answer: `{ order }`, the signal numbers in delivery order.',
+  ].join('\n'),
   answerSchema: z.object({ order: z.array(z.number().int()).max(16384) }),
   generate(size, noise, rng) {
     const masked = [...new Set(Array.from({ length: rng.int(2, 6) }, () => rng.int(1, 31)))];

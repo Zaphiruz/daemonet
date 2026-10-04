@@ -32,6 +32,14 @@ export function packetCrc(seq: number, data: Uint8Array): number {
 
 export const packetFamily: ChallengeFamily<PacketParams, PacketPayload, PacketAnswer> = {
   type: 'packet',
+  rules: [
+    'Packet: reassemble fragments.',
+    'The message is `count` chunks of 4 bytes, chunk `seq` = bytes [4*seq, 4*seq+4).',
+    'Each fragment has crc = (seq + sum of its 4 data bytes) mod 256.',
+    'The payload also holds exact duplicates (floor(count/4)) and, with noise, decoys that reuse a real seq',
+    'but carry different data and a wrong crc (noise 1: floor(count/8), noise 2: floor(count/4)).',
+    'Answer: 32-bit FNV-1a of the reassembled message, 8 lowercase hex chars.',
+  ].join('\n'),
   answerSchema: z.object({ checksum: z.string().regex(/^[0-9a-f]{8}$/) }),
   generate(size, noise, rng) {
     const count = size;

@@ -30,6 +30,13 @@ export function leaked(events: readonly HeapEvent[]): number[] {
 
 export const heapFamily: ChallengeFamily<HeapParams, HeapPayload, HeapAnswer> = {
   type: 'heap',
+  rules: [
+    'Heap: find the leaked allocations.',
+    'Replay `alloc` / `free` events in order. `alloc` marks its id allocated (the `size` is irrelevant; allocating an',
+    'id that is already allocated changes nothing). `free` of an id that is not currently allocated (never allocated,',
+    'or already freed) is ignored (noise); an id that was freed may be allocated again. Answer: the ids still',
+    'allocated at the end, ascending numerically, each once.',
+  ].join('\n'),
   answerSchema: z.object({ leaked: z.array(z.number().int()).max(16384) }),
   generate(size, noise, rng) {
     const events: HeapEvent[] = [];

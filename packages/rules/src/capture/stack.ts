@@ -85,6 +85,22 @@ export function runStack(program: readonly string[], maxSteps = STACK_MAX_STEPS)
 
 export const stackFamily: ChallengeFamily<StackParams, StackPayload, StackAnswer> = {
   type: 'stack',
+  rules: [
+    'Stack: run a tiny stack machine and report the top of the stack.',
+    'The stack starts empty and execution starts at index 0 of `program`; every executed op (including `nop`,',
+    '`jz` and `jmp`) is one step and execution ends after `maxSteps` steps (always 4096).',
+    'Ops (`n`, `k` are decimal integers):',
+    '- `push n`: push n reduced to a 32-bit signed integer.',
+    '- `add`, `sub`, `mul`: pop b (the top), pop a, push a+b, a-b or a*b wrapped to 32-bit signed (`mul` is the',
+    '  low 32 bits of the product).',
+    '- `dup`: pop a, push a, a.   `swap`: pop b, pop a, push b, a (exchanging the top two).   `drop`: pop and discard.',
+    '- `jz k`: pop; if the value is 0 continue at index k, otherwise at the next index (the value is popped either way).',
+    '- `jmp k`: continue at index k.   `nop`: nothing.',
+    'No other mnemonics occur.',
+    'Popping an empty stack yields 0 (nothing is removed). Execution also ends when the next index is outside',
+    '0..length-1 (past the last op, or a jump target that is negative or too large).',
+    'Answer: the top of the stack when execution ends (0 when the stack is empty).',
+  ].join('\n'),
   answerSchema: z.object({ top: z.number().int().min(-2147483648).max(2147483647) }),
   generate(size, noise, rng) {
     const program: string[] = [];

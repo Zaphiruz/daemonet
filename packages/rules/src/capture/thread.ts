@@ -55,6 +55,21 @@ export function firstRace(events: readonly ThreadEvent[]): [number, number] {
 
 export const threadFamily: ChallengeFamily<ThreadParams, ThreadPayload, ThreadAnswer> = {
   type: 'thread',
+  rules: [
+    'Thread: find the first data race.',
+    '',
+    'Input: `events`, executed in array order; indices are 0-based positions in that array (lock and unlock',
+    'events count). Each event is `{ thread, op, obj }`.',
+    '- `lock` adds lock `obj` to the set of locks held by `thread`; `unlock` removes it. Held locks are a',
+    '  set per thread: locking a lock already held changes nothing, and one `unlock` releases it fully;',
+    '  unlocking a lock not held changes nothing.',
+    '- `read` / `write` access data `obj`. The lock set of an access is the set its thread holds at that',
+    '  moment, i.e. after applying all of that thread\'s earlier lock/unlock events.',
+    '- Two accesses at indices i < j race when they have the same `obj`, are from different threads, at',
+    '  least one is a `write`, and their lock sets share no lock.',
+    'Answer: `{ race: [i, j] }` for the race with the smallest i, and among those the smallest j;',
+    '`[-1, -1]` when no race exists.',
+  ].join('\n'),
   answerSchema: z.object({ race: z.tuple([z.number().int(), z.number().int()]) }),
   generate(size, _noise, rng) {
     const threads = rng.int(2, 4);
