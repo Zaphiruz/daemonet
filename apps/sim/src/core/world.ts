@@ -18,7 +18,7 @@ import {
   type SubnetDef,
 } from '@daemonet/rules';
 import { Grid, type Point } from './grid.js';
-import { freshEngagement, isEconomyIntent, isInventoryIntent, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
+import { freshEngagement, isEconomyIntent, partyKey, isInventoryIntent, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
 import { Out } from './out.js';
 import { planWild } from './systems/ai.js';
 import { executeQueuedUses, type QueuedUse } from './systems/combat.js';
@@ -147,6 +147,7 @@ export class World {
       acceptedKeys: new Set(rec.acceptedToday),
       research: { ...rec.research },
       mutedUntil: rec.mutedUntil,
+      cluster: null,
     };
     this.operators.set(op.id, op);
     for (const d of [...rec.ram].sort((a, b) => a.slot - b.slot)) this.addOwned(op, d);
@@ -158,9 +159,12 @@ export class World {
     if (!op) return;
     if (op.captureId) this.captures.delete(op.captureId);
     for (const d of op.ram) this.daemons.delete(d);
+    const key = partyKey(op);
     this.operators.delete(id);
-    // Wilds it tagged would stay locked to an operator who is gone (leave or travel) until the tag window ran out.
-    for (const d of this.daemons.values()) if (d.wild?.tagOwner === id) this.releaseTag(d);
+    // Wilds its party tagged would stay locked to a party with nobody left here (leave or travel) until the tag window
+    // ran out; while another member of the party is still in this world, the tag stays theirs.
+    for (const other of this.operators.values()) if (partyKey(other) === key) return;
+    for (const d of this.daemons.values()) if (d.wild?.tagOwner === key) this.releaseTag(d);
   }
 
   /** Ends a wild daemon's tag: it forgets its attackers and heals (as when the tag window expires). */

@@ -2,7 +2,7 @@ import { SCAN_BUCKETS, SCAN_BUCKET_WIDTH, SCAN_IVS, SCAN_NATURE, STAT_KEYS, getS
 import { evolutionOptions } from '@daemonet/rules/evolution';
 import type { Entity, OperatorSelf, RamDaemon } from '@daemonet/shared';
 import { distance } from './grid.js';
-import type { Daemon, Operator } from './model.js';
+import { partyKey, type Daemon, type Operator } from './model.js';
 import { evolutionContext } from './systems/evolve.js';
 import { boardTicket } from './systems/tickets.js';
 import type { World } from './world.js';
@@ -28,7 +28,21 @@ function scanFor(viewer: Operator | undefined, d: Daemon): Scan | undefined {
   return scan;
 }
 
-/** `viewer` adds the scan fields its research unlocks (wild daemons only); without a viewer there are none. */
+/**
+ * Who holds the tag, as `viewer` sees it: a tag held by the viewer's own party reads as the viewer's id (so
+ * `taggedBy === me.id` keeps working in clusters); any other tag reads as its raw party key (an operator id, or an
+ * opaque `cluster:<id>` that names no member). Without a viewer it is always the raw key.
+ */
+function taggedByFor(viewer: Operator | undefined, d: Daemon): string | null {
+  const key = d.wild?.tagOwner ?? null;
+  if (key === null) return null;
+  return viewer && key === partyKey(viewer) ? viewer.id : key;
+}
+
+/**
+ * `viewer` adds the scan fields its research unlocks (wild daemons only; without a viewer there are none) and translates
+ * a tag held by its own party to its own id.
+ */
 export function toDaemonEntity(world: World, d: Daemon, viewer?: Operator): Entity {
   const scan = scanFor(viewer, d);
   return {
@@ -42,7 +56,7 @@ export function toDaemonEntity(world: World, d: Daemon, viewer?: Operator): Enti
     hp: d.hp,
     maxHp: d.stats.hp,
     owner: d.ownerId,
-    taggedBy: d.wild?.tagOwner ?? null,
+    taggedBy: taggedByFor(viewer, d),
     clean: d.clean,
     signature: d.signature,
     statuses: activeStatuses(world, d),
@@ -115,6 +129,9 @@ export function toSelf(world: World, op: Operator): OperatorSelf {
         progress: t.progress,
         title: boardTicket(t.subnet, t.day, t.index)?.title ?? t.kind,
       })),
+    cluster: op.cluster
+      ? { id: op.cluster.id, code: op.cluster.code, leaderId: op.cluster.leaderId, members: op.cluster.members.map((m) => ({ ...m })) }
+      : null,
     ticketsToday: op.ticketsToday,
     ticketsDay: op.ticketsDay,
     research: { ...op.research },
@@ -126,7 +143,7 @@ export function toSelf(world: World, op: Operator): OperatorSelf {
   };
 }
 
-/** Every operator and active daemon within `radius` of (x, y), projected for `viewer` (scans). */
+/** Every operator and active daemon within `radius` of (x, y), projected for `viewer` (scans, own-party tags). */
 export function entitiesNear(world: World, x: number, y: number, radius = INTEREST_RADIUS, viewer?: Operator): Entity[] {
   const at = { x, y };
   const out: Entity[] = [];

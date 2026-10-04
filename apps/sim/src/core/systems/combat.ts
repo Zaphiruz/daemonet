@@ -1,6 +1,6 @@
 import { ENERGY_MAX, TAG_WINDOW_MS, damage, effectiveCooldownMs, getItem, getMove, typeIndex, type MoveDef } from '@daemonet/rules';
 import { distance, type Point } from '../grid.js';
-import { Rejection, freshEngagement, type Daemon, type Input, type Operator } from '../model.js';
+import { Rejection, freshEngagement, partyKey, type Daemon, type Input, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
 
@@ -45,12 +45,22 @@ type Victim = { kind: 'daemon'; d: Daemon } | { kind: 'operator'; op: Operator }
 const pos = (v: Victim): Point => (v.kind === 'daemon' ? v.d : v.op);
 const vid = (v: Victim): string => (v.kind === 'daemon' ? v.d.id : v.op.id);
 
-/** Who `attacker` may hit. Owned daemons hit wild daemons not tagged by someone else; wild daemons hit the side they are fighting. */
+/** The party key an owned daemon tags with: its owner's (the bare owner id only if the owner is somehow gone). */
+function attackerKey(world: World, attacker: Daemon): string {
+  const owner = world.operators.get(attacker.ownerId!);
+  return owner ? partyKey(owner) : attacker.ownerId!;
+}
+
+/**
+ * Who `attacker` may hit. Owned daemons hit wild daemons untagged or tagged by their owner's party; wild daemons hit the
+ * side they are fighting.
+ */
 function candidates(world: World, attacker: Daemon): Victim[] {
   if (attacker.ownerId) {
+    const key = attackerKey(world, attacker);
     const out: Victim[] = [];
     for (const d of world.daemons.values()) {
-      if (d.wild && d.active && d.hp > 0 && (d.wild.tagOwner === null || d.wild.tagOwner === attacker.ownerId)) out.push({ kind: 'daemon', d });
+      if (d.wild && d.active && d.hp > 0 && (d.wild.tagOwner === null || d.wild.tagOwner === key)) out.push({ kind: 'daemon', d });
     }
     return out;
   }
@@ -166,7 +176,7 @@ function applyHit(world: World, attacker: Daemon, target: Daemon, move: MoveDef,
       target.engagement.blocked = engagement.blocked;
       target.engagement.survived = engagement.survived;
     }
-    target.wild.tagOwner = attacker.ownerId;
+    target.wild.tagOwner = attackerKey(world, attacker);
     target.wild.tagUntil = tick + world.ticks(TAG_WINDOW_MS);
     target.wild.damagedBy.add(attacker.id);
     target.wild.aggro ??= attacker.id;

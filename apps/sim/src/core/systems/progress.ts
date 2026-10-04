@@ -1,7 +1,28 @@
 import { computeStats, getSpecies, levelForXp, movesAtLevel, splitXp, xpYield } from '@daemonet/rules';
+import { distance, type Point } from '../grid.js';
+import { partyKey, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
 import { advanceTickets } from './tickets.js';
+
+/** XP and ticket credit reach party members within this many tiles of the defeated / captured daemon. */
+export const PARTY_RADIUS = 32;
+
+/** Operators of the party `key` that are in this world and near `at`. */
+export function partyPresent(world: World, key: string, at: Point): Operator[] {
+  const out: Operator[] = [];
+  for (const op of world.operators.values()) if (partyKey(op) === key && distance(op, at) <= PARTY_RADIUS) out.push(op);
+  return out;
+}
+
+/** The daemons that damaged the target and belong to a present party member (not crashed). */
+export function partyRecipients(world: World, key: string, damagedBy: ReadonlySet<string>, at: Point): string[] {
+  const owners = new Set(partyPresent(world, key, at).map((o) => o.id));
+  return [...damagedBy].filter((id) => {
+    const d = world.daemons.get(id);
+    return d !== undefined && d.ownerId !== null && owners.has(d.ownerId) && !d.crashed;
+  });
+}
 
 /** Split `total` XP across owned daemons; level them up (stats, HP delta, moves). */
 export function awardXp(world: World, daemonIds: readonly string[], total: number, out: Out): void {
@@ -22,18 +43,19 @@ export function awardXp(world: World, daemonIds: readonly string[], total: numbe
   });
 }
 
-/** Crash owned daemons at 0 HP; defeat wild daemons at 0 HP (XP to the tag owner's damaging daemons). */
+/**
+ * Crash owned daemons at 0 HP; defeat wild daemons at 0 HP: XP to the damaging daemons of the tagging party's present
+ * members, and a clear for each present member (per-member ticket credit, SP4 plan 2).
+ */
 export function resolveDefeats(world: World, out: Out): void {
   for (const d of [...world.daemons.values()]) {
     if (!d.active || d.hp > 0) continue;
     out.emit({ e: 'crash', daemon: d.id }, { at: d });
     if (d.wild) {
-      const owner = d.wild.tagOwner ? world.operators.get(d.wild.tagOwner) : undefined;
-      if (owner) {
-        const recipients = [...d.wild.damagedBy].filter((id) => owner.ram.includes(id) && !world.daemons.get(id)!.crashed);
-        awardXp(world, recipients, xpYield(getSpecies(d.species).baseYield, d.level), out);
-        // A clear counts for the tag owner only (the operator whose daemons fought it).
-        advanceTickets(world, owner, { kind: 'clear', type: d.types[0]! }, out);
+      if (d.wild.tagOwner) {
+        awardXp(world, partyRecipients(world, d.wild.tagOwner, d.wild.damagedBy, d), xpYield(getSpecies(d.species).baseYield, d.level), out);
+        // A clear counts for every member of the tagging party who is present (same world, within PARTY_RADIUS).
+        for (const member of partyPresent(world, d.wild.tagOwner, d)) advanceTickets(world, member, { kind: 'clear', type: d.types[0]! }, out);
       }
       world.removeDaemon(d.id);
       continue;

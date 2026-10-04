@@ -4,3 +4,4 @@ export * from './model.js';
 export { INTEREST_RADIUS, entitiesNear, toDaemonEntity, toOperatorEntity, toRamDaemon, toSelf } from './view.js';
 export { HOST_RADIUS, LEASH_TILES, RESTORE_CHANNEL_MS, STARTER_LEVEL } from './systems/commands.js';
 export { OPERATOR_SPEED, daemonSpeed } from './systems/movement.js';
+export { PARTY_RADIUS } from './systems/progress.js';

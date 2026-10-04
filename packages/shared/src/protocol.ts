@@ -105,7 +105,10 @@ export const DaemonEntity = z.object({
   maxHp: z.number(),
   /** Operator id for running daemons, null for wild ones. */
   owner: Id.nullable(),
-  /** Operator (or cluster) currently holding the tag on a wild daemon. */
+  /**
+   * Who holds the tag on a wild daemon, as the viewer sees it: the viewer's own id when the viewer's party (it, or its
+   * cluster) holds it; otherwise the holder's operator id or an opaque `cluster:<id>`.
+   */
   taggedBy: Id.nullable(),
   clean: z.boolean(),
   signature: z.number().int().min(0).max(15),
@@ -195,6 +198,15 @@ export const OperatorSelf = z.object({
       title: z.string(),
     }),
   ),
+  /** The cluster this operator is in (SP4): join code, leader, members with their subnet; `away` = not in your subnet. */
+  cluster: z
+    .object({
+      id: Id,
+      code: z.string(),
+      leaderId: Id,
+      members: z.array(z.object({ id: Id, name: z.string().nullable(), subnet: z.string().nullable(), away: z.boolean() })),
+    })
+    .nullable(),
   /** Tickets accepted today (UTC), of TICKETS_PER_DAY. */
   ticketsToday: z.number().int(),
   /** The server's UTC day (YYYY-MM-DD) `ticketsToday` counts; the day of today's boards. */

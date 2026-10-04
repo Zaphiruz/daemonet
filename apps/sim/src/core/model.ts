@@ -38,6 +38,22 @@ export interface OwnedDaemonRecord {
   originalOperatorId: string | null;
 }
 
+/** A cluster as one member sees it (the runtime's ClusterService writes it onto the operator). */
+export interface ClusterView {
+  id: string;
+  code: string;
+  leaderId: string;
+  members: Array<{ id: string; name: string | null; subnet: string | null; away: boolean }>;
+}
+
+/**
+ * Who a tag belongs to (SP4 spec §6): the cluster while the operator is in one, otherwise the operator.
+ * Everything that used to compare `tagOwner` with an operator id compares party keys instead.
+ */
+export function partyKey(op: { id: string; cluster: ClusterView | null }): string {
+  return op.cluster ? `cluster:${op.cluster.id}` : op.id;
+}
+
 /** An accepted, still-open ticket as the sim tracks it. */
 export interface OpenTicket {
   id: string;
@@ -94,6 +110,7 @@ export interface WildState {
   behaviour: Behaviour;
   region: number;
   spawnIndex: number;
+  /** Party key (`partyKey`) of whoever holds the tag: never compare it with a bare operator id. */
   tagOwner: string | null;
   tagUntil: number;
   hardenedUntil: number;
@@ -195,6 +212,8 @@ export interface Operator {
   research: Record<string, number>;
   /** Chat mute as loaded with the record (the runtime's chat service owns the live value). */
   mutedUntil: string | null;
+  /** Set by the runtime's cluster service; null when solo. Not persisted. */
+  cluster: ClusterView | null;
 }
 
 export interface Capture {

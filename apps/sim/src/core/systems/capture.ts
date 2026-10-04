@@ -14,12 +14,12 @@ import {
   type ToolId,
 } from '@daemonet/rules';
 import { distance } from '../grid.js';
-import { Rejection, type Capture, type Intent, type IntentResult, type Operator } from '../model.js';
+import { Rejection, partyKey, type Capture, type Intent, type IntentResult, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import { toRamDaemon } from '../view.js';
 import { addResearch, type World } from '../world.js';
 import { FLEE_MS } from './ai.js';
-import { awardXp } from './progress.js';
+import { awardXp, partyRecipients } from './progress.js';
 import { advanceTickets } from './tickets.js';
 
 export function startCapture(world: World, op: Operator, args: { targetId: string; tool: ToolId }, out: Out): string {
@@ -28,7 +28,7 @@ export function startCapture(world: World, op: Operator, args: { targetId: strin
   if ((op.inventory[tool.id] ?? 0) <= 0) throw new Rejection('E_STATE', `no ${tool.id} left`);
   const target = world.daemons.get(args.targetId);
   if (!target || !target.wild || !target.active || target.hp <= 0) throw new Rejection('E_STATE', 'not a wild daemon');
-  if (target.wild.tagOwner !== null && target.wild.tagOwner !== op.id) throw new Rejection('E_STATE', 'tagged by another operator');
+  if (target.wild.tagOwner !== null && target.wild.tagOwner !== partyKey(op)) throw new Rejection('E_STATE', 'tagged by another operator');
   if (distance(op, target) > tool.range) throw new Rejection('E_RANGE', 'target out of tool range');
   if (op.ram.length + op.reservedSlots.size >= RAM_SLOTS && op.diskSlots.size >= op.diskCapacity) {
     throw new Rejection('E_STATE', 'RAM and Disk are full');
@@ -36,7 +36,7 @@ export function startCapture(world: World, op: Operator, args: { targetId: strin
 
   op.inventory[tool.id] = (op.inventory[tool.id] ?? 0) - 1;
   const tick = world.tick;
-  target.wild.tagOwner = op.id;
+  target.wild.tagOwner = partyKey(op);
   target.wild.tagUntil = tick + world.ticks(TAG_WINDOW_MS);
   const size = challengeSize(
     {
@@ -97,8 +97,8 @@ function commitCapture(world: World, op: Operator, cap: Capture, out: Out): void
   const target = world.daemons.get(cap.targetId)!;
   const wild = target.wild!;
   const sp = getSpecies(target.species);
-  const recipients = [...wild.damagedBy].filter((id) => op.ram.includes(id) && !world.daemons.get(id)!.crashed);
-  awardXp(world, recipients, xpYield(sp.baseYield, target.level), out);
+  // XP to the damaging daemons of every present member of the tagging party (SP4 spec §6).
+  awardXp(world, partyRecipients(world, wild.tagOwner ?? partyKey(op), wild.damagedBy, target), xpYield(sp.baseYield, target.level), out);
 
   let location: 'RAM' | 'DISK' = 'RAM';
   let slot = world.freeRamSlot(op);
