@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ALLOWED_VAULT_KEYS, filterSecrets } from '../env-filter.mjs';
 
 describe('filterSecrets', () => {
-  it('passes exactly the 9 documented keys', () => {
+  it('passes exactly the 10 documented keys', () => {
     const doc = Object.fromEntries(ALLOWED_VAULT_KEYS.map((k) => [k, 'v']));
     expect([...ALLOWED_VAULT_KEYS]).toEqual([
       'DATABASE_URL',
@@ -14,6 +14,7 @@ describe('filterSecrets', () => {
       'SUBNETS',
       'LOG_LEVEL',
       'PORT',
+      'REDIS_URL',
     ]);
     expect(ALLOWED_VAULT_KEYS).toContain('MAX_CONNECTIONS_PER_IP');
     expect(filterSecrets(doc)).toEqual({ applied: doc, ignored: [] });

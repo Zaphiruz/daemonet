@@ -1,5 +1,5 @@
 /**
- * The only environment keys Vault may set: exactly the 9-key `secret/daemonet` document that
+ * The only environment keys Vault may set: exactly the 10-key `secret/daemonet` document that
  * `scripts/provision-secrets.sh` writes and `apps/sim/src/runtime/config.ts` reads.
  *
  * An allowlist (not a denylist) so that `AUTH_DEV_BYPASS`, `NODE_ENV`, `NODE_OPTIONS`,
@@ -16,6 +16,7 @@ export const ALLOWED_VAULT_KEYS = Object.freeze([
   'SUBNETS',
   'LOG_LEVEL',
   'PORT',
+  'REDIS_URL',
 ]);
 
 /** Split a Vault secret bag into values that may be applied and the key NAMES (never values) that were dropped. */

@@ -4,7 +4,7 @@
 #
 # Nothing secret is printed, written to this machine's disk, or put on a command line:
 #   - you type the Vault root token (hidden input)
-#   - the DB password is read from the root-only file on S2 (OPERATIONS step 3)
+#   - the DB and Redis passwords are read from root-only files on S2 (OPERATIONS step 3)
 #   - everything travels over ssh stdin into `vault kv put`; the periodic app token travels
 #     LC3 -> here (in a variable) -> S1:/root/.daemonet-vault-token (mode 600)
 #
@@ -29,13 +29,17 @@ say "== Reading the DB password from S2 =="
 DB_PW=$(ssh -o BatchMode=yes S2 'cat /root/.daemonet-db-pw')
 [ -n "$DB_PW" ] || { say "Missing /root/.daemonet-db-pw on S2 (OPERATIONS step 3)."; exit 1; }
 
+say "== Reading the Redis ACL password from S2 =="
+REDIS_PW=$(ssh -o BatchMode=yes S2 'cat /root/.daemonet-redis-pw')
+[ -n "$REDIS_PW" ] || { say "Missing /root/.daemonet-redis-pw on S2 (OPERATIONS step 3, Redis)."; exit 1; }
+
 say "== Building the secret document =="
 PY=$(command -v python3 || command -v py || command -v python || true)
 [ -n "$PY" ] || { say "Python is required (python3, py or python)."; exit 1; }
 [ "$(basename "$PY" .exe)" = py ] && PY="$PY -3"
 # Generated in memory, never printed. A re-run replaces it, which signs every web session out.
 SESSION_SECRET=$($PY -c 'import secrets; print(secrets.token_hex(32))')
-export DB_PW BOT_CLIENT_ID WEB_CLIENT_ID WEB_CLIENT_SECRET SESSION_SECRET
+export DB_PW REDIS_PW BOT_CLIENT_ID WEB_CLIENT_ID WEB_CLIENT_SECRET SESSION_SECRET
 KV_JSON=$($PY - <<'PY'
 import json, os
 d = {
@@ -54,6 +58,8 @@ d = {
   "SUBNETS": "lo,lan,dmz,backbone,darknet,cloudnet",
   "LOG_LEVEL": "info",
   "PORT": "3000",
+  # Shared Redis on S2: ACL user daemonet (keys/channels daemonet:*), logical DB 4. Sim and api both use it.
+  "REDIS_URL": f"redis://daemonet:{os.environ['REDIS_PW']}@192.168.40.20:6379/4",
   # apps/api (web login). The sim's entrypoint drops these (and the api drops the bot/sim-only keys);
   # each app's allowlist logs only the NAMES it ignored.
   "SESSION_SECRET": os.environ["SESSION_SECRET"],
@@ -101,5 +107,5 @@ ssh -o BatchMode=yes S1 '
     | curl -s -o /dev/null -w "%{http_code}" -H @- https://vault.wispy-nook.casa/v1/secret/data/daemonet)
   echo "GET secret/data/daemonet with the app token -> HTTP $code (want 200)" >&2'
 
-unset VAULT_ROOT_TOKEN DB_PW KV_JSON APP_TOKEN WEB_CLIENT_SECRET SESSION_SECRET
+unset VAULT_ROOT_TOKEN DB_PW REDIS_PW KV_JSON APP_TOKEN WEB_CLIENT_SECRET SESSION_SECRET
 say "Done. Next: OPERATIONS step 6 (move the token into /opt/daemonet, write .env)."
