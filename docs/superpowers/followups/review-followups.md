@@ -94,3 +94,18 @@ Task F: minor (deferred): kernel↔signal and shell↔root are mutual ×2 streng
 Task F: minor (deferred): id reuse across namespaces (cosmicray move + evolution item; sigstop move + species) — accept or add a cross-namespace uniqueness test
 Task F: minor (deferred): Codex panel still renders a 4×4 "SP1 types" chart (SP3a plan 4 replaces it)
 Task F: minor (deferred): add a SUBNET_IDS constant so bestiary `subnet` requirements can be validated once the other subnets exist
+
+## 2026-09-30-daemonet-sp3a-plan2-challenge-families
+
+Fixed before merge: every answer fits submitCapture (MAX_ANSWER_BYTES; cloud ≤256 keys, shell input cap); chain stages min(size,256); SDK re-exports all 16 families; socket/shell/root/buffer/stack doc fixes; socket/root tables frozen, socket answer bounded
+
+- T1: no direct decoy-count assertion (⌊size/8⌋/⌊size/4⌋) for the new families
+- T1: thread stray-unlock fixture doesn't isolate the edge (unclamped-counter bug cancels out); add stray-unlock-then-lock fixture
+- T2: shell -d<space> would break stage.split(' ') (latent; generator emits ','); literal U+FFFF in test source → use escape
+- T2: root fixture for owner denied by owner triple while other grants
+- T3: heap "bad" frees can hit live ids (real frees, not inert decoys)
+Task F: minor (deferred): shell grep-only answer bound is probabilistic (~30% measured headroom), not provable
+Task F: minor (deferred): sandbox bridge.ts:168 compares UTF-16 raw.length against a byte limit (MAX_SUBMIT_BYTES)
+Task F: minor (deferred): proxy b64 spreads up to ~8 KB into String.fromCharCode(...) — chunk it; HeapParams.events duplicates payload length
+Task F: minor (deferred): spec §5 drift to record — thread events have no `t`; socket has a `connections` param; MAX_CHALLENGE_SIZE=1024 clamp and chain stages min(size,256) deviate from the design specs' sizing text
+Task F: parked: family doc comments vanish at runtime (rules is private) and SP3a plan 4 has no step surfacing them in the Codex — carry-forward #22 tells plan 4 to add ChallengeFamily.rules text
