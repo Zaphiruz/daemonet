@@ -140,6 +140,7 @@ export class Game {
     if (worlds.length === 0) throw new Error('Game needs at least one world');
     this.worlds = new Map(worlds.map((w) => [w.subnet.id, w]));
     if (this.worlds.size !== worlds.length) throw new Error('Game worlds must host distinct subnets');
+    for (const w of worlds) w.hosted = (subnet) => this.worlds.has(subnet);
     this.defaultWorld = worlds[0]!;
     this.world = this.defaultWorld;
     this.store = opts.store;
@@ -341,11 +342,6 @@ export class Game {
       return this.violation(st);
     }
     session.commandsThisTick++;
-    if (command.cmd === 'travel') {
-      // The world validates the gateway itself; it cannot know which subnets this process hosts.
-      const gate = session.world.subnet.gateways.find((g) => g.id === command.args.gatewayId);
-      if (gate && !this.worlds.has(gate.to)) return this.error(st, 'E_STATE', `${gate.to} is not available`, reqId);
-    }
     const key = `${st.conn.id}:${reqId}`;
     this.replyTo.set(key, { st, reqId });
     st.routes.add(key);
@@ -541,7 +537,12 @@ export class Game {
     const session = this.sessions.get(intent.operatorId);
     const to = this.worlds.get(intent.to);
     if (!session || session.world !== from || !to || !from.operators.has(intent.operatorId)) {
-      this.log.warn({ operator: intent.operatorId, from: intent.from, to: intent.to }, 'travel committed but the operator could not be moved');
+      this.log.error({ operator: intent.operatorId, from: intent.from, to: intent.to }, 'travel committed but the operator could not be moved');
+      // The store now names the destination while the operator is still here: write it back where it really is.
+      if (from.operators.has(intent.operatorId)) {
+        const record = from.checkpoint(intent.operatorId);
+        this.track(this.writeCheckpoint([record], (err) => this.log.error({ operator: intent.operatorId, err: err.message }, 'travel reconcile checkpoint failed')));
+      }
       return;
     }
     const record = from.checkpoint(intent.operatorId);

@@ -169,6 +169,8 @@ function handle(world: World, input: Input, out: Out): void {
 function travel(world: World, op: Operator, c: Cmd<'travel'>, input: Input, out: Out): void {
   const gate = world.subnet.gateways.find((g) => g.id === c.args.gatewayId);
   if (!gate) throw new Rejection('E_INVALID', `no gateway ${c.args.gatewayId} in ${world.subnet.id}`);
+  // Checked here, in the world that runs the travel: a command queued before a hand-off runs in the destination.
+  if (!world.hosted(gate.to)) throw new Rejection('E_STATE', `${gate.to} is not available`);
   if (distance(op, gate.at) > GATEWAY_RADIUS) throw new Rejection('E_RANGE', 'move onto the gateway first');
   if (op.running.length > 0) throw new Rejection('E_STATE', 'recall running daemons first');
   if (op.captureId) throw new Rejection('E_STATE', 'a capture is in progress');

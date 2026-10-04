@@ -1,5 +1,5 @@
 import { ENERGY_MAX, TICK_HZ, getItem, regenEnergy, type StatusId } from '@daemonet/rules';
-import { freshEngagement, type Daemon } from '../model.js';
+import type { Daemon } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
 
@@ -33,13 +33,7 @@ export function upkeep(world: World, out: Out): void {
       if (until <= tick) delete d.statuses[status];
     }
     const w = d.wild;
-    if (w && w.tagOwner !== null && tick > w.tagUntil && !captured.has(d.id)) {
-      w.tagOwner = null;
-      w.aggro = null;
-      w.damagedBy.clear();
-      d.hp = d.stats.hp;
-      d.engagement = freshEngagement();
-    }
+    if (w && w.tagOwner !== null && tick > w.tagUntil && !captured.has(d.id)) world.releaseTag(d);
   }
 
   for (const op of world.operators.values()) {

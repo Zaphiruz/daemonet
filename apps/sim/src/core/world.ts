@@ -43,6 +43,8 @@ export interface WorldOptions {
   discovered?: Iterable<string>;
   /** Wall-clock ISO timestamp for history entries (tests inject a fixed one). */
   clock?: () => string;
+  /** Whether a subnet is hosted by this process (travel refuses other destinations; default: every subnet). */
+  hosted?: (subnet: string) => boolean;
 }
 
 export class World {
@@ -63,6 +65,8 @@ export class World {
   /** Evolution forms whose first evolution has been recorded (hidden requirements are revealed). */
   readonly discovered: Set<string>;
   readonly now: () => string;
+  /** Whether a travel destination is hosted; the runtime sets it to the subnets of its worlds. */
+  hosted: (subnet: string) => boolean;
   queuedUses: QueuedUse[] = [];
   private readonly pending = new Map<string, Intent>();
   private counter = 0;
@@ -79,6 +83,7 @@ export class World {
     this.nextSpawnTick = opts.subnet.regions.map(() => 0);
     this.discovered = new Set(opts.discovered ?? []);
     this.now = opts.clock ?? (() => new Date().toISOString());
+    this.hosted = opts.hosted ?? (() => true);
     if (this.spawnerEnabled) runSpawner(this, this.carry, true);
   }
 
@@ -125,6 +130,20 @@ export class World {
     if (op.captureId) this.captures.delete(op.captureId);
     for (const d of op.ram) this.daemons.delete(d);
     this.operators.delete(id);
+    // Wilds it tagged would stay locked to an operator who is gone (leave or travel) until the tag window ran out.
+    for (const d of this.daemons.values()) if (d.wild?.tagOwner === id) this.releaseTag(d);
+  }
+
+  /** Ends a wild daemon's tag: it forgets its attackers and heals (as when the tag window expires). */
+  releaseTag(d: Daemon): void {
+    const w = d.wild;
+    if (!w) return;
+    w.tagOwner = null;
+    w.tagUntil = 0;
+    w.aggro = null;
+    w.damagedBy.clear();
+    d.hp = d.stats.hp;
+    d.engagement = freshEngagement();
   }
 
   checkpoint(operatorId: string): OperatorRecord {

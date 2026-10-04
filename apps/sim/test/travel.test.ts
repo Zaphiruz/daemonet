@@ -1,10 +1,10 @@
-import type { ServerMessage } from '@daemonet/shared';
+import type { Command, ServerMessage } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
 import { World, type Intent, type IntentResult, type OperatorRecord } from '../src/core/index.js';
 import { createDevVerifier } from '../src/runtime/auth.js';
 import { Game, type Conn, type GameOptions } from '../src/runtime/game.js';
 import { MemoryStore, type IntentContext } from '../src/runtime/store.js';
-import { FIXED_CLOCK, TEST_SUBNET, TEST_SUBNET_B, input, makeWorld, operatorRecord, ownedRecord, self, step } from './helpers.js';
+import { FIXED_CLOCK, TEST_SUBNET, TEST_SUBNET_B, input, makeWorld, operatorRecord, placeWild, self, step } from './helpers.js';
 
 const GATE = TEST_SUBNET.gateways[0]!;
 
@@ -61,18 +61,39 @@ describe('travel command', () => {
     const world = ready();
     const r = travel(world);
     expect(r.intents).toHaveLength(1);
-    for (const command of [
+    const commands: Command[] = [
       { cmd: 'travel', actor: self, args: { gatewayId: GATE.id } },
       { cmd: 'run', actor: self, args: { daemonId: 'alice-d0' } },
       { cmd: 'evolve', actor: self, args: { daemonId: 'alice-d0', formId: 'echolet' } },
       { cmd: 'restoreAll', actor: self, args: {} },
-    ] as const) {
+    ];
+    for (const command of commands) {
       expect(step(world, input('alice', command)).replies[0]).toMatchObject({ code: 'E_STATE', message: 'travelling' });
     }
   });
 
   it('checkpoints carry the subnet', () => {
     expect(ready().checkpoint('alice').subnet).toBe('test');
+  });
+
+  it('a leaving operator releases the wild daemons it tagged (and only those)', () => {
+    const world = makeWorld();
+    world.addOperator(operatorRecord('alice'));
+    world.addOperator(operatorRecord('bob'));
+    step(world, input('alice', { cmd: 'run', actor: self, args: { daemonId: 'alice-d0' } }));
+    const mine = placeWild(world, 'bitrot', 40, 7.5, 5.5);
+    expect(step(world, input('alice', { cmd: 'use', actor: 'alice-d0', args: { move: 'ping', targetId: mine.id } })).replies[0]).toMatchObject({ ok: true });
+    expect(mine.wild!.tagOwner).toBe('alice');
+    expect(world.daemons.get(mine.id)).toBe(mine);
+    expect(mine.hp).toBeLessThan(mine.stats.hp);
+    const bobs = placeWild(world, 'bitrot', 5, 20.5, 20.5);
+    bobs.wild!.tagOwner = 'bob';
+    bobs.wild!.tagUntil = world.tick + 10_000;
+    world.removeOperator('alice');
+    expect(mine.wild).toMatchObject({ tagOwner: null, tagUntil: 0, aggro: null });
+    expect(mine.wild!.damagedBy.size).toBe(0);
+    expect(mine.hp).toBe(mine.stats.hp);
+    expect(bobs.wild).toMatchObject({ tagOwner: 'bob', tagUntil: world.tick + 10_000 });
   });
 });
 
@@ -231,6 +252,63 @@ describe('multi-world Game', () => {
     expect(conn.of('err').at(-1)!.d).toMatchObject({ reqId: `q${req}`, code: 'E_STATE', message: 'testb is not available' });
     expect(op.travelling).toBe(false);
     expect(a.operators.has(op.id)).toBe(true);
+  });
+
+  it('travelling releases the wild daemons the operator tagged in the source world', async () => {
+    const { a, b, game } = setup();
+    const { conn, op } = await atGate(game, a);
+    const wild = placeWild(a, 'bitrot', 5, 20.5, 20.5);
+    wild.wild!.tagOwner = op.id;
+    wild.wild!.tagUntil = a.tick + 10_000;
+    wild.hp = 1;
+    await game.message(conn, travelCmd());
+    game.tick();
+    await game.flush();
+    expect(b.operators.has(op.id)).toBe(true);
+    expect(wild.wild).toMatchObject({ tagOwner: null, tagUntil: 0 });
+    expect(wild.hp).toBe(wild.stats.hp);
+  });
+
+  it('re-checks the destination in the world that runs the travel (queued behind a pending hand-off)', async () => {
+    // testb also has a gateway to testc, which this process does not host.
+    const gateC = { id: 'testb-testc', at: { x: 3.5, y: 3.5 }, to: 'testc', arrive: { x: 3.5, y: 3.5 }, requires: { level: 0 } };
+    const a = new World({ subnet: TEST_SUBNET, seed: 'a', seedId: 'aaaa0001', spawner: false, clock: () => FIXED_CLOCK });
+    const b = new World({ subnet: { ...TEST_SUBNET_B, gateways: [...TEST_SUBNET_B.gateways, gateC] }, seed: 'b', seedId: 'bbbb0002', spawner: false, clock: () => FIXED_CLOCK });
+    const store = new GatedStore();
+    const game = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1] });
+    const { conn, op } = await atGate(game, a);
+    store.holdTravel();
+    await game.message(conn, travelCmd());
+    game.tick(); // the travel to testb is persisting
+    await game.message(conn, cmd({ cmd: 'travel', actor: 'self', args: { gatewayId: gateC.id } }));
+    const second = `q${req}`;
+    store.releaseTravel();
+    await game.flush();
+    expect(game.worldOf(op.id)).toBe(b);
+    game.tick(); // the queued travel now runs in testb
+    await game.flush();
+    expect(conn.of('err').find((m) => m.d.reqId === second)?.d).toMatchObject({ code: 'E_STATE', message: 'testc is not available' });
+    expect(b.operators.get(op.id)!.travelling).toBe(false);
+    expect(b.hasPendingFor(op.id)).toBe(false);
+    expect(store.operators.get(op.id)!.subnet).toBe('testb');
+  });
+
+  it('a committed travel that cannot be handed over checkpoints the source world so the store reconverges', async () => {
+    const errors: Array<{ obj: object; msg?: string }> = [];
+    const log = { info() {}, warn() {}, error: (obj: object, msg?: string) => void errors.push({ obj, msg }) };
+    const store = new GatedStore();
+    const { a, game } = setup(store, { log });
+    const { conn, op } = await atGate(game, a);
+    store.holdTravel();
+    await game.message(conn, travelCmd());
+    game.tick();
+    game.worlds.delete('testb'); // the destination goes away while the intent is persisting
+    store.releaseTravel();
+    await game.flush();
+    expect(errors.map((e) => e.msg)).toContain('travel committed but the operator could not be moved');
+    expect(a.operators.get(op.id)).toMatchObject({ travelling: false, x: GATE.at.x, y: GATE.at.y });
+    expect(game.worldOf(op.id)).toBe(a);
+    expect(store.operators.get(op.id)).toMatchObject({ subnet: 'test', x: GATE.at.x, y: GATE.at.y });
   });
 
   it('a travel the store failed to persist leaves the operator where it was', async () => {
@@ -397,6 +475,5 @@ describe('store contract: travel', () => {
     expect(await store.applyIntent(intent, { seedId: 'aaaa0001' })).toEqual({ ok: true });
     expect(await store.applyIntent(intent, { seedId: 'aaaa0001' })).toEqual({ ok: true });
     expect(await store.loadOrCreateOperator('sub-t', 'test', { x: 5, y: 5 })).toMatchObject({ subnet: 'testb', x: 3.5, y: 3.5 });
-    void ownedRecord;
   });
 });
