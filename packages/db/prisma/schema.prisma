@@ -124,6 +124,7 @@ model Daemon {
 
   @@unique([operatorId, location, slot])
   @@index([operatorId])
+  @@index([originalOperatorId])
 }
 
 model SubnetSeed {
@@ -141,12 +142,14 @@ model BitsLedger {
   seq        BigInt   @default(autoincrement())
   operatorId String
   delta      BigInt
-  /// ticket | shop | disk | craft | admin
+  /// shop | disk | craft | ticket (the sim's store intents, SIM_LEDGER_REASONS) | admin (admin and dev grants) | org
+  /// (org creation and tag change) | rename (operator rename)
   reason     String
   ref        String?
   at         DateTime @default(now())
 
   @@index([operatorId, at])
+  @@index([operatorId, seq])
   @@index([at])
 }
 
@@ -181,6 +184,7 @@ model DaemonArchive {
   reason             String
 
   @@index([operatorId])
+  @@index([originalOperatorId])
 }
 
 enum OrgRank {
