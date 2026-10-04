@@ -257,3 +257,13 @@ Fixed before merge: kernelspace return lands at backbone when full; pairCounts p
 - T2: carry events pending for a departing operator are lost on transfer (pre-existing with moveOperator); no tests for reconnect during return / takeover in a match; concedeBoth draw — plan 2 decides rating treatment
 - T3: SDK `chat` local now also covers arena (rename; explicit command set); enemies filter recomputed per daemon; ChatApi/ClusterApi not exported (pre-existing)
 Task F: minor (deferred): match round trip clears home-daemon statuses/cooldowns (alt-cleanse; same as travel/reconnect); arenaChallenge presence oracle now rate-limited; incident/discovery broadcasts don't reach match worlds; cluster `away` compares subnet strings across matches
+
+## 2026-10-02-daemonet-sp6-plan2-ratings-seasons
+
+Fixed before merge: reload kick on unknown arena results; deadlocks (P2010/40P01) retried; unknown operators definitive; closed seasons record uncounted without seeding; /me daily wins match the store's cap; season close 1 h grace
+
+- T1: decayRd loops per period (use closed form); seasonBounds/previousSeasonId don't validate ids
+- T2: ledger `at` = commit time vs cap day = endedAt (document); arenaResultProblem accepts offset-less dates / durationMs > int32; schema BitsLedger.reason doc missing incident/arena; weak ratings-chain assertion; ladder must filter rows with 0 counted matches (Task 4)
+- T3: arenaResult arrives after the store answers (spec §5 says on `over`; brief-mandated)
+- T4: late-lock branch breaks sort order (grace-protected; comment); new-season seed can come from a non-final rating (lazy-seed deviation); sweep cost at scale (batch lock); a rating row for a missing operator blocks the close
+Task F: minor (deferred): results are memory-only until commit (sim crash loses an unsettled match — nothing owed); arenaResult may arrive long after return (plan 3 UI: "result pending", reconcile from history)
