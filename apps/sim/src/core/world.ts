@@ -173,7 +173,8 @@ export class World {
       cooldowns: {},
       statuses: {},
       lastCombatTick: -Infinity,
-      pending: false,
+      // A reload while a store / evolve is in flight must not unlock the daemon (its from-form would still be actable).
+      pending: this.hasPendingLock(rec.id),
       wild: null,
       heldItem: rec.heldItem,
       patched: rec.patched,
@@ -186,6 +187,11 @@ export class World {
     this.daemons.set(d.id, d);
     op.ram.push(d.id);
     return d;
+  }
+
+  private hasPendingLock(daemonId: string): boolean {
+    for (const i of this.pending.values()) if ((i.kind === 'store' || i.kind === 'evolve') && i.daemonId === daemonId) return true;
+    return false;
   }
 
   /** True when `op` already holds daemon `id` in RAM (e.g. reloaded from the DB after the intent committed). */

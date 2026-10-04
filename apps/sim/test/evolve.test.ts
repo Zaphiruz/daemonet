@@ -364,4 +364,31 @@ describe('final-review fixes', () => {
     expect(step(world, input('alice', { cmd: 'run', actor: self, args: { daemonId: 'alice-d0' } })).replies[0]).toMatchObject({ ok: false, code: 'E_STATE' });
   });
 
+  it('a reload while an evolve is pending keeps the daemon locked', async () => {
+    const world = setup();
+    const store = await seededStore(world);
+    Object.assign(store.operators.get('alice')!, { starterClaimed: true, inventory: { jumboframe: 1 } });
+    const intent = evolveIntent(step(world, evolveCmd('tracerat')));
+    world.removeOperator('alice');
+    world.addOperator(await store.loadOrCreateOperator('alice', 'test', { x: 5, y: 5 }));
+    const d = world.daemons.get('alice-d0')!;
+    expect(d.pending).toBe(true);
+    const hold = step(world, input('alice', { cmd: 'hold', actor: self, args: { daemonId: 'alice-d0', itemId: 'jumboframe' } }));
+    expect(hold.replies[0]).toMatchObject({ ok: false, code: 'E_STATE', message: 'daemon is busy' });
+    world.completeIntent(intent.id, await store.applyIntent(intent, { seedId: 'seed0001' }));
+    expect(d.pending).toBe(false);
+    expect(d.species).toBe('tracerat');
+  });
+
+  it('a reload while a store is pending keeps the daemon locked', async () => {
+    const world = setup();
+    const store = await seededStore(world);
+    const op = world.operators.get('alice')!;
+    op.x = 4.5;
+    op.y = 5.5;
+    step(world, input('alice', { cmd: 'store', actor: self, args: { daemonId: 'alice-d0' } }));
+    world.removeOperator('alice');
+    world.addOperator(await store.loadOrCreateOperator('alice', 'test', { x: 4.5, y: 5.5 }));
+    expect(world.daemons.get('alice-d0')!.pending).toBe(true);
+  });
 });
