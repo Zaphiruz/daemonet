@@ -248,3 +248,12 @@ Fixed before merge: review gate can't be skipped; admin fees include trades; Dis
 - T3: Listing (status, soldAt) / Fill `at` indexes for the 15 s admin poll; no flooring/window-boundary test cases; no Market component test
 - T4: offers-changed warning flashes after own offer; tradeChanged store unused by panels; draft items no longer in the vault have no remove control; describeGiven/describeReceived duplicate; "no trades" during first load
 Task F: minor (deferred): pre-change trades lack stored daemon summaries (fallback to current species/level); trade griefing by filling 4 open-trade slots (block + cancel mitigate; note in moderation docs); privacy policy for seller/counterparty ids to be stated once in the spec before SP6 leaderboards
+
+## 2026-10-02-daemonet-sp6-plan1-arena-matches
+
+Fixed before merge: kernelspace return lands at backbone when full; pairCounts pruned; failed starts reported; challenge rate-limited before presence checks; core arena test gaps; single ArenaReason; explicit outside-tick SDK set
+
+- T1: self-target test weak (assert 'not a valid target'); trait refresh by recall+run in PvP (balance decision); ranked copies keep signature tier with zero bonus (display); config error says "unknown subnet: sandbox"; duplicated ArenaReason union
+- T2: carry events pending for a departing operator are lost on transfer (pre-existing with moveOperator); no tests for reconnect during return / takeover in a match; concedeBoth draw — plan 2 decides rating treatment
+- T3: SDK `chat` local now also covers arena (rename; explicit command set); enemies filter recomputed per daemon; ChatApi/ClusterApi not exported (pre-existing)
+Task F: minor (deferred): match round trip clears home-daemon statuses/cooldowns (alt-cleanse; same as travel/reconnect); arenaChallenge presence oracle now rate-limited; incident/discovery broadcasts don't reach match worlds; cluster `away` compares subnet strings across matches
