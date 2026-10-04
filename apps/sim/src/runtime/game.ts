@@ -1,6 +1,6 @@
 import { randomInt, timingSafeEqual } from 'node:crypto';
 import type { Bus } from '@daemonet/bus';
-import { INCIDENT_MAX_OPERATORS, INCIDENT_SUBNET, ticketKey } from '@daemonet/rules';
+import { ARENA_START_RATING, INCIDENT_MAX_OPERATORS, INCIDENT_SUBNET, ticketKey } from '@daemonet/rules';
 import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Command, type Entity, type ErrorCode, type GameEvent, type ServerMessage } from '@daemonet/shared';
 import {
   DISK_SLOT_TAKEN,
@@ -19,6 +19,7 @@ import {
   type OrgView,
   type World,
 } from '../core/index.js';
+import { ArenaService, isArenaError, type ArenaError } from './arena.js';
 import type { TokenVerifier } from './auth.js';
 import { ChatService } from './chat.js';
 import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
@@ -232,6 +233,11 @@ export class Game {
   readonly chat: ChatService;
   /** Clusters (SP4): membership across worlds, outside the tick, never persisted. */
   readonly clusters: ClusterService;
+  /**
+   * Arena matches (SP6): queue, challenges and match worlds, outside the tick. Match worlds are never in `worlds`:
+   * every lookup over the persistent worlds (checkpoints, discoveries, Incidents, travel) leaves them out by design.
+   */
+  readonly arena: ArenaService;
   private readonly unsubscribe: Array<() => void>;
 
   constructor(opts: GameOptions) {
@@ -294,6 +300,26 @@ export class Game {
       opts.bus,
       this.log,
     );
+    this.arena = new ArenaService({
+      // only an operator in a persistent world (so never one already in a match) whose session is not being reloaded
+      locate: (id) => {
+        const s = this.sessions.get(id);
+        const op = s?.world.operators.get(id);
+        return s && op && !s.reloadRequired && this.worlds.get(s.world.subnet.id) === s.world ? { op, world: s.world } : undefined;
+      },
+      connected: (id) => !!this.sessions.get(id)?.controller,
+      busy: (id) => {
+        for (const w of this.worlds.values()) if (w.hasPendingFor(id)) return true;
+        return false;
+      },
+      transfer: (id, to, record) => this.transfer(id, to, record),
+      event: (id, event) => this.sessions.get(id)?.world.emitCarry(event, { to: id }),
+      send: (id, msg) => this.sendTo(id, msg),
+      // plan 2 reads ratings from the store
+      rating: () => ARENA_START_RATING,
+      now: () => Date.now(),
+      newId: () => randomHex(16),
+    });
     this.unsubscribe = [opts.bus.subscribe('org', (m) => this.onOrgPush(m)), opts.bus.subscribe('admin', (m) => this.onAdminPush(m)), opts.bus.subscribe('exchange', (m) => this.onExchange(m))];
   }
 
@@ -670,6 +696,19 @@ export class Game {
     const { reqId, ...command } = d;
     if (st.role !== 'controller') return this.error(st, 'E_STATE', 'spectators cannot send commands', reqId);
     const session = this.sessions.get(st.operatorId!)!;
+    if (command.cmd.startsWith('arena')) {
+      // Entering and leaving matches is the runtime's business (outside the tick, no per-tick budget; the service has
+      // its own limits); only fighting goes through the match world's tick. Replied to the connection that sent it.
+      const r = this.arenaCommand(session.operatorId, command);
+      if (isArenaError(r)) this.error(st, r.code, r.message, reqId);
+      else this.send(st, { t: 'ack', seq: 0, d: { reqId, result: r } });
+      return;
+    }
+    if (command.cmd === 'clusterInvite' && (this.arena.inMatch(session.operatorId) || this.arena.inMatch(command.args.operatorId))) {
+      // match worlds share the subnet id: an invite would reach the opponent, or someone in another match
+      const mine = this.arena.inMatch(session.operatorId);
+      return this.error(st, 'E_STATE', mine ? 'not available in an arena match' : 'that operator is in an arena match', reqId);
+    }
     if (command.cmd.startsWith('cluster')) {
       // Social, not gameplay: handled at once outside the tick (no per-tick budget; the service has its own limits),
       // replied to the connection that sent it; the next delta carries the new `self.cluster`.
@@ -698,6 +737,23 @@ export class Game {
     this.replyTo.set(key, { st, reqId });
     st.routes.add(key);
     this.inputs.push({ operatorId: session.operatorId, reqId: key, command });
+  }
+
+  private arenaCommand(id: string, command: Command): ArenaError | object {
+    switch (command.cmd) {
+      case 'arenaQueue':
+        return this.arena.queueUp(id, command.args.mode);
+      case 'arenaLeave':
+        return this.arena.leaveQueue(id);
+      case 'arenaChallenge':
+        return this.arena.challenge(id, command.args.operatorId, command.args.mode);
+      case 'arenaAccept':
+        return this.arena.accept(id, command.args.challengeId);
+      case 'arenaForfeit':
+        return this.arena.forfeit(id);
+      default:
+        return { code: 'E_INVALID', message: 'unknown arena command' };
+    }
   }
 
   private cluster(id: string, command: Command): ClusterError | object {
@@ -786,6 +842,9 @@ export class Game {
 
     this.gateIncidentGateways();
     for (const world of this.worlds.values()) this.stepWorld(world, inputsByWorld.get(world) ?? []);
+    // arena matches after the persistent worlds; then the service reports results, sends operators home and matchmakes
+    for (const world of this.arena.worlds()) this.stepWorld(world, inputsByWorld.get(world) ?? []);
+    this.arena.tick();
 
     if (this.ticks % this.checkpointEvery === 0) this.checkpointAll();
     for (const session of [...this.sessions.values()]) {
@@ -1040,6 +1099,8 @@ export class Game {
   }
 
   private leave(session: Session): void {
+    // out of the queue, and out of a match (forfeited) back into the home world, so what follows sees the real operator
+    this.arena.drop(session.operatorId);
     for (const load of this.loads.get(session.sub) ?? []) load.stale = true;
     const world = session.world;
     const record = this.record(world, session.operatorId);
@@ -1064,12 +1125,17 @@ export class Game {
 
   /**
    * One checkpoint of every operator in every world. A travelling operator is skipped: its record would still name the
-   * source subnet, and the travel intent (queued on the same chain) is what moves it.
+   * source subnet, and the travel intent (queued on the same chain) is what moves it. An operator in an arena match is
+   * checkpointed as it left its home world (with what the api pushed meanwhile): copies never reach the database.
    */
   private checkpointAll(): void {
     const records: OperatorRecord[] = [];
     for (const world of this.worlds.values()) {
       for (const op of world.operators.values()) if (!op.travelling) records.push(this.record(world, op.id));
+    }
+    for (const id of this.sessions.keys()) {
+      const home = this.arena.homeRecord(id);
+      if (home) records.push(this.guarded(id, home));
     }
     if (records.length === 0) return;
     this.track(this.writeCheckpoint(records, (err) => this.log.error({ err: err.message }, 'checkpoint failed')));
@@ -1104,8 +1170,33 @@ export class Game {
 
   /** The operator's checkpoint record; a session that must reload never writes its inventory (the store is the truth). */
   private record(world: World, operatorId: string): OperatorRecord {
-    const rec = world.checkpoint(operatorId);
+    return this.guarded(operatorId, world.checkpoint(operatorId));
+  }
+
+  private guarded(operatorId: string, rec: OperatorRecord): OperatorRecord {
     return this.sessions.get(operatorId)?.reloadRequired ? { ...rec, inventoryInFlight: true } : rec;
+  }
+
+  /**
+   * Arena hand-over (SP6), both ways: the operator leaves the world it is in and enters `to` with `record`. As with
+   * travel (#25) nothing the client knew carries over: resume state is reset and every connection gets a snapshot (which
+   * restarts the sandbox script). Writes nothing: checkpoints of an operator in a match write its home record.
+   */
+  private transfer(operatorId: string, to: World, record: OperatorRecord): boolean {
+    const session = this.sessions.get(operatorId);
+    if (!session || !session.world.operators.has(operatorId)) return false;
+    const from = session.world;
+    from.removeOperator(operatorId);
+    to.addOperator({ ...record, subnet: to.subnet.id });
+    session.world = to;
+    this.clusters.reattach(operatorId);
+    session.savedKnown = null;
+    session.savedSelf = null;
+    session.buffer = [];
+    session.baseTick = to.tick;
+    for (const st of session.controller ? [session.controller, ...session.spectators] : [...session.spectators]) this.snapshot(st);
+    this.log.info({ sub: session.sub, from: from.subnet.id, to: to.subnet.id }, 'arena hand-over');
+    return true;
   }
 
   /**
@@ -1274,6 +1365,8 @@ export class Game {
   async shutdown(): Promise<void> {
     for (const off of this.unsubscribe) off();
     this.chat.close();
+    // matches end without a result; everyone in one is back home for the final checkpoint
+    this.arena.endAll();
     for (const st of [...this.conns.values()]) this.kick(st, 'server shutting down', 1001);
     this.stopping = true;
     await this.flush();
