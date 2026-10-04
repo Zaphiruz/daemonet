@@ -12,6 +12,7 @@ import { AppError } from './errors.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerEconomyRoutes } from './routes/economy.js';
 import { registerMiscRoutes } from './routes/misc.js';
+import { registerOrgRoutes } from './routes/orgs.js';
 import { registerScriptRoutes } from './routes/scripts.js';
 
 export const COOKIE_NAME = 'daemonet_sid';
@@ -19,7 +20,7 @@ export const SESSION_TTL_SECONDS = 7 * 24 * 3600;
 
 export interface BuildAppOptions {
   prisma: PrismaClient;
-  /** The sim ⇄ api bus: admin chat actions are published on its `admin` channel. */
+  /** The sim ⇄ api bus: admin chat actions, bits and renames go on its `admin` channel, org membership on `org`. */
   bus: Bus;
   sessionSecret: string;
   cookieSecure: boolean;
@@ -65,10 +66,11 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
   });
 
   registerAuthRoutes(app, { prisma: o.prisma, sessionStore, oidcClient: o.oidcClient, frontendOrigin: o.frontendOrigin, redirectUri: o.redirectUri ?? null, requiredGroup: o.requiredGroup, ...common });
-  if (o.devBypass) registerDevBypass(app, { prisma: o.prisma, sessionStore, frontendOrigin: o.frontendOrigin, requiredGroup: o.requiredGroup, ...common });
+  if (o.devBypass) registerDevBypass(app, { prisma: o.prisma, bus: o.bus, sessionStore, frontendOrigin: o.frontendOrigin, requiredGroup: o.requiredGroup, ...common });
   registerScriptRoutes(app, o.prisma);
   registerMiscRoutes(app, o.prisma);
   registerEconomyRoutes(app, o.prisma);
   registerChatRoutes(app, o.prisma, o.bus);
+  registerOrgRoutes(app, o.prisma, o.bus);
   return app;
 }

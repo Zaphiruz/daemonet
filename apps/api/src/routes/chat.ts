@@ -5,6 +5,8 @@ import {
   DEFAULT_TERMS,
   FILTER_MAX_TERMS,
   REPORTS_PER_DAY,
+  compileFilter,
+  nameAllowedBy,
   validateFilterTerm,
   type FilterTerm,
 } from '@daemonet/rules';
@@ -40,6 +42,15 @@ export const REPORT_CONTEXT_ROWS = 8;
 /** Admin terms allowed on top of the default list, so the published list always fits the sim's FILTER_MAX_TERMS. */
 export const MAX_ADMIN_TERMS = FILTER_MAX_TERMS - DEFAULT_TERMS.length;
 
+/**
+ * Whether a name (operator name, org name or tag) passes the live chat filter: the same terms the sim compiles
+ * (DEFAULT_TERMS + the admin ChatFilterTerm rows, oldest first), read afresh so a term added a moment ago applies.
+ */
+export async function nameAllowed(prisma: PrismaClient, name: string): Promise<boolean> {
+  const rows = await prisma.chatFilterTerm.findMany({ orderBy: [{ at: 'asc' }, { id: 'asc' }], select: { pattern: true, kind: true, action: true } });
+  return nameAllowedBy(compileFilter([...DEFAULT_TERMS, ...rows]), name);
+}
+
 /** zod failures are the caller's fault: 400, not 500. */
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const r = schema.safeParse(value);
@@ -70,17 +81,21 @@ export function registerChatRoutes(app: FastifyInstance, prisma: PrismaClient, b
     });
   }
 
-  /** Subnet history is public; a DM thread is readable by either side (rows are filtered to the pair); cluster history is live-only; org history comes with SP4 plan 3. */
-  function mayRead(channel: string): boolean {
-    const kind = channel.split(':', 1)[0];
+  /**
+   * Subnet history is public; a DM thread is readable by either side (rows are filtered to the pair); org history is
+   * readable by the org's current members only (leaving or being kicked removes access); cluster history is live-only.
+   */
+  async function mayRead(operatorId: string, channel: string): Promise<boolean> {
+    const [kind, id] = channel.split(':', 2);
+    if (kind === 'org') return (await prisma.orgMember.findUnique({ where: { operatorId }, select: { orgId: true } }))?.orgId === id;
     return kind === 'subnet' || kind === 'dm';
   }
 
   app.get<{ Params: { channel: string }; Querystring: unknown }>('/api/chat/:channel', auth, async (req) => {
     const channel = parse(Channel, req.params.channel);
     const q = parse(HistoryQuery, req.query);
-    if (!mayRead(channel)) throw forbidden('not a member of that channel');
     const me = req.operator!.id;
+    if (!(await mayRead(me, channel))) throw forbidden('not a member of that channel');
     const before = q.before ? new Date(q.before) : null;
     const cursor = !before ? [] : q.beforeId ? [{ OR: [{ at: { lt: before } }, { at: before, id: { lt: q.beforeId } }] }] : [{ at: { lt: before } }];
     // DM rows are stored in the sender's form (`dm:<recipient>`): the thread is my lines to them plus theirs to me.
