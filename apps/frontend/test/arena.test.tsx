@@ -1,0 +1,131 @@
+// @vitest-environment jsdom
+import { TICK_HZ } from '@daemonet/rules';
+import type { OperatorSelf } from '@daemonet/sdk';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ArenaHud } from '../src/components/ArenaHud.tsx';
+import { arenaClock, clockText, createArenaStore, hpPercent, resultPending, resultText, type ArenaResultInfo } from '../src/game/arena.ts';
+
+afterEach(cleanup);
+
+const result: ArenaResultInfo = { id: 'm1', mode: 'ranked', outcome: 'win', reason: 'wipeout', ratingBefore: 1500, ratingAfter: 1662.3, reward: 32, counted: true };
+/** What the sim announces when the store stayed unreachable: nothing changed, nothing counted. */
+const unknown: ArenaResultInfo = { ...result, ratingAfter: 1500, reward: 0, counted: false };
+
+describe('arena helpers', () => {
+  it('reads the clock from the match world tick', () => {
+    const arena = { phase: 'countdown' as const, liveAtTick: 3 * TICK_HZ, endsAtTick: 243 * TICK_HZ };
+    expect(arenaClock(arena, 1)).toEqual({ label: 'starts in', seconds: 3 });
+    expect(arenaClock({ ...arena, phase: 'live' }, 3 * TICK_HZ)).toEqual({ label: 'time left', seconds: 240 });
+    expect(arenaClock({ ...arena, phase: 'live' }, 5000 * TICK_HZ)).toEqual({ label: 'time left', seconds: 0 });
+    expect(arenaClock({ ...arena, phase: 'over' }, 100)).toEqual({ label: 'over', seconds: 0 });
+    expect([clockText(240), clockText(61), clockText(5)]).toEqual(['4:00', '1:01', '0:05']);
+    expect([hpPercent({ hp: 50, maxHp: 200, crashed: false }), hpPercent({ hp: 50, maxHp: 200, crashed: true }), hpPercent({ hp: 0.2, maxHp: 200, crashed: false })]).toEqual([25, 0, 0]);
+  });
+
+  it('words results', () => {
+    expect(resultText(result)).toBe('you won by wipe-out · 1500 → 1662 · +32 bits');
+    expect(resultText({ ...result, outcome: 'loss', reason: 'forfeit', ratingAfter: 1340, reward: 0 })).toBe('you lost by forfeit · 1500 → 1340');
+    expect(resultText({ ...result, outcome: 'draw', reason: 'timeout', counted: false, reward: 0 })).toBe('draw on time · not counted');
+    expect(resultText({ ...result, mode: 'unranked', counted: false, reward: 0 })).toBe('you won by wipe-out');
+  });
+
+  it('says pending, never "not counted", for a ranked result the sim could not settle', () => {
+    expect(resultPending(unknown)).toBe(true);
+    expect(resultPending(result)).toBe(false);
+    expect(resultPending({ ...unknown, mode: 'unranked' })).toBe(false);
+    expect(resultText(unknown)).toBe('you won by wipe-out · rating pending');
+    expect(resultText(unknown)).not.toContain('not counted');
+  });
+
+  it('tracks the queue, challenges and the last result', () => {
+    const s = createArenaStore();
+    s.onQueued('ranked', undefined, 1000);
+    expect(s.get().queued).toEqual({ mode: 'ranked', since: 1000 });
+    s.onQueued(null, 'recall running daemons first', 2000);
+    expect(s.get()).toMatchObject({ queued: null, note: 'recall running daemons first' });
+    s.onChallenge({ challengeId: 'c1', from: 'bob', name: 'bob', mode: 'unranked', expiresAt: new Date(60_000).toISOString() });
+    s.onChallenge({ challengeId: 'c2', from: 'bob', name: 'bob', mode: 'ranked', expiresAt: new Date(90_000).toISOString() });
+    s.onChallenge({ challengeId: 'c3', from: 'eve', name: 'eve', mode: 'ranked', expiresAt: new Date(30_000).toISOString() });
+    expect(s.get().challenges.map((c) => c.challengeId)).toEqual(['c2', 'c3']); // one per challenger
+    s.prune(45_000);
+    expect(s.get().challenges.map((c) => c.challengeId)).toEqual(['c2']);
+    s.onQueued('unranked', undefined, 3000);
+    s.onMatch();
+    expect(s.get()).toMatchObject({ queued: null, challenges: [] });
+    s.onResult(result);
+    expect(s.get().lastResult).toBe(result);
+  });
+
+  it('keeps the result past the match, takes a late one after the return home, and clears on logout', () => {
+    const s = createArenaStore();
+    s.onMatch();
+    s.onResult(unknown);
+    s.onQueued('ranked', undefined, 10); // back home, queueing again
+    expect(s.get().lastResult).toBe(unknown);
+    s.onMatch(); // the next match starting does not wipe the previous result
+    expect(s.get().lastResult).toBe(unknown);
+    s.onResult(result); // the settled one arrives minutes later and replaces the pending one
+    expect(s.get().lastResult).toBe(result);
+    const listener = vi.fn();
+    s.subscribe(listener);
+    s.clear();
+    expect(s.get()).toEqual({ queued: null, note: null, challenges: [], lastResult: null });
+    expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it('does not notify when prune has nothing to drop', () => {
+    const s = createArenaStore();
+    const listener = vi.fn();
+    s.subscribe(listener);
+    s.prune(1);
+    expect(listener).not.toHaveBeenCalled();
+  });
+});
+
+function selfInMatch(phase: 'countdown' | 'live' | 'over'): OperatorSelf {
+  const ram = [
+    { id: 'a0', species: 'pingling', level: 64, hp: 120, maxHp: 240, crashed: false, slot: 0 },
+    { id: 'a1', species: 'glitchmite', level: 64, hp: 0, maxHp: 200, crashed: true, slot: 1 },
+  ];
+  return {
+    id: 'me', name: 'alice', running: ['a0'], ram,
+    arena: {
+      id: 'm1', mode: 'ranked', phase, liveAtTick: 3 * TICK_HZ, endsAtTick: 243 * TICK_HZ,
+      opponent: { id: 'bob', name: 'bob', tag: 'ROOT', rating: 1612.4, team: [{ id: 'b0', species: 'pingling', level: 64, hp: 240, maxHp: 240, crashed: false, running: true }] },
+      result: phase === 'over' ? { winner: 'me', reason: 'wipeout' } : null,
+    },
+  } as unknown as OperatorSelf;
+}
+
+describe('ArenaHud', () => {
+  it('shows the clock, both teams and a forfeit button while the match runs', () => {
+    const forfeit = vi.fn();
+    render(<ArenaHud self={selfInMatch('live')} tick={3 * TICK_HZ + TICK_HZ * 60} result={null} onForfeit={forfeit} />);
+    expect(screen.getByTestId('arena-clock').textContent).toBe('3:00');
+    expect(screen.getByTestId('arena-mine-a0').textContent).toContain('▶ Pingling L64');
+    expect(screen.getByTestId('arena-mine-a0').textContent).toContain('50%');
+    expect(screen.getByTestId('arena-mine-a1').textContent).toContain('crashed');
+    expect(screen.getByTestId('arena-theirs').textContent).toContain('[ROOT] bob · 1612');
+    fireEvent.click(screen.getByTestId('arena-forfeit'));
+    expect(forfeit).toHaveBeenCalledOnce();
+  });
+
+  it('shows the settled result when the match is over, and nothing outside a match', () => {
+    const { rerender } = render(<ArenaHud self={selfInMatch('over')} tick={900} result={null} onForfeit={() => {}} />);
+    expect(screen.getByTestId('arena-result').textContent).toBe('you won');
+    expect(screen.queryByTestId('arena-forfeit')).toBeNull();
+    rerender(<ArenaHud self={selfInMatch('over')} tick={900} result={result} onForfeit={() => {}} />);
+    expect(screen.getByTestId('arena-result').textContent).toBe('you won by wipe-out · 1500 → 1662 · +32 bits');
+    rerender(<ArenaHud self={{ ...selfInMatch('over'), arena: null }} tick={900} result={result} onForfeit={() => {}} />);
+    expect(screen.queryByTestId('arena-hud')).toBeNull();
+  });
+
+  it('words an unsettled result as pending and ignores another match\'s result', () => {
+    const { rerender } = render(<ArenaHud self={selfInMatch('over')} tick={900} result={unknown} onForfeit={null} />);
+    expect(screen.getByTestId('arena-result').textContent).toBe('you won by wipe-out · rating pending');
+    rerender(<ArenaHud self={selfInMatch('over')} tick={900} result={{ ...result, id: 'older' }} onForfeit={null} />);
+    expect(screen.getByTestId('arena-result').textContent).toBe('you won');
+    expect(screen.queryByTestId('arena-forfeit')).toBeNull();
+  });
+});
