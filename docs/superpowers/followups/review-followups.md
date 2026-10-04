@@ -151,3 +151,18 @@ Fixed before merge: pnpm typecheck fixes; wild tags released on leave/travel; ho
 Task F: minor (deferred): a hand-off that fails after commit still acks ok {subnet: to} (only reachable if a hosted world disappears mid-intent; store reconciled)
 Task F: minor (deferred): travel button can re-enable between the ack and the new snapshot (server rejects a second travel); OperatorSelf has no `travelling` flag
 Task F: minor (deferred): watch `tick stats` after the first multi-world deploy (six worlds per tick)
+
+## 2026-09-30-daemonet-sp3b-plan2-economy
+
+Fixed before merge: conditional starter claim; leave waits on inventoryInFlight; retry cap with reload-required; decompile held-item ownership per side; heldItem not written on in-flight checkpoints; admin economy drift; ascii dev note
+
+- T1: diskExpansionPrice silently rounds misaligned capacities; DISK_EXPANSION_ITEM typed string not literal; recipe values only spot-checked (no table test)
+- T2: a script buying/crafting every tick starves inventory checkpoints (crash would roll back world-side consumption since last full write)
+- T2: addItems (economy.ts) duplicates withItems (store.ts); one global writeChain shared by every world's checkpoints and intents — a hanging tx blocks all (note for tickets/trades)
+- T2: DiskPanel still shows Disk n/DISK_SLOTS (not in plan 2's file map) — add to Task 4 dispatch
+- T2: no Game-level capture unknown-outcome test; capture abandoned at shutdown before commit loses its tool; ledgerFor orders by seq but index is (operatorId, at)
+- T3: /api/admin/economy days not zero-filled
+- T4: ledger refreshes only on view entry/refresh (no refetch on `bits` events); e2e never opens the ledger view
+Task F: minor (deferred): on the reload-required path world-only inventory changes since the last full checkpoint (useItem, capture tools) roll back — inherent to store-as-truth
+Task F: minor (deferred): a fresh SDK connect() during the reload window sees `reload required` as terminal (frontend retries; plain bots fail once); 10-minute time cap untested
+Task F: minor (deferred): capture tool consumption is only checkpointed (commit-then-crash returns the tool); /api/dev/bits duplicates grantBits (share one helper if an admin grant route is added)
