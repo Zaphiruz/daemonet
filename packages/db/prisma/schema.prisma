@@ -29,6 +29,8 @@ model Operator {
   /// item id -> count
   inventory      Json     @default("{}")
   isAdmin        Boolean  @default(false)
+  /// chat mute (admin or automatic), null = not muted
+  mutedUntil     DateTime?
   createdAt      DateTime @default(now())
   lastSeenAt     DateTime @default(now())
   daemons        Daemon[]
@@ -179,6 +181,94 @@ model DaemonArchive {
   reason             String
 
   @@index([operatorId])
+}
+
+/// Chat (SP4 spec §5): 7 days of history, soft-deleted by admins.
+model ChatMessage {
+  id         String    @id
+  /// subnet:<id> | cluster:<id> | org:<id> | dm:<operatorId>
+  channel    String
+  operatorId String
+  /// for dm channels: the recipient
+  toId       String?
+  text       String
+  at         DateTime  @default(now())
+  deletedAt  DateTime?
+
+  @@index([channel, at])
+  @@index([operatorId, at])
+}
+
+model ChatBlock {
+  blockerId String
+  blockedId String
+  at        DateTime @default(now())
+
+  @@id([blockerId, blockedId])
+}
+
+enum FilterKind {
+  WORD
+  REGEX
+}
+
+enum FilterAction {
+  BLOCK
+  MASK
+}
+
+/// Admin-added chat filter terms (the default list ships in rules).
+model ChatFilterTerm {
+  id      String       @id @default(uuid())
+  pattern String
+  kind    FilterKind
+  action  FilterAction
+  addedBy String
+  at      DateTime     @default(now())
+}
+
+model ChatFilterHit {
+  id         String   @id @default(uuid())
+  operatorId String
+  channel    String
+  text       String
+  term       String
+  at         DateTime @default(now())
+
+  @@index([operatorId, at])
+}
+
+enum ReportReason {
+  SPAM
+  HARASSMENT
+  CHEATING
+  NAME
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  ACTIONED
+  DISMISSED
+}
+
+/// Player reports (SP4 spec §5.2); resolved by admins in-game, never linked out.
+model Report {
+  id         String       @id @default(uuid())
+  reporterId String
+  targetId   String
+  messageId  String?
+  reason     ReportReason
+  note       String       @default("")
+  status     ReportStatus @default(OPEN)
+  resolvedBy String?
+  resolvedAt DateTime?
+  action     String?
+  at         DateTime     @default(now())
+
+  @@unique([reporterId, messageId])
+  @@index([status, at])
+  @@index([reporterId, at])
 }
 
 enum TicketStatus {
