@@ -3,7 +3,7 @@ import { TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, ticket
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Intent, OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
-import { MemoryStore, type Store } from '../src/runtime/store.js';
+import { MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type Store } from '../src/runtime/store.js';
 import { ownedRecord } from './helpers.js';
 
 const SPAWN = { x: 18.5, y: 16.5 };
@@ -246,6 +246,47 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await expect(store.grantBits('00000000-0000-0000-0000-000000000000', 5, 'admin')).rejects.toThrow();
       expect((await store.loadOrCreateOperator('sub-l2', 'lo', SPAWN)).bits).toBe(50);
       expect(await store.ledgerFor(a.id)).toHaveLength(1);
+    });
+
+    it("grantBits refuses the sim's own ledger reasons (a resync would never apply such a row)", async () => {
+      const a = await store.loadOrCreateOperator('sub-l2r', 'lo', SPAWN);
+      await store.grantBits(a.id, 50, 'admin');
+      for (const reason of SIM_LEDGER_REASONS) {
+        await expect(store.grantBits(a.id, 5, reason)).rejects.toThrow(RangeError);
+        await expect(store.grantBits(a.id, -5, reason)).rejects.toThrow(RangeError);
+      }
+      expect((await store.loadOrCreateOperator('sub-l2r', 'lo', SPAWN)).bits).toBe(50);
+      expect(await store.ledgerFor(a.id)).toHaveLength(1);
+    });
+
+    it('every ledger row a store intent writes carries a reason listed for its kind in SIM_INTENT_LEDGER_REASONS', async () => {
+      const a = await store.loadOrCreateOperator('sub-reasons', 'lo', SPAWN);
+      const ctx = { seedId: 'abcd1234' };
+      await store.applyIntent(claim(a.id, 'rory', ownedRecord('tracerat', 20, 0, 'abcd1234-rs1')), ctx);
+      await store.grantBits(a.id, 100_000, 'admin');
+      const seen = new Map<string, Set<string>>();
+      const run = async (intent: Intent) => {
+        const before = (await store.ledgerFor(a.id, 1000)).length;
+        expect(await store.applyIntent(intent, ctx)).toMatchObject({ ok: true });
+        const rows = (await store.ledgerFor(a.id, 1000)).slice(before);
+        const reasons = seen.get(intent.kind) ?? new Set<string>();
+        for (const r of rows) reasons.add(r.reason);
+        seen.set(intent.kind, reasons);
+      };
+      await run({ id: 'i-rs-buy', kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'sniff', qty: 1, price: 32 });
+      await run({ id: 'i-rs-disk', kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'diskExpansion', qty: 1, price: 8192 });
+      await run({
+        id: 'i-rs-dec', kind: 'decompile', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-rs1', species: 'tracerat', fragments: { 'frag:packet': 9, 'frag:signal': 9 },
+        history: { at: '2026-09-30T00:00:00.000Z', kind: 'decompiled', detail: 'test' },
+      });
+      await run({ id: 'i-rs-craft', kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'restore', qty: 1, using: 'packet', bits: 16, fragments: { 'frag:packet': 2 }, output: { item: 'restore', qty: 1 } });
+      const t = acceptLo(a.id, 0, 'i-rs-acc', 'abcd1234-rs-t0');
+      await run(t);
+      await run({ id: 'i-rs-done', kind: 'completeTicket', operatorId: a.id, ticketId: t.ticketId, reward: t.reward });
+      const writers = Object.fromEntries([...seen].filter(([, r]) => r.size > 0).map(([kind, r]) => [kind, [...r].sort()]));
+      // Every kind listed in the map was exercised here (a new kind must add a scenario), and wrote only its listed reasons.
+      expect(writers).toEqual(Object.fromEntries(Object.entries(SIM_INTENT_LEDGER_REASONS).map(([kind, r]) => [kind, [...r].sort()])));
+      for (const reasons of Object.values(writers)) for (const r of reasons) expect(SIM_LEDGER_REASONS.has(r)).toBe(true);
     });
 
     it('the load carries the org (none) and the ledger watermark of its balance; liveState lists rows written outside the sim above it', async () => {
@@ -578,6 +619,13 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
 }
 
 contract('MemoryStore', async () => new MemoryStore(), async () => {});
+
+describe('SIM_LEDGER_REASONS', () => {
+  it('is exactly the reasons the store intents write (one source of truth)', () => {
+    expect([...SIM_LEDGER_REASONS].sort()).toEqual([...new Set(Object.values(SIM_INTENT_LEDGER_REASONS).flat())].sort());
+    expect(Object.isFrozen(SIM_INTENT_LEDGER_REASONS)).toBe(true);
+  });
+});
 
 describe('MemoryStore orgs', () => {
   it('loads and resyncs the org it holds for the operator (mirrors OrgMember)', async () => {

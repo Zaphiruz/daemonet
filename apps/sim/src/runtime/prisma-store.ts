@@ -2,7 +2,9 @@ import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient 
 import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OrgView, OwnedDaemonRecord, Point } from '../core/index.js';
 import { DISK_EXPANSION_ITEM, DISK_STEP, dayKey, getSpecies, type FilterTerm, type TicketKind, type TicketParams } from '@daemonet/rules';
 import {
+  assertGrantReason,
   checkpointFields,
+  intentLedgerReason,
   decompileProblem,
   decompileStoreGain,
   economyIntentProblem,
@@ -21,6 +23,8 @@ import {
   type LedgerWrite,
   type LiveOperatorState,
   type LoadedOperator,
+  type SimLedgerKind,
+  type SimLedgerReason,
   type Store,
 } from './store.js';
 
@@ -121,6 +125,15 @@ async function lockOperator(tx: Tx, id: string): Promise<{ bits: bigint; diskCap
   if (!row) throw new Error(`unknown operator ${id}`);
   const inventory = row.inventory && typeof row.inventory === 'object' && !Array.isArray(row.inventory) ? (row.inventory as Record<string, number>) : {};
   return { bits: BigInt(row.bits), diskCapacity: Number(row.diskCapacity), inventory };
+}
+
+/**
+ * Inserts the ledger row of a store intent. The only way `applyIntent` writes BitsLedger: the reason is typed and
+ * checked against SIM_INTENT_LEDGER_REASONS for the intent's kind. Call it only after `lockOperator` (seq order =
+ * commit order, see `LedgerWrite.seq`).
+ */
+async function intentLedgerRow<K extends SimLedgerKind>(tx: Tx, kind: K, operatorId: string, delta: number, reason: SimLedgerReason<K>, ref: string): Promise<void> {
+  await tx.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason: intentLedgerReason(kind, reason), ref } });
 }
 
 export class PrismaStore implements Store {
@@ -356,7 +369,7 @@ export class PrismaStore implements Store {
                 ...(disk ? { diskCapacity: { increment: DISK_STEP } } : { inventory: withItems(op.inventory, { [intent.itemId]: intent.qty }, 1) }),
               },
             });
-            await tx.bitsLedger.create({ data: { operatorId: intent.operatorId, delta: BigInt(-intent.price), reason: ledgerReason(intent), ref: intent.id } });
+            await intentLedgerRow(tx, intent.kind, intent.operatorId, -intent.price, ledgerReason(intent), intent.id);
             return { ok: true } as const;
           }
           case 'craft': {
@@ -368,7 +381,7 @@ export class PrismaStore implements Store {
             if (missing) throw new DomainFailure(`not enough ${missing}`);
             const inventory = withItems(withItems(op.inventory, intent.fragments, -1), { [intent.output.item]: intent.output.qty }, 1);
             await tx.operator.update({ where: { id: intent.operatorId }, data: { bits: { decrement: BigInt(intent.bits) }, inventory } });
-            await tx.bitsLedger.create({ data: { operatorId: intent.operatorId, delta: BigInt(-intent.bits), reason: ledgerReason(intent), ref: intent.id } });
+            await intentLedgerRow(tx, intent.kind, intent.operatorId, -intent.bits, ledgerReason(intent), intent.id);
             return { ok: true } as const;
           }
           case 'decompile': {
@@ -426,7 +439,7 @@ export class PrismaStore implements Store {
             });
             if (res.count !== 1) throw new DomainFailure('no open ticket');
             await tx.operator.update({ where: { id: intent.operatorId }, data: { bits: { increment: BigInt(intent.reward) } } });
-            await tx.bitsLedger.create({ data: { operatorId: intent.operatorId, delta: BigInt(intent.reward), reason: 'ticket', ref: intent.ticketId } });
+            await intentLedgerRow(tx, intent.kind, intent.operatorId, intent.reward, 'ticket', intent.ticketId);
             return { ok: true } as const;
           }
         }
@@ -502,6 +515,7 @@ export class PrismaStore implements Store {
 
   async grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<LedgerWrite> {
     if (!Number.isSafeInteger(delta) || delta === 0) throw new RangeError(`invalid bits delta ${delta}`);
+    assertGrantReason(reason);
     return this.prisma.$transaction(async (tx) => {
       // A debit is conditional on the balance (row-locked by the update), so bits never go negative.
       const res = await tx.operator.updateMany({

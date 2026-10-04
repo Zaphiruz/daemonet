@@ -105,11 +105,39 @@ export interface LedgerRow {
 }
 
 /**
+ * The ledger reasons each store intent kind writes: the one source of truth for SIM_LEDGER_REASONS. Both stores write
+ * intent ledger rows only through a helper typed (and checked) against this map, so a new bits-moving intent (e.g. an
+ * incident payout) cannot write a row without listing its reason here. Pinned by store.test.ts.
+ */
+export const SIM_INTENT_LEDGER_REASONS = Object.freeze({
+  buy: Object.freeze(['shop', 'disk'] as const),
+  craft: Object.freeze(['craft'] as const),
+  completeTicket: Object.freeze(['ticket'] as const),
+} satisfies Partial<Record<Intent['kind'], readonly string[]>>);
+
+/** An intent kind that writes ledger rows. */
+export type SimLedgerKind = keyof typeof SIM_INTENT_LEDGER_REASONS;
+/** A ledger reason an intent of kind `K` may write. */
+export type SimLedgerReason<K extends SimLedgerKind = SimLedgerKind> = (typeof SIM_INTENT_LEDGER_REASONS)[K][number];
+
+/**
  * Ledger reasons written only by the sim's own store intents (buy / craft / completeTicket). The world applied those
  * itself (costs at accept, gains on commit), so a resync never applies them again; every other reason (admin grants,
- * org and rename spends in the api, ...) was written outside the sim and reaches the world as a delta.
+ * org and rename spends in the api, ...) was written outside the sim and reaches the world as a delta. `grantBits`
+ * refuses these reasons.
  */
-export const SIM_LEDGER_REASONS: ReadonlySet<string> = new Set(['shop', 'disk', 'craft', 'ticket']);
+export const SIM_LEDGER_REASONS: ReadonlySet<string> = new Set<string>(Object.values(SIM_INTENT_LEDGER_REASONS).flat());
+
+/** The reason an intent ledger row is written with, checked against SIM_INTENT_LEDGER_REASONS (throws RangeError). */
+export function intentLedgerReason<K extends SimLedgerKind>(kind: K, reason: SimLedgerReason<K>): SimLedgerReason<K> {
+  if (!(SIM_INTENT_LEDGER_REASONS[kind] as readonly string[]).includes(reason)) throw new RangeError(`ledger reason ${reason} is not listed for ${kind}`);
+  return reason;
+}
+
+/** Throws RangeError for a reason only the sim's intents may write (grantBits). */
+export function assertGrantReason(reason: string): void {
+  if (SIM_LEDGER_REASONS.has(reason)) throw new RangeError(`ledger reason ${reason} belongs to the sim's intents`);
+}
 
 /** A ledger row just written outside the sim's intents. */
 export interface LedgerWrite {
@@ -142,7 +170,9 @@ export interface LiveOperatorState {
 }
 
 /** Ledger reason of a bits-spending intent. */
-export function ledgerReason(intent: Extract<ShopIntent, { kind: 'buy' | 'craft' }>): 'shop' | 'disk' | 'craft' {
+export function ledgerReason(intent: Extract<ShopIntent, { kind: 'buy' }>): SimLedgerReason<'buy'>;
+export function ledgerReason(intent: Extract<ShopIntent, { kind: 'craft' }>): SimLedgerReason<'craft'>;
+export function ledgerReason(intent: Extract<ShopIntent, { kind: 'buy' | 'craft' }>): SimLedgerReason<'buy' | 'craft'> {
   if (intent.kind === 'craft') return 'craft';
   return intent.itemId === DISK_EXPANSION_ITEM ? 'disk' : 'shop';
 }
@@ -417,6 +447,11 @@ export class MemoryStore implements Store {
     return key;
   }
 
+  /** Appends the ledger row of a store intent (its reason checked against SIM_INTENT_LEDGER_REASONS). */
+  private addIntentLedger<K extends SimLedgerKind>(kind: K, row: Omit<LedgerRow, 'reason'> & { reason: SimLedgerReason<K> }): void {
+    this.addLedger({ ...row, reason: intentLedgerReason(kind, row.reason) });
+  }
+
   private maxLedgerSeq(operatorId: string): number {
     let max = 0;
     this.ledger.forEach((l, i) => {
@@ -599,7 +634,7 @@ export class MemoryStore implements Store {
         op.bits -= intent.price;
         if (intent.itemId === DISK_EXPANSION_ITEM) op.diskCapacity += DISK_STEP;
         else op.inventory = withItems(op.inventory, { [intent.itemId]: intent.qty }, 1);
-        this.addLedger({ operatorId: op.id, delta: -intent.price, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
+        this.addIntentLedger(intent.kind, { operatorId: op.id, delta: -intent.price, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
         break;
       }
       case 'craft': {
@@ -610,7 +645,7 @@ export class MemoryStore implements Store {
         if (missing) return { ok: false, reason: `not enough ${missing}` };
         op.bits -= intent.bits;
         op.inventory = withItems(withItems(op.inventory, intent.fragments, -1), { [intent.output.item]: intent.output.qty }, 1);
-        this.addLedger({ operatorId: op.id, delta: -intent.bits, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
+        this.addIntentLedger(intent.kind, { operatorId: op.id, delta: -intent.bits, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
         break;
       }
       case 'decompile': {
@@ -649,7 +684,7 @@ export class MemoryStore implements Store {
         t.progress = t.target;
         t.completedAt = this.now();
         op.bits += intent.reward;
-        this.addLedger({ operatorId: op.id, delta: intent.reward, reason: 'ticket', ref: intent.ticketId, at: this.now() });
+        this.addIntentLedger(intent.kind, { operatorId: op.id, delta: intent.reward, reason: 'ticket', ref: intent.ticketId, at: this.now() });
         break;
       }
     }
@@ -691,6 +726,7 @@ export class MemoryStore implements Store {
 
   async grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<LedgerWrite> {
     if (!Number.isSafeInteger(delta) || delta === 0) throw new RangeError(`invalid bits delta ${delta}`);
+    assertGrantReason(reason);
     const op = this.operators.get(operatorId);
     if (!op) throw new Error(`unknown operator ${operatorId}`);
     if (op.bits + delta < 0) throw new RangeError('not enough bits');
