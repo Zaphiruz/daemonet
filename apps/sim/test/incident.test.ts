@@ -2,10 +2,10 @@ import { MemoryBus } from '@daemonet/bus';
 import { BOSS_HP_MULTIPLIER, COPY_TTL_MS, INCIDENT_WINDOW_MS, KERNEL_DAEMONS, getSubnet, lineBase } from '@daemonet/rules';
 import type { GameEvent, ServerMessage } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
-import { World, entitiesNear, type Daemon, type StepResult } from '../src/core/index.js';
+import { World, entitiesNear, incidentParticipants, type Daemon, type StepResult } from '../src/core/index.js';
 import { createDevVerifier } from '../src/runtime/auth.js';
 import { Game, type Conn } from '../src/runtime/game.js';
-import { MemoryStore } from '../src/runtime/store.js';
+import { MemoryStore, incidentRewardIntent } from '../src/runtime/store.js';
 import { input, operatorRecord, ownedRecord, self } from './helpers.js';
 
 const KS = getSubnet('kernelspace');
@@ -619,5 +619,110 @@ describe('Incident final review', () => {
     for (let i = 0; i < 3 && evicted.length === 0; i++) evicted = world.step([]).intents.filter((x) => x.kind === 'travel');
     expect(world.captures.has(cap.id)).toBe(false);
     expect(evicted).toMatchObject([{ kind: 'travel', operatorId: 'alice', to: 'backbone', gatewayId: 'evict' }]);
+  });
+});
+
+describe('Incident final review: runtime recovery and refusals (MemoryStore)', () => {
+  const opRow = (id: string) => ({ id, sub: `dev-${id}`, name: id, starterClaimed: true, subnet: 'backbone', bits: 0, diskCapacity: 256, x: 20.5, y: 20.5, inventory: {} });
+  function game(store: MemoryStore, extra: Partial<ConstructorParameters<typeof Game>[0]> = {}) {
+    const now = Date.parse('2026-10-01T05:00:00.000Z');
+    const clock = () => new Date(now).toISOString();
+    const backbone = new World({ subnet: getSubnet('backbone'), seed: 'b', seedId: 'bbbb0001', spawner: false, clock });
+    const ks = new World({ subnet: KS, seed: 'k', seedId: 'kkkk0002', spawner: false, clock });
+    const g = new Game({ worlds: [backbone, ks], store, verify: createDevVerifier('daemonet-users'), bus: new MemoryBus(), ...extra });
+    return { g, backbone, ks };
+  }
+  const incidentRows = (store: MemoryStore) => store.ledger.filter((l) => l.reason === 'incident');
+
+  it('boot recovery pays only the unpaid participant of a CLEARED row (not the paid or refused ones) and marks a payout the store refuses', async () => {
+    const store = new MemoryStore();
+    for (const id of ['pa', 'pb', 'pc', 'pd']) store.operators.set(id, opRow(id));
+    const closedAt = new Date().toISOString();
+    const participants = incidentParticipants(new Map([['pa', 500], ['pb', 300], ['pc', 200]])).map((p) => ({ ...p, name: p.operatorId }));
+    const row = { id: 'inc-rec', n: 3, species: KERNEL_DAEMONS[0]!, endsAt: '2026-10-01T04:20:00.000Z', outcome: 'CLEARED' as const, participants, closedAt };
+    store.incidents.set(row.id, { ...row, participants: participants.map((p) => (p.operatorId === 'pc' ? { ...p, refused: true } : { ...p })) });
+    // pa was paid before the restart
+    expect(await store.applyIntent(incidentRewardIntent(row, participants[0]!), { seedId: 'kkkk0002' })).toMatchObject({ ok: true });
+    // a second row whose stored payout list the rules do not derive (corrupt): the store refuses it
+    const bad = incidentParticipants(new Map([['pd', 100]])).map((p) => ({ ...p, name: 'pd', reward: p.reward + 1 }));
+    store.incidents.set('inc-bad', { id: 'inc-bad', n: 4, species: KERNEL_DAEMONS[0]!, endsAt: '2026-10-01T08:20:00.000Z', outcome: 'CLEARED', participants: bad, closedAt });
+    expect(incidentRows(store)).toHaveLength(1);
+
+    const { g } = game(store);
+    await g.recoverIncidents();
+    expect(incidentRows(store).map((l) => [l.operatorId, l.delta, l.ref])).toEqual([
+      ['pa', participants[0]!.reward, 'inc-rec'],
+      ['pb', participants[1]!.reward, 'inc-rec'],
+    ]);
+    expect(store.operators.get('pc')!.bits).toBe(0);
+    expect(store.operators.get('pd')!.bits).toBe(0);
+    expect(store.incidents.get('inc-bad')!.participants[0]).toMatchObject({ operatorId: 'pd', refused: true });
+    // nothing is owed any more: a second boot pays nobody
+    expect(await store.recoverIncidents()).toEqual([]);
+    await g.recoverIncidents();
+    expect(incidentRows(store)).toHaveLength(2);
+    await g.shutdown();
+  });
+
+  it('a payout the store refuses in play is marked refused on the row, so boot recovery never raises it', async () => {
+    const store = new MemoryStore();
+    store.operators.set('ref', opRow('ref'));
+    const apply = store.applyIntent.bind(store);
+    store.applyIntent = async (intent, ctx) => (intent.kind === 'incidentReward' ? { ok: false, reason: 'refused for the test' } : apply(intent, ctx));
+    const { g, ks } = game(store);
+    g.startIncident();
+    g.tick();
+    await g.flush();
+    const inc = ks.incident!;
+    inc.damage.set('ref', 100);
+    ks.daemons.get(inc.bossId)!.hp = 0;
+    g.tick();
+    await g.flush();
+    expect(store.incidents.get(inc.id)).toMatchObject({ outcome: 'CLEARED', participants: [{ operatorId: 'ref', reward: 8192, refused: true }] });
+    expect(incidentRows(store)).toEqual([]);
+    expect(await store.recoverIncidents()).toEqual([]);
+    await g.shutdown();
+  });
+
+  it('the CLEARED record is retried until the store answers; other outcomes give up after the bounded retries', async () => {
+    const store = new MemoryStore();
+    const record = store.recordIncident.bind(store);
+    let failures = 0;
+    const attempts: string[] = [];
+    store.recordIncident = async (row) => {
+      attempts.push(row.outcome);
+      if (failures > 0) {
+        failures--;
+        throw new Error('db down');
+      }
+      return record(row);
+    };
+    const { g, ks } = game(store, { retryDelaysMs: [1, 1, 1] });
+    g.startIncident();
+    g.tick();
+    await g.flush();
+    const first = ks.incident!;
+    // nobody hit it: no payout intent writes the row, only the record does
+    failures = 6;
+    attempts.length = 0;
+    ks.daemons.get(first.bossId)!.hp = 0;
+    g.tick();
+    await g.flush();
+    expect(attempts).toEqual(Array(7).fill('CLEARED'));
+    expect(store.incidents.get(first.id)).toMatchObject({ outcome: 'CLEARED' });
+    // an EXPIRED record gives up after the three bounded retries (boot recovery closes the OPEN row later)
+    expect(g.startIncident()).toBe(true);
+    g.tick();
+    await g.flush();
+    const second = ks.incident!;
+    failures = 6;
+    attempts.length = 0;
+    second.endsAtMs = 0; // the window is over with the boss alive: it expires
+    g.tick();
+    await g.flush();
+    expect(ks.incident).toBeNull();
+    expect(attempts).toEqual(Array(4).fill('EXPIRED'));
+    expect(store.incidents.get(second.id)).toMatchObject({ outcome: 'OPEN' });
+    await g.shutdown();
   });
 });
