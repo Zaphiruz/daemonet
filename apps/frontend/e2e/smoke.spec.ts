@@ -54,3 +54,32 @@ test('dev login, claim a starter, run a daemon, move by clicking, run the starte
 
   expect(violations).toEqual([]);
 });
+
+test('a level-8 daemon seeded on Disk is loaded at the host and evolved from the RAM card; the codex tree marks the discovery', async ({ page }) => {
+  const who = `${name}e`;
+  await page.goto('/');
+  await page.getByTestId('dev-name').fill(who);
+  await page.getByTestId('dev-login').click();
+  await expect(page.getByTestId('status')).toHaveText('online', { timeout: 20_000 });
+  await page.getByTestId('name-input').fill(who);
+  await page.getByTestId('claim').click();
+  await expect(page.getByTestId('operator-name')).toHaveText(who, { timeout: 15_000 });
+
+  // seed through the dev route (shares the page's session cookie), then load it into RAM at the host (the spawn point is within reach)
+  const seeded = await page.request.post('/api/dev/daemon', { data: { species: 'pingling', level: 8 }, headers: { 'x-requested-with': 'daemonet' } });
+  expect(seeded.ok()).toBeTruthy();
+  await page.getByTestId('tab-disk').click();
+  await page.getByRole('button', { name: 'refresh' }).click();
+  await page.getByRole('button', { name: 'load into RAM' }).click();
+  await page.getByTestId('tab-ram').click();
+  await expect(page.getByTestId('ram-1-name')).toHaveText('Pingling', { timeout: 15_000 });
+  await expect(page.getByTestId('evolve-1')).toContainText('Echolet');
+  await page.getByTestId('evolve-1-echolet').click();
+  await expect(page.getByTestId('ram-1-name')).toHaveText('Echolet', { timeout: 15_000 });
+  await page.getByTestId('tab-log').click();
+  await expect(page.getByTestId('log')).toContainText('evolved: pingling -> echolet');
+
+  await page.getByTestId('tab-codex').click();
+  await page.getByRole('button', { name: 'refresh' }).click();
+  await expect(page.getByTestId('tree-echolet')).toContainText('✓', { timeout: 10_000 });
+});
