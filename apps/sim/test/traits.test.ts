@@ -284,6 +284,18 @@ describe('trait edge cases', () => {
     expect(wild.hp).toBe(1);
   });
 
+  it('echo does not follow a nullsafe save at any HP', () => {
+    const { world, mine, wild, use, hits } = duel('echo', 'nullsafe');
+    rigEcho(world);
+    wild.hp = 50;
+    wild.wild!.aggro = null;
+    mine.stats = { ...mine.stats, attack: 5000, focus: 5000 };
+    const h = hits(use('ping'));
+    expect(h).toHaveLength(1);
+    expect(h[0]!.amount).toBe(49);
+    expect(wild.hp).toBe(1);
+  });
+
   it('echo still repeats a damaging hit when rigged (control)', () => {
     const { world, use, hits } = duel('echo');
     rigEcho(world);

@@ -210,8 +210,9 @@ export function executeMove(world: World, attacker: Daemon, moveId: string, aim:
       world.rng,
     );
     const amount = scaleDamage(r.amount, attacker, target, move, tick);
+    const hadSurvived = target.engagement.survived;
     const dealt = applyHit(world, attacker, target, move, amount, r.multiplier, out);
-    if (attacker.trait === 'echo' && isFiller(move) && dealt > 0 && target.hp > 0 && world.rng.chance(ECHO_CHANCE)) {
+    if (attacker.trait === 'echo' && isFiller(move) && dealt > 0 && target.hp > 0 && (hadSurvived || !target.engagement.survived) && world.rng.chance(ECHO_CHANCE)) {
       applyHit(world, attacker, target, move, Math.max(1, Math.floor(dealt / 2)), r.multiplier, out);
     }
   }
