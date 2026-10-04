@@ -3,7 +3,8 @@ import { WORDS } from '../src/capture/crypto.js';
 import { GROUPS, USERS } from '../src/capture/root.js';
 import { FLAGS, TRANSITIONS } from '../src/capture/socket.js';
 import { FRAGMENT_IDS, RECIPES, SHOP } from '../src/content/economy.js';
-import { SANDBOX } from '../src/content/arena.js';
+import { ARENA_BANDS, SANDBOX } from '../src/content/arena.js';
+import { GLICKO_START } from '../src/glicko2.js';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { BOSS_PHASES, KERNEL_DAEMONS } from '../src/content/incidents.js';
 import { DEFAULT_FILTER, DEFAULT_TERMS } from '../src/content/chatfilter.js';
@@ -37,6 +38,8 @@ describe('content tables are deep-frozen', () => {
     ['CLOUDNET', CLOUDNET],
     ['KERNELSPACE', KERNELSPACE],
     ['SANDBOX', SANDBOX],
+    ['ARENA_BANDS', ARENA_BANDS],
+    ['GLICKO_START', GLICKO_START],
     ['OPEN_SUBNET_IDS', OPEN_SUBNET_IDS],
     ['HOSTED_SUBNET_IDS', HOSTED_SUBNET_IDS],
     ['KERNEL_DAEMONS', KERNEL_DAEMONS],
@@ -87,6 +90,7 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(BACKBONE.gateways[0]!.requires)).toBe(true);
     expect(Object.isFrozen(KERNELSPACE.arena)).toBe(true);
     expect(Object.isFrozen(KERNELSPACE.regions)).toBe(true);
+    expect(Object.isFrozen(ARENA_BANDS[0])).toBe(true);
     expect(Object.isFrozen(SANDBOX.walls[0])).toBe(true);
     expect(Object.isFrozen(SANDBOX.arenaSpawns[1])).toBe(true);
     expect(Object.isFrozen(ITEMS[0])).toBe(true);
