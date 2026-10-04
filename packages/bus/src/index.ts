@@ -29,11 +29,14 @@ function deliver(hs: Iterable<Handler>, message: unknown): void {
 /** In-process bus for tests and local development without Redis. Publishing is asynchronous (next microtask). */
 export class MemoryBus implements Bus {
   private readonly handlers = new Map<string, Set<Handler>>();
-  /** Every publish, for assertions. */
+  /** The most recent publishes (capped at `logLimit`), for assertions. */
   readonly log: Array<{ channel: string; message: unknown }> = [];
+
+  constructor(private readonly logLimit = 1000) {}
 
   async publish(channel: string, message: unknown): Promise<void> {
     this.log.push({ channel, message });
+    if (this.log.length > this.logLimit) this.log.splice(0, this.log.length - this.logLimit);
     const copy = JSON.parse(JSON.stringify(message)) as unknown;
     const hs = this.handlers.get(channel);
     if (!hs) return;
@@ -68,9 +71,11 @@ export class RedisBus implements Bus {
   private closing: Promise<void> | undefined;
 
   constructor(url: string) {
-    const opts = { lazyConnect: false, maxRetriesPerRequest: 2, retryStrategy };
-    this.pub = new Redis(url, opts);
-    this.sub = new Redis(url, opts);
+    // The publisher fails fast; the subscriber queues SUBSCRIBE across outages instead of flushing it.
+    this.pub = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: 2, retryStrategy });
+    this.sub = new Redis(url, { lazyConnect: false, maxRetriesPerRequest: null, retryStrategy });
+    // (Re)issue SUBSCRIBE for every wanted channel whenever the connection becomes ready; idempotent in Redis.
+    this.sub.on('ready', () => this.resubscribe());
     // Without an 'error' listener ioredis emits an uncaught error event; log and let it reconnect.
     this.pub.on('error', (err: Error) => console.error('bus publisher error', err.message));
     this.sub.on('error', (err: Error) => console.error('bus subscriber error', err.message));
@@ -81,10 +86,17 @@ export class RedisBus implements Bus {
       try {
         message = JSON.parse(raw);
       } catch {
+        console.warn('bus: dropped malformed message on', channel);
         return;
       }
       deliver(hs, message);
     });
+  }
+
+  private resubscribe(): void {
+    const keys = [...this.handlers.keys()];
+    if (keys.length === 0) return;
+    this.sub.subscribe(...keys).catch((err: Error) => console.error('bus resubscribe failed', err.message));
   }
 
   async publish(channel: string, message: unknown): Promise<void> {
@@ -121,6 +133,11 @@ export class RedisBus implements Bus {
       await Promise.all(
         [this.pub, this.sub].map(async (c) => {
           try {
+            // QUIT would queue forever on a connection that is not ready (the subscriber retries indefinitely).
+            if (c.status !== 'ready') {
+              c.disconnect();
+              return;
+            }
             await c.quit();
           } catch {
             c.disconnect();
