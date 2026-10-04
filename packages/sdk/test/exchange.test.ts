@@ -1,6 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import { devToken, type TokenSource } from '../src/auth.js';
-import { ExchangeClient, ExchangeError } from '../src/exchange.js';
+import {
+  ExchangeClient,
+  ExchangeError,
+  type ExchangeDaemon,
+  type ExchangeListing,
+  type ExchangeListingStatus,
+  type ExchangeMyListing,
+  type ExchangeOrder,
+  type ExchangeOrderStatus,
+  type ExchangeTrade,
+  type ExchangeTradeStatus,
+} from '../src/exchange.js';
 
 type Answer = { status?: number; body: unknown; headers?: Record<string, string> } | Error;
 
@@ -43,12 +54,46 @@ describe('ExchangeClient', () => {
   });
 
   it('uses the session cookie and the CSRF header in a page', async () => {
-    const f = fakeFetch([{ body: [] }, { body: { id: 't1' } }]);
+    const f = fakeFetch([{ body: [] }, { body: { id: 't1' } }, { body: { ok: true } }]);
     const ex = new ExchangeClient({ baseUrl: '', auth: 'cookie', fetch: f.fn });
     await ex.trades();
     await ex.confirm('t 1', 4);
+    await ex.cancelOrder('o1');
     expect(f.calls[0]).toMatchObject({ url: '/api/exchange/trades', credentials: 'include', headers: { 'x-requested-with': 'daemonet' } });
-    expect(f.calls[1]).toMatchObject({ url: '/api/exchange/trades/t%201/confirm', body: { version: 4 } });
+    // mutations carry the CSRF header the api requires of cookie sessions, and never a bearer token
+    expect(f.calls[1]).toMatchObject({ url: '/api/exchange/trades/t%201/confirm', method: 'POST', credentials: 'include', body: { version: 4 } });
+    expect(f.calls[1]!.headers).toEqual({ 'x-requested-with': 'daemonet', 'content-type': 'application/json' });
+    expect(f.calls[2]).toMatchObject({ method: 'DELETE', credentials: 'include' });
+    expect(f.calls[2]!.headers).toEqual({ 'x-requested-with': 'daemonet' });
+  });
+
+  it('types every field the api returns, with statuses as the api`s enums', () => {
+    const log = { originalOperatorId: 'op', capturedAt: '2026-10-01T00:00:00.000Z', subnet: 'lo', tool: 'sniff', spawnIndex: null };
+    const daemon: ExchangeDaemon = {
+      id: 'd1', species: 'pingling', level: 8, xp: 0, nature: 0, traitSlot: 0, ivs: [1], bonus: [0], clean: false, signature: 0,
+      moves: ['ping'], heldItem: null, patched: false, crashes: 0, arenaWins: 0, history: [{ at: '2026-10-01T00:00:00.000Z', kind: 'captured', detail: 'x' }], log,
+    };
+    const order: ExchangeOrder = { id: 'o1', item: 'frag:packet', side: 'BUY', price: 5, qty: 2, remaining: 2, status: 'OPEN', createdAt: '2026-10-01T00:00:00.000Z', expiresAt: '2026-10-02T00:00:00.000Z' };
+    type Placed = Awaited<ReturnType<ExchangeClient['placeOrder']>>;
+    const placed: Placed = { order: { id: 'o1', item: 'frag:packet', side: 'SELL', price: 5, qty: 2, remaining: 0, status: 'FILLED', expiresAt: '2026-10-02T00:00:00.000Z' }, fills: [{ price: 5, qty: 2, fee: 0 }] };
+    const listing: ExchangeListing = { id: 'l1', price: 90, sellerId: 'op', sellerName: null, createdAt: '2026-10-01T00:00:00.000Z', expiresAt: '2026-10-08T00:00:00.000Z', daemon };
+    const mine: ExchangeMyListing = { id: 'l1', price: 90, status: 'SOLD', species: 'pingling', level: 8, createdAt: '2026-10-01T00:00:00.000Z', expiresAt: '2026-10-08T00:00:00.000Z', soldAt: null, daemon: null };
+    const trade: ExchangeTrade = {
+      id: 't1', status: 'DONE', version: 3, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z',
+      me: { id: 'a', name: 'alice', confirmed: true, offer: { bits: 5, items: {}, daemons: [daemon] } },
+      them: { id: 'b', name: null, confirmed: true, offer: { bits: 0, items: { 'frag:packet': 1 }, daemons: [{ id: 'd2', species: 'pingling', level: 3 }] } },
+    };
+    expectTypeOf<Awaited<ReturnType<ExchangeClient['orders']>>>().toEqualTypeOf<ExchangeOrder[]>();
+    expectTypeOf<Awaited<ReturnType<ExchangeClient['listings']>>['listings']>().toEqualTypeOf<ExchangeListing[]>();
+    expectTypeOf<Awaited<ReturnType<ExchangeClient['myListings']>>>().toEqualTypeOf<ExchangeMyListing[]>();
+    expectTypeOf<ExchangeOrder['status']>().toEqualTypeOf<ExchangeOrderStatus>();
+    expectTypeOf<ExchangeOrderStatus>().toEqualTypeOf<'OPEN' | 'FILLED' | 'CANCELLED' | 'EXPIRED'>();
+    expectTypeOf<Placed['order']['status']>().toEqualTypeOf<ExchangeOrderStatus>();
+    expectTypeOf<ExchangeMyListing['status']>().toEqualTypeOf<ExchangeListingStatus>();
+    expectTypeOf<ExchangeListingStatus>().toEqualTypeOf<'ACTIVE' | 'SOLD' | 'CANCELLED' | 'EXPIRED'>();
+    expectTypeOf<ExchangeTrade['status']>().toEqualTypeOf<ExchangeTradeStatus>();
+    expectTypeOf<ExchangeTradeStatus>().toEqualTypeOf<'OPEN' | 'DONE' | 'CANCELLED'>();
+    expect([order, placed, listing, mine, trade].length).toBe(5);
   });
 
   it('throws ExchangeError with the api code, or http_error for non-JSON failures', async () => {

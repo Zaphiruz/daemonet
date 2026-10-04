@@ -53,6 +53,77 @@ export interface ExchangeOffer {
   daemonIds: string[];
 }
 
+/** The api's status enums (Prisma `OrderStatus`, `ListingStatus`, `TradeStatus`). */
+export type ExchangeOrderStatus = 'OPEN' | 'FILLED' | 'CANCELLED' | 'EXPIRED';
+export type ExchangeListingStatus = 'ACTIVE' | 'SOLD' | 'CANCELLED' | 'EXPIRED';
+export type ExchangeTradeStatus = 'OPEN' | 'DONE' | 'CANCELLED';
+export type ExchangeOrderSide = 'BUY' | 'SELL';
+
+/** One of your orders (`orders()`); times are ISO strings. */
+export interface ExchangeOrder {
+  id: string;
+  item: string;
+  side: ExchangeOrderSide;
+  price: number;
+  qty: number;
+  remaining: number;
+  status: ExchangeOrderStatus;
+  createdAt: string;
+  expiresAt: string;
+}
+
+/** A daemon as the Exchange shows it for inspection (listings, open trades): everything but evolution requirements. */
+export interface ExchangeDaemon {
+  id: string;
+  species: string;
+  level: number;
+  xp: number;
+  nature: number;
+  traitSlot: number;
+  ivs: number[];
+  bonus: number[];
+  clean: boolean;
+  signature: number;
+  moves: string[];
+  heldItem: string | null;
+  patched: boolean;
+  crashes: number;
+  arenaWins: number;
+  history: Array<{ at: string; kind: string; detail: string }>;
+  log: { originalOperatorId: string; capturedAt: string; subnet: string; tool: string; spawnIndex: number | null };
+}
+
+/** A daemon of a closed trade: what it was when offered. */
+export interface ExchangeDaemonSummary {
+  id: string;
+  species: string;
+  level: number;
+}
+
+/** An ACTIVE listing as `listings()` returns it. */
+export interface ExchangeListing {
+  id: string;
+  price: number;
+  sellerId: string;
+  sellerName: string | null;
+  createdAt: string;
+  expiresAt: string;
+  daemon: ExchangeDaemon;
+}
+
+/** One of your listings (`myListings()`); `daemon` is set only while the listing is ACTIVE. */
+export interface ExchangeMyListing {
+  id: string;
+  price: number;
+  status: ExchangeListingStatus;
+  species: string;
+  level: number;
+  createdAt: string;
+  expiresAt: string;
+  soldAt: string | null;
+  daemon: ExchangeDaemon | null;
+}
+
 export interface ExchangeListingQuery {
   species?: string;
   line?: number;
@@ -146,10 +217,10 @@ export class ExchangeClient {
     return this.call<{ item: string; bids: Array<{ price: number; qty: number }>; asks: Array<{ price: number; qty: number }>; fills: Array<{ price: number; qty: number; at: string }> }>('GET', `/book/${encodeURIComponent(item)}`);
   }
   orders() {
-    return this.call<Array<{ id: string; item: string; side: 'BUY' | 'SELL'; price: number; qty: number; remaining: number; status: string }>>('GET', '/orders');
+    return this.call<ExchangeOrder[]>('GET', '/orders');
   }
-  placeOrder(order: { item: string; side: 'BUY' | 'SELL'; price: number; qty: number }) {
-    return this.call<{ order: { id: string; status: string; remaining: number }; fills: Array<{ price: number; qty: number; fee: number }> }>('POST', '/orders', order);
+  placeOrder(order: { item: string; side: ExchangeOrderSide; price: number; qty: number }) {
+    return this.call<{ order: Omit<ExchangeOrder, 'createdAt'>; fills: Array<{ price: number; qty: number; fee: number }> }>('POST', '/orders', order);
   }
   cancelOrder(id: string) {
     return this.call<{ ok: boolean }>('DELETE', `/orders/${encodeURIComponent(id)}`);
@@ -160,10 +231,10 @@ export class ExchangeClient {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) if (v !== undefined) params.set(k, String(v));
     const qs = params.toString();
-    return this.call<{ page: number; more: boolean; listings: Array<{ id: string; price: number; sellerId: string; daemon: { id: string; species: string; level: number } & Record<string, unknown> }> }>('GET', `/listings${qs ? `?${qs}` : ''}`);
+    return this.call<{ page: number; more: boolean; listings: ExchangeListing[] }>('GET', `/listings${qs ? `?${qs}` : ''}`);
   }
   myListings() {
-    return this.call<Array<{ id: string; price: number; status: string; species: string; level: number }>>('GET', '/listings/mine');
+    return this.call<ExchangeMyListing[]>('GET', '/listings/mine');
   }
   /** Lists a Disk daemon at a fixed price; it stays on your Disk, locked, until it sells, expires or you `unlist` it. */
   list(daemonId: string, price: number) {
@@ -196,18 +267,19 @@ export class ExchangeClient {
   }
 }
 
-interface TradeSide {
+/** One side of a trade. Daemons are full views while the trade is OPEN, summaries once it is closed. */
+export interface ExchangeTradeSide {
   id: string;
   name: string | null;
   confirmed: boolean;
-  offer: { bits: number; items: Record<string, number>; daemons: Array<{ id: string; species: string; level: number } & Record<string, unknown>> };
+  offer: { bits: number; items: Record<string, number>; daemons: Array<ExchangeDaemon | ExchangeDaemonSummary> };
 }
 export interface ExchangeTrade {
   id: string;
-  status: 'OPEN' | 'DONE' | 'CANCELLED';
+  status: ExchangeTradeStatus;
   version: number;
   createdAt: string;
   updatedAt: string;
-  me: TradeSide;
-  them: TradeSide;
+  me: ExchangeTradeSide;
+  them: ExchangeTradeSide;
 }
