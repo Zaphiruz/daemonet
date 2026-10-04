@@ -7,6 +7,8 @@ export const INVITE_TTL_MS = 60_000;
 export const JOIN_ATTEMPTS = 5;
 /** Invites sent per operator per LIMIT_WINDOW_MS. */
 export const INVITES_PER_WINDOW = 6;
+/** Clusters created with `clusterCreate` per operator per LIMIT_WINDOW_MS (creating through an invite counts as an invite). */
+export const CREATES_PER_WINDOW = 6;
 export const LIMIT_WINDOW_MS = 60_000;
 /** Pending (unexpired) invites one operator can hold at once, from different clusters. */
 export const MAX_PENDING_INVITES = 4;
@@ -26,6 +28,8 @@ export interface ClusterHost {
    * nobody holds it any more, its wild tags must not stay locked to it (`World.releaseOrphanTags`).
    */
   releaseTags(key: string): void;
+  /** Hands every wild tag held under `from` to `to` in every world (a solo operator founding a cluster keeps its fights). */
+  rekeyTags(from: string, to: string): void;
   now(): number;
   /** Uniform in [0, 1): the game passes a CSPRNG (join codes must be unguessable). */
   random(): number;
@@ -37,6 +41,8 @@ interface Cluster {
   leaderId: string;
   /** operator id -> joined at (ms); insertion order = seniority. */
   members: Map<string, number>;
+  /** Operators the leader kicked: they cannot come back, by code or by invite, while this cluster lives. */
+  kicked: Set<string>;
 }
 
 export type ClusterError = { code: 'E_STATE' | 'E_RANGE' | 'E_INVALID' | 'E_RATE'; message: string };
@@ -51,8 +57,9 @@ const err = (code: ClusterError['code'], message: string): ClusterError => ({ co
  * Not persisted. The service owns membership and writes each member's `op.cluster` view; the core derives
  * the party key (shared tagging, XP, capture rights) from it.
  *
- * Tags follow the party key: joining gives up the operator's personal tags (released, as if they had expired), and a
- * cluster's tags are released in a world where no member is left (see `ClusterHost.releaseTags`).
+ * Tags follow the party key: founding a cluster carries the founder's tags over to it (it is the only holder of both
+ * keys), joining an existing one gives up the joiner's personal tags (released, as if they had expired), and a cluster's
+ * tags are released in a world where no member is left (see `ClusterHost.releaseTags`).
  */
 export class ClusterService {
   private readonly clusters = new Map<string, Cluster>();
@@ -83,13 +90,19 @@ export class ClusterService {
     const code = this.newCode();
     if (code === null) return null;
     // Short: the chat channel / party key `cluster:<id>` must fit the protocol's 64-character Id.
-    const c: Cluster = { id: `c${(++this.counter).toString(36)}${Math.floor(this.host.now() / 1000).toString(36)}`, code, leaderId, members: new Map([[leaderId, this.host.now()]]) };
+    const c: Cluster = {
+      id: `c${(++this.counter).toString(36)}${Math.floor(this.host.now() / 1000).toString(36)}`,
+      code,
+      leaderId,
+      members: new Map([[leaderId, this.host.now()]]),
+      kicked: new Set(),
+    };
     this.clusters.set(c.id, c);
     this.byCode.set(code, c.id);
     this.byMember.set(leaderId, c.id);
-    // The new leader's personal tags are given up (its party key changes).
+    // The founder is the only holder of both its old and its new key: its fights carry over to the cluster.
     this.refresh(c.id);
-    this.host.releaseTags(leaderId);
+    this.host.rekeyTags(leaderId, `cluster:${c.id}`);
     return c;
   }
 
@@ -119,7 +132,9 @@ export class ClusterService {
   /** Create a cluster of one (to get a code) if the operator has none. */
   ensure(operatorId: string): ClusterError | { clusterId: string; code: string } {
     if (!this.host.operator(operatorId)) return err('E_STATE', 'not connected');
-    const c = this.clusters.get(this.byMember.get(operatorId) ?? '') ?? this.create(operatorId);
+    const existing = this.clusters.get(this.byMember.get(operatorId) ?? '');
+    if (!existing && !this.allow('create', operatorId, CREATES_PER_WINDOW, this.host.now())) return err('E_RATE', `at most ${CREATES_PER_WINDOW} new clusters a minute`);
+    const c = existing ?? this.create(operatorId);
     if (!c) return err('E_STATE', 'no cluster code available, try again');
     this.refresh(c.id);
     return { clusterId: c.id, code: c.code };
@@ -154,6 +169,7 @@ export class ClusterService {
 
   private add(c: Cluster, operatorId: string): ClusterError | { clusterId: string } {
     if (this.byMember.has(operatorId)) return err('E_STATE', 'leave your cluster first');
+    if (c.kicked.has(operatorId)) return err('E_STATE', 'you were removed from that cluster');
     if (c.members.size >= CLUSTER_MAX) return err('E_STATE', 'that cluster is full');
     c.members.set(operatorId, this.host.now());
     this.byMember.set(operatorId, c.id);
@@ -216,6 +232,14 @@ export class ClusterService {
     if (!c) return err('E_STATE', 'not in a cluster');
     if (c.leaderId !== leaderId) return err('E_STATE', 'only the cluster leader kicks');
     if (targetId === leaderId || !c.members.has(targetId)) return err('E_INVALID', 'not a member of your cluster');
+    // A kick sticks: the kicked operator saw the code, so the code rotates, and it cannot come back by any route.
+    c.kicked.add(targetId);
+    const code = this.newCode();
+    if (code !== null) {
+      this.byCode.delete(c.code);
+      c.code = code;
+      this.byCode.set(code, c.id);
+    }
     return this.leave(targetId);
   }
 

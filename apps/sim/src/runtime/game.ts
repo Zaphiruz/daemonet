@@ -200,6 +200,9 @@ export class Game {
       releaseTags: (key) => {
         for (const w of this.worlds.values()) w.releaseOrphanTags(key);
       },
+      rekeyTags: (from, to) => {
+        for (const w of this.worlds.values()) w.rekeyTags(from, to);
+      },
       now: () => Date.now(),
       // join codes must be unguessable
       random: () => randomInt(0x1_0000_0000) / 0x1_0000_0000,
@@ -618,8 +621,8 @@ export class Game {
     for (const load of this.loads.get(session.sub) ?? []) load.stale = true;
     const world = session.world;
     const record = this.record(world, session.operatorId);
-    // Removed while still a member, so the world releases the cluster's tags if nobody of it is left there; then the
-    // cluster lets go of it (leadership passes on, other worlds release orphaned tags, an empty cluster dissolves).
+    // The world drops the operator, then the cluster lets go of it (leadership passes on, an empty cluster dissolves)
+    // and every world releases tags of a key nobody there holds any more (either order releases the same tags).
     world.removeOperator(session.operatorId);
     this.clusters.leave(session.operatorId);
     this.sessions.delete(session.operatorId);
@@ -750,6 +753,8 @@ export class Game {
       if (intent.kind === 'completeTicket' && !result.ok) this.logRefusedPayout(world, intent, result.reason);
       world.completeIntent(intent.id, result);
       if (intent.kind === 'evolve' && result.ok) this.shareDiscovery(world, intent, result.discovered === true);
+      // the operator's name is set when the claim commits: members' cluster views show it
+      if (intent.kind === 'claimStarter' && result.ok) this.clusters.reattach(intent.operatorId);
       if (intent.kind === 'travel' && result.ok) this.moveOperator(world, intent);
     };
     this.track(run());

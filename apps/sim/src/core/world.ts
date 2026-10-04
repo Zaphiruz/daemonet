@@ -175,11 +175,21 @@ export class World {
     for (const other of this.operators.values()) if (partyKey(other) === key) return;
     for (const d of this.daemons.values()) {
       if (d.wild?.tagOwner !== key) continue;
+      // the first open capture of it (several party members may each have one) decides, deterministically
       let capturer: Operator | undefined;
-      for (const cap of this.captures.values()) if (cap.state === 'open' && cap.targetId === d.id) capturer = this.operators.get(cap.operatorId);
+      for (const cap of this.captures.values()) {
+        if (cap.state !== 'open' || cap.targetId !== d.id) continue;
+        capturer = this.operators.get(cap.operatorId);
+        if (capturer) break;
+      }
       if (capturer) d.wild.tagOwner = partyKey(capturer);
       else this.releaseTag(d);
     }
+  }
+
+  /** Moves every wild tag held under party key `from` to `to` (a solo operator founding a cluster). */
+  rekeyTags(from: string, to: string): void {
+    for (const d of this.daemons.values()) if (d.wild?.tagOwner === from) d.wild.tagOwner = to;
   }
 
   /** Ends a wild daemon's tag: it forgets its attackers and heals (as when the tag window expires). */

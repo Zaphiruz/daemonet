@@ -4,7 +4,7 @@ import { parseClientMessage, type GameEvent, type ServerMessage } from '@daemone
 import { describe, expect, it } from 'vitest';
 import { World, entitiesNear, partyKey } from '../src/core/index.js';
 import { createDevVerifier } from '../src/runtime/auth.js';
-import { CLUSTER_MAX, ClusterService, INVITE_TTL_MS, INVITES_PER_WINDOW, JOIN_ATTEMPTS, MAX_PENDING_INVITES } from '../src/runtime/clusters.js';
+import { CLUSTER_MAX, CREATES_PER_WINDOW, ClusterService, INVITE_TTL_MS, INVITES_PER_WINDOW, JOIN_ATTEMPTS, MAX_PENDING_INVITES } from '../src/runtime/clusters.js';
 import { Game, type Conn } from '../src/runtime/game.js';
 import { MemoryStore } from '../src/runtime/store.js';
 import { solve } from '../../../packages/rules/test/solvers.js';
@@ -26,6 +26,7 @@ function party(random: () => number = () => 0.5) {
     },
     send: (to, msg) => sent.push({ to, msg }),
     releaseTags: (key) => world.releaseOrphanTags(key),
+    rekeyTags: (from, to) => world.rekeyTags(from, to),
     now: () => now,
     random,
   });
@@ -102,6 +103,7 @@ describe('ClusterService', () => {
       expect(`cluster:${r.clusterId}`.length).toBeLessThanOrEqual(64);
       expect(r.clusterId).not.toContain(':');
       clusters.leave('alice');
+      tick(60_000);
     }
     expect(ids.size).toBe(50);
     expect(parseClientMessage(JSON.stringify({ t: 'cmd', seq: 1, d: { reqId: 'r', cmd: 'chat', actor: 'self', args: { channel: `cluster:${[...ids][0]}`, text: 'hi' } } })).ok).toBe(true);
@@ -164,6 +166,35 @@ describe('cluster abuse limits', () => {
     expect(results.at(-1)).toMatchObject({ code: 'E_STATE', message: 'that operator has too many pending invites' });
     // a refused invite creates no cluster for the inviter
     expect(clusters.of(`l${MAX_PENDING_INVITES}`)).toBeUndefined();
+  });
+
+  it('a kick sticks: the code rotates for the members, and the kicked operator cannot rejoin by old code, new code or invite', () => {
+    const { world, clusters, tick } = party(Math.random);
+    const { clusterId, code: oldCode } = clusters.ensure('alice') as { clusterId: string; code: string };
+    clusters.join('bob', oldCode);
+    clusters.join('carol', oldCode);
+    expect(clusters.kick('alice', 'bob')).toEqual({ ok: true });
+    const newCode = world.operators.get('alice')!.cluster!.code;
+    expect(newCode).not.toBe(oldCode);
+    expect(world.operators.get('carol')!.cluster!.code).toBe(newCode);
+    expect(clusters.join('bob', oldCode)).toMatchObject({ code: 'E_INVALID' });
+    expect(clusters.join('bob', newCode)).toMatchObject({ code: 'E_STATE', message: 'you were removed from that cluster' });
+    tick(1000);
+    expect(clusters.invite('alice', 'bob')).toEqual({ clusterId });
+    expect(clusters.accept('bob', clusterId)).toMatchObject({ code: 'E_STATE', message: 'you were removed from that cluster' });
+    expect(clusters.of('bob')).toBeUndefined();
+    // someone else still joins with the new code
+    world.addOperator(operatorRecord('dave'));
+    expect(clusters.join('dave', newCode)).toEqual({ clusterId });
+  });
+
+  it('rate-limits creating clusters', () => {
+    const { clusters } = party(Math.random);
+    for (let i = 0; i < CREATES_PER_WINDOW; i++) {
+      expect(clusters.ensure('alice')).toMatchObject({ clusterId: expect.any(String) });
+      clusters.leave('alice');
+    }
+    expect(clusters.ensure('alice')).toMatchObject({ code: 'E_RATE' });
   });
 
   it('a leader leaving hands over leadership and withdraws its pending invites; joining drops invites to the joiner', () => {
@@ -268,15 +299,23 @@ describe('tags across joins and leaves', () => {
     expect(mine.wild!.tagOwner).toBe(partyKey(world.operators.get('alice')!));
   });
 
-  it('accepting an invite (and inviting, which makes the inviter a cluster of one) gives up personal tags too', () => {
-    const { world, clusters } = party();
+  it('founding a cluster (create or first invite) carries the founder’s tags over to it; accepting an invite gives them up', () => {
+    const { world, clusters } = party(Math.random);
     const alices = tagged(world, 'alice', 7.5, 5.5);
     const bobs = tagged(world, 'bob', 5.5, 7.5);
+    const hp = alices.hp;
     const { clusterId } = clusters.invite('alice', 'bob') as { clusterId: string };
-    expect(alices.wild!.tagOwner).toBeNull();
+    expect(alices.wild!.tagOwner).toBe(`cluster:${clusterId}`);
+    expect(alices.hp).toBe(hp);
+    expect(alices.wild!.damagedBy.has('alice-d0')).toBe(true);
     expect(bobs.wild!.tagOwner).toBe('bob');
     clusters.accept('bob', clusterId);
     expect(bobs.wild!.tagOwner).toBeNull();
+    // clusterCreate too
+    const carols = tagged(world, 'carol', 6.5, 6.5);
+    const made = clusters.ensure('carol') as { clusterId: string };
+    expect(carols.wild!.tagOwner).toBe(`cluster:${made.clusterId}`);
+    expect(hitBy(world, 'carol', carols.id)).toMatchObject({ ok: true });
   });
 
   it('a personal tag under an open capture is re-keyed to the new cluster (the capture keeps its target) and its XP goes to the party', () => {
@@ -505,6 +544,23 @@ describe('clusters through the Game', () => {
     for (let i = 0; i < 4; i++) game.tick();
     expect(game.clusters.of(aliceId)).toEqual({ id: clusterId, members: [aliceId] });
     expect(wild.wild!.tagOwner).toBeNull();
+    await game.shutdown();
+  });
+
+  it('a member’s name appears in every view once its starter claim commits', async () => {
+    const { game, join, cmd } = setup();
+    const alice = await join('alice');
+    const bob = await join('bob');
+    await cmd(alice, { cmd: 'clusterCreate', args: {} });
+    const { code } = alice.of('ack').at(-1)!.d.result as { code: string };
+    await cmd(bob, { cmd: 'clusterJoin', args: { code } });
+    game.tick();
+    expect(selfOf(alice).cluster!.members.map((m) => m.name)).toEqual([null, null]);
+    await cmd(bob, { cmd: 'claimStarter', args: { species: 'pingling', operatorName: 'bobby' } });
+    game.tick();
+    await game.flush();
+    game.tick();
+    expect(selfOf(alice).cluster!.members.map((m) => m.name)).toEqual([null, 'bobby']);
     await game.shutdown();
   });
 
