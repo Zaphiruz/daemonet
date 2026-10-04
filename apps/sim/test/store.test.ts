@@ -3,7 +3,7 @@ import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, ge
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { DISK_SLOT_TAKEN, incidentParticipants, incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
-import { DEPOSIT_NOT_SAVED, MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type LiveOperatorState, type Store } from '../src/runtime/store.js';
+import { DEPOSIT_NOT_SAVED, MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type ArenaResultInput, type LiveOperatorState, type Store } from '../src/runtime/store.js';
 import { ownedRecord } from './helpers.js';
 
 const SPAWN = { x: 18.5, y: 16.5 };
@@ -302,6 +302,11 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await run({ id: 'i-rs-dep', kind: 'vault', operatorId: a.id, reqId: 'r', item: 'sniff', qty: 2 });
       await run({ id: 'i-rs-wd', kind: 'vault', operatorId: a.id, reqId: 'r', item: 'sniff', qty: -2 });
       expect(seen.get('vault')!.size).toBe(0);
+      // arena results are a store write of the sim too (recordArenaResult), listed under `arenaResult`
+      const rival = await store.loadOrCreateOperator('sub-reasons-rival', 'lo', SPAWN);
+      const before = (await store.ledgerFor(a.id, 1000)).length;
+      await store.recordArenaResult({ matchId: 'rs-arena', mode: 'ranked', aId: a.id, bId: rival.id, winnerId: a.id, reason: 'timeout', durationMs: 1, endedAt: '2026-10-02T00:00:00.000Z', dealt: {} });
+      seen.set('arenaResult', new Set((await store.ledgerFor(a.id, 1000)).slice(before).map((r) => r.reason)));
       const writers = Object.fromEntries([...seen].filter(([, r]) => r.size > 0).map(([kind, r]) => [kind, [...r].sort()]));
       // Every kind listed in the map was exercised here (a new kind must add a scenario), and wrote only its listed reasons.
       expect(writers).toEqual(Object.fromEntries(Object.entries(SIM_INTENT_LEDGER_REASONS).map(([kind, r]) => [kind, [...r].sort()])));
@@ -780,6 +785,111 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(await store.applyIntent(ninth, ctx)).toEqual({ ok: false, reason: `at most ${TICKETS_PER_DAY} tickets per day` });
       expect(await store.loadOrCreateOperator('sub-t2', 'lo', SPAWN)).toMatchObject({ ticketsToday: TICKETS_PER_DAY, tickets: [] });
     });
+
+    it('settles arena matches: ratings, capped win bits, arenaWins, idempotent by match id', async () => {
+      const ops: string[] = [];
+      for (const name of ['ann', 'ben', 'cy', 'di', 'ed', 'flo']) {
+        const op = await store.loadOrCreateOperator(`sub-ar-${name}`, 'lo', SPAWN);
+        await store.applyIntent(claim(op.id, `ar${name}`, ownedRecord('pingling', 5, 0, `abcd1234-ar-${name}`)), { seedId: 'abcd1234' });
+        ops.push(op.id);
+      }
+      const [ann, ben] = ops as [string, string];
+      let n = 0;
+      const match = (over: Partial<ArenaResultInput>): ArenaResultInput => ({
+        matchId: `m-${++n}`, mode: 'ranked', aId: ann, bId: ben, winnerId: ann, reason: 'wipeout', durationMs: 60_000, endedAt: '2026-10-02T12:00:00.000Z',
+        dealt: { [ann]: ['abcd1234-ar-ann', 'abcd1234-ar-ben'], [ben]: ['abcd1234-ar-ben'] }, ...over,
+      });
+      const bitsOf = async (i: number) => (await store.loadOrCreateOperator(`sub-ar-${['ann', 'ben', 'cy', 'di', 'ed', 'flo'][i]}`, 'lo', SPAWN)).bits;
+      const winsOf = async (name: string) => (await store.loadOrCreateOperator(`sub-ar-${name}`, 'lo', SPAWN)).ram[0]!.arenaWins;
+
+      expect(await store.arenaRating(ann, new Date('2026-10-02T12:00:00Z'))).toBe(1500);
+      const first = match({});
+      const s1 = await store.recordArenaResult(first);
+      expect(s1).toMatchObject({ counted: true, a: { before: 1500, reward: 32, arenaWins: ['abcd1234-ar-ann'] }, b: { before: 1500, reward: 0, arenaWins: [] } });
+      expect(s1.a.after).toBeGreaterThan(1600);
+      expect(s1.b.after).toBeCloseTo(3000 - s1.a.after, 6);
+      // a retry of the same match changes nothing
+      expect(await store.recordArenaResult(first)).toMatchObject({ counted: true, a: { after: s1.a.after, reward: 32 } });
+      expect(await bitsOf(0)).toBe(32);
+      expect([await winsOf('ann'), await winsOf('ben')]).toEqual([1, 0]); // only the winner's own daemons that dealt damage
+      expect(await store.arenaRating(ann, new Date('2026-10-20T00:00:00Z'))).toBe(s1.a.after);
+      expect((await store.ledgerFor(ann)).filter((l) => l.reason === 'arena')).toMatchObject([{ delta: 32, ref: 'm-1' }]);
+
+      // unranked: recorded, nothing moves
+      expect(await store.recordArenaResult(match({ mode: 'unranked' }))).toMatchObject({ counted: false, a: { before: s1.a.after, after: s1.a.after, reward: 0 } });
+      // a draw counts and pays nobody
+      const draw = await store.recordArenaResult(match({ winnerId: null }));
+      expect(draw).toMatchObject({ counted: true, a: { reward: 0 }, b: { reward: 0 } });
+      expect(draw.a.after).toBeLessThan(s1.a.after); // the favourite loses a little
+      // the same pair: two more count (4 a day), the next does not
+      await store.recordArenaResult(match({ winnerId: ben }));
+      await store.recordArenaResult(match({}));
+      expect(await store.recordArenaResult(match({}))).toMatchObject({ counted: false, a: { reward: 0 } });
+      // another UTC day counts again
+      expect(await store.recordArenaResult(match({ endedAt: '2026-10-03T00:00:01.000Z' }))).toMatchObject({ counted: true, a: { reward: 32 } });
+
+      // daily reward cap: ann has 2 rewarded wins on the 2nd; 14 more pay, the 17th does not
+      let paid = 0;
+      for (const opp of ops.slice(2)) {
+        for (let i = 0; i < 4; i++) paid += (await store.recordArenaResult(match({ bId: opp, dealt: {} }))).a.reward;
+      }
+      expect(paid).toBe(14 * 32);
+      expect(await bitsOf(0)).toBe(17 * 32);
+
+      // next season: the first match starts from the soft-reset rating
+      const before = await store.arenaRating(ann, new Date('2026-10-31T00:00:00Z'));
+      expect(await store.arenaRating(ann, new Date('2026-11-01T00:00:00Z'))).toBeCloseTo(1500 + (before - 1500) / 2, 6);
+      const nov = await store.recordArenaResult(match({ endedAt: '2026-11-05T00:00:00.000Z', bId: ops[2]! }));
+      expect(nov.a.before).toBeCloseTo(1500 + (before - 1500) / 2, 6);
+    });
+
+    it('arena: pre-live endings never count; replays carry the full settlement; arenaWins only on daemons the winner still owns', async () => {
+      const ctx = { seedId: 'abcd1234' };
+      const gil = await store.loadOrCreateOperator('sub-ag-gil', 'lo', SPAWN);
+      const hal = await store.loadOrCreateOperator('sub-ag-hal', 'lo', SPAWN);
+      await store.applyIntent(claim(gil.id, 'argil', ownedRecord('pingling', 5, 0, 'abcd1234-ag-gil')), ctx);
+      await store.applyIntent(claim(hal.id, 'arhal', ownedRecord('pingling', 5, 0, 'abcd1234-ag-hal')), ctx);
+      const stale = await store.loadOrCreateOperator('sub-ag-gil', 'lo', SPAWN);
+      const base: ArenaResultInput = {
+        matchId: 'ag-1', mode: 'ranked', aId: hal.id, bId: gil.id, winnerId: gil.id, reason: 'forfeit', durationMs: 2000, endedAt: '2026-10-02T08:00:00.000Z',
+        dealt: { [gil.id]: ['abcd1234-ag-gil', 'abcd1234-ag-hal', 'abcd1234-nobody'] },
+      };
+
+      // a match that ended in its countdown is recorded but never counted
+      expect(await store.recordArenaResult({ ...base, matchId: 'ag-0', live: false })).toEqual({
+        counted: false, a: { before: 1500, after: 1500, reward: 0, arenaWins: [] }, b: { before: 1500, after: 1500, reward: 0, arenaWins: [] },
+      });
+      expect(await store.arenaRating(gil.id, new Date('2026-10-02T09:00:00Z'))).toBe(1500);
+
+      const s = await store.recordArenaResult(base);
+      expect(s).toMatchObject({ counted: true, b: { reward: 32, arenaWins: ['abcd1234-ag-gil'] }, a: { reward: 0, arenaWins: [] } });
+      // the ledger seq of the payout row, so the runtime can credit it exactly once against the session's load watermark
+      const loaded = await store.loadOrCreateOperator('sub-ag-gil', 'lo', SPAWN);
+      expect(s.b.ledgerSeq).toBe(loaded.ledgerSeq);
+      expect(s.a.ledgerSeq).toBeUndefined();
+      expect(await store.recordArenaResult(base)).toEqual(s);
+      expect(await store.recordArenaResult({ ...base, winnerId: hal.id, mode: 'unranked' })).toEqual(s); // the stored result wins
+
+      // checkpoints never write arenaWins (nor bits): a record taken before the match does not roll them back
+      await store.checkpoint([stale]);
+      expect((await store.loadOrCreateOperator('sub-ag-gil', 'lo', SPAWN)).ram[0]).toMatchObject({ arenaWins: 1 });
+      expect((await store.loadOrCreateOperator('sub-ag-gil', 'lo', SPAWN)).bits).toBe(32);
+
+      // a daemon decompiled since the match is not touched; the win still pays
+      expect(
+        await store.applyIntent(
+          { id: 'i-ag-dec', kind: 'decompile', operatorId: gil.id, reqId: 'r', daemonId: 'abcd1234-ag-gil', species: 'pingling', fragments: yieldOf('pingling', 5), history: { at: '2026-10-02T09:00:00.000Z', kind: 'decompiled', detail: 'test' } },
+          ctx,
+        ),
+      ).toEqual({ ok: true });
+      expect(await store.recordArenaResult({ ...base, matchId: 'ag-2' })).toMatchObject({ counted: true, b: { reward: 32, arenaWins: [] } });
+      expect((await store.loadOrCreateOperator('sub-ag-hal', 'lo', SPAWN)).ram[0]).toMatchObject({ arenaWins: 0 });
+
+      // malformed results are refused, not recorded
+      await expect(store.recordArenaResult({ ...base, matchId: 'ag-3', bId: hal.id })).rejects.toThrow(RangeError);
+      await expect(store.recordArenaResult({ ...base, matchId: 'ag-4', winnerId: 'someone-else' })).rejects.toThrow(RangeError);
+      await expect(store.recordArenaResult({ ...base, matchId: 'ag-5', endedAt: 'not a date' })).rejects.toThrow(RangeError);
+    });
   });
 }
 
@@ -844,12 +954,12 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     'PrismaStore',
     async () => new PrismaStore(prisma!),
     async () => {
-      await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+      await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     },
   );
 
   it('treats a concurrent duplicate of the same claim as applied, not as a name clash', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race', 'lo', SPAWN);
     const d = ownedRecord('pingling', 5, 0, 'abcd1234-d8');
@@ -865,7 +975,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent first evolutions into one form: both apply, exactly one is the discoverer', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-ra', 'lo', SPAWN);
     const b = await store.loadOrCreateOperator('sub-rb', 'lo', SPAWN);
@@ -882,7 +992,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('a concurrent duplicate of one evolve intent applies it once', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-rc', 'lo', SPAWN);
     await store.applyIntent(claim(a.id, 'ric', ownedRecord('echolet', 16, 0, 'abcd1234-e3')), { seedId: 'abcd1234' });
@@ -893,7 +1003,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent purchases cannot overdraw: the operator row lock serializes the balance check', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-buy', 'lo', SPAWN);
     await store.grantBits(a.id, 2048 * 3, 'admin');
@@ -908,7 +1018,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('a concurrent duplicate of one buy applies it (and its ledger row) once', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-dup', 'lo', SPAWN);
     await store.grantBits(a.id, 1000, 'admin');
@@ -920,7 +1030,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('two decompiles of one daemon: one archives it, the other finds nothing (no duplicate fragments)', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-dec', 'lo', SPAWN);
     await store.applyIntent(claim(a.id, 'rdec', { ...ownedRecord('pingling', 5, 0, 'abcd1234-e5'), heldItem: 'jumboframe' }), { seedId: 'abcd1234' });
@@ -938,7 +1048,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent payouts of one ticket (different intents): exactly one moves it to DONE and writes the one ledger row', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-tk', 'lo', SPAWN);
     const t = acceptLo(a.id, 0);
@@ -954,7 +1064,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent accepts cannot pass the open cap, and a concurrent duplicate board entry is "already accepted"', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race-acc', 'lo', SPAWN);
     const results = await Promise.all([0, 1, 2, 3, 4].map((i) => store.applyIntent(acceptLo(a.id, i), { seedId: 'abcd1234' })));
@@ -968,7 +1078,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('the unique (operator, day, subnet, index) violation is a domain answer only for an accept; a duplicate ticket id rethrows', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-tk-pk', 'lo', SPAWN);
     const b = await store.loadOrCreateOperator('sub-tk-pk2', 'lo', SPAWN);
@@ -978,7 +1088,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent captures of one line add one research point each (no Research_pkey conflict)', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-research', 'lo', SPAWN);
     const cap = (i: number): Intent => ({
@@ -992,7 +1102,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('simultaneous first logins for one sub all get the same operator', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const recs = await Promise.all(Array.from({ length: 8 }, () => store.loadOrCreateOperator('sub-first', 'lo', SPAWN)));
     expect(new Set(recs.map((r) => r.id)).size).toBe(1);
@@ -1000,7 +1110,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('seq order is commit order: concurrent grants, in-flight buys and liveState reads always see a gap-free prefix of the ledger', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-seq', 'lo', SPAWN);
     const loaded = await store.loadOrCreateOperator('sub-seq', 'lo', SPAWN);
@@ -1034,7 +1144,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   const truncate = () =>
-    prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault" CASCADE');
+    prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
   const vaultIntent = (id: string, operatorId: string, item: string, qty: number): Intent => ({ id, kind: 'vault', operatorId, reqId: 'r', item, qty });
 
   it('concurrent deposits and a craft cannot spend the same items: the operator lock serializes them', async () => {
@@ -1102,7 +1212,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('loads and resyncs the org from OrgMember; an api spend committed between loads moves balance and watermark together', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "Org", "OrgMember", "OrgInvite" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason", "Org", "OrgMember", "OrgInvite" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-org', 'lo', SPAWN);
     await prisma!.org.create({ data: { id: 'o1', name: 'Root Access', tag: 'ROOT', ownerId: a.id, members: { create: { operatorId: a.id, rank: 'OWNER' } } } });
@@ -1114,5 +1224,77 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     expect((await store.liveState(new Map([[a.id, 0]]))).get(a.id)).toMatchObject({ org: root, ledgerSeq: spend.seq, ledger: [{ delta: 500 }, { id: spend.id, delta: -200, reason: 'org' }] });
     await prisma!.org.delete({ where: { id: 'o1' } });
     expect((await store.loadOrCreateOperator('sub-org', 'lo', SPAWN)).org).toBeNull();
+  });
+
+  describe('arena results under concurrency', () => {
+    const TRUNC = 'TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE';
+    async function arenaOps(names: string[]) {
+      await prisma!.$executeRawUnsafe(TRUNC);
+      const store = new PrismaStore(prisma!);
+      const ids: string[] = [];
+      for (const name of names) {
+        const op = await store.loadOrCreateOperator(`sub-cc-${name}`, 'lo', SPAWN);
+        await store.applyIntent(claim(op.id, `cc${name}`, ownedRecord('pingling', 5, 0, `abcd1234-cc-${name}`)), { seedId: 'abcd1234' });
+        ids.push(op.id);
+      }
+      const win = (matchId: string, aId: string, bId: string, endedAt = '2026-10-02T12:00:00.000Z'): ArenaResultInput => ({
+        matchId, mode: 'ranked', aId, bId, winnerId: aId, reason: 'wipeout', durationMs: 1000, endedAt, dealt: { [aId]: [`abcd1234-cc-${names[ids.indexOf(aId)]}`] },
+      });
+      return { store, ids, win };
+    }
+
+    it('the same match recorded concurrently settles once', async () => {
+      const { store, ids, win } = await arenaOps(['ann', 'ben']);
+      const [ann, ben] = ids as [string, string];
+      const results = await Promise.all(Array.from({ length: 4 }, () => store.recordArenaResult(win('cc-1', ann, ben))));
+      for (const r of results) expect(r).toEqual(results[0]);
+      expect(results[0]).toMatchObject({ counted: true, a: { reward: 32, arenaWins: ['abcd1234-cc-ann'] } });
+      expect(await prisma!.arenaMatch.count()).toBe(1);
+      expect(await prisma!.bitsLedger.count({ where: { reason: 'arena' } })).toBe(1);
+      expect(await prisma!.operator.findUniqueOrThrow({ where: { id: ann } })).toMatchObject({ bits: 32n });
+      expect(await prisma!.daemon.findUniqueOrThrow({ where: { id: 'abcd1234-cc-ann' } })).toMatchObject({ arenaWins: 1 });
+      expect(await prisma!.arenaRating.findUniqueOrThrow({ where: { operatorId_seasonId: { operatorId: ann, seasonId: '2026-10' } } })).toMatchObject({ wins: 1, losses: 0 });
+    });
+
+    it('concurrent matches of one pair: only 4 count that UTC day', async () => {
+      const { store, ids, win } = await arenaOps(['ann', 'ben']);
+      const [ann, ben] = ids as [string, string];
+      const results = await Promise.all(Array.from({ length: 6 }, (_, i) => store.recordArenaResult(i % 2 ? win(`cc-p${i}`, ann, ben) : { ...win(`cc-p${i}`, ann, ben), aId: ben, bId: ann })));
+      expect(results.filter((r) => r.counted)).toHaveLength(4);
+      expect(await prisma!.arenaMatch.count({ where: { counted: true } })).toBe(4);
+      expect(await prisma!.bitsLedger.count({ where: { reason: 'arena' } })).toBe(4);
+      expect(await prisma!.operator.findUniqueOrThrow({ where: { id: ann } })).toMatchObject({ bits: 128n });
+      expect(await prisma!.arenaRating.findUniqueOrThrow({ where: { operatorId_seasonId: { operatorId: ann, seasonId: '2026-10' } } })).toMatchObject({ wins: 4 });
+      // ratings chain through the stored rows: every counted match starts from the previous one's result
+      const counted = (await prisma!.arenaMatch.findMany({ where: { counted: true } })).map((m) => (m.aId === ann ? { before: m.aBefore, after: m.aAfter } : { before: m.bBefore, after: m.bAfter }));
+      counted.sort((x, y) => x.before - y.before);
+      expect(counted[0]!.before).toBe(1500);
+      for (let i = 1; i < counted.length; i++) expect(counted.some((c) => c.after === counted[i]!.before)).toBe(true);
+      const final = (await prisma!.arenaRating.findUniqueOrThrow({ where: { operatorId_seasonId: { operatorId: ann, seasonId: '2026-10' } } })).rating;
+      expect(Math.max(...counted.map((c) => c.after))).toBe(final);
+    });
+
+    it('the 16th rewarded win of a day pays and the 17th does not, also when they race', async () => {
+      const { store, ids, win } = await arenaOps(['ann', 'ben', 'cy', 'di', 'ed', 'flo']);
+      const [ann, ...rest] = ids as [string, ...string[]];
+      let n = 0;
+      // 14 rewarded wins first (ben, cy, di four each; ed two)
+      for (const opp of [...rest.slice(0, 3).flatMap((o) => [o, o, o, o]), rest[3]!, rest[3]!]) expect((await store.recordArenaResult(win(`cc-w${n++}`, ann, opp))).a.reward).toBe(32);
+      const racing = await Promise.all([rest[3]!, rest[3]!, rest[4]!, rest[4]!].map((opp) => store.recordArenaResult(win(`cc-w${n++}`, ann, opp))));
+      expect(racing.every((r) => r.counted)).toBe(true);
+      expect(racing.map((r) => r.a.reward).sort()).toEqual([0, 0, 32, 32]);
+      expect(await prisma!.bitsLedger.count({ where: { operatorId: ann, reason: 'arena' } })).toBe(16);
+      expect(await prisma!.operator.findUniqueOrThrow({ where: { id: ann } })).toMatchObject({ bits: 16n * 32n });
+      // arenaWins rise with every counted win, paid or not
+      expect(await prisma!.daemon.findUniqueOrThrow({ where: { id: 'abcd1234-cc-ann' } })).toMatchObject({ arenaWins: 18 });
+    });
+
+    it("a match recorded while a trade moved the winner's daemon away does not touch that daemon", async () => {
+      const { store, ids, win } = await arenaOps(['ann', 'ben']);
+      const [ann, ben] = ids as [string, string];
+      await prisma!.daemon.update({ where: { id: 'abcd1234-cc-ann' }, data: { operatorId: ben, slot: 1 } });
+      expect(await store.recordArenaResult(win('cc-t1', ann, ben))).toMatchObject({ counted: true, a: { reward: 32, arenaWins: [] } });
+      expect(await prisma!.daemon.findUniqueOrThrow({ where: { id: 'abcd1234-cc-ann' } })).toMatchObject({ arenaWins: 0 });
+    });
   });
 });

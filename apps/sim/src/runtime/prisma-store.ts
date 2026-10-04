@@ -1,7 +1,21 @@
-import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient } from '@daemonet/db';
+import { createPrisma, type ArenaMatch as ArenaMatchRow, type Daemon as DaemonRow, type Prisma, type PrismaClient } from '@daemonet/db';
 import { DISK_SLOT_TAKEN, type HistoryEntry, type Intent, type IntentResult, type OperatorRecord, type OrgView, type OwnedDaemonRecord, type Point } from '../core/index.js';
-import { DISK_EXPANSION_ITEM, DISK_STEP, dayKey, getSpecies, type FilterTerm, type TicketKind, type TicketParams } from '@daemonet/rules';
 import {
+  DISK_EXPANSION_ITEM,
+  DISK_STEP,
+  dayKey,
+  getSpecies,
+  previousSeasonId,
+  seasonBounds,
+  seasonIdOf,
+  seedRating,
+  settleArena,
+  type FilterTerm,
+  type TicketKind,
+  type TicketParams,
+} from '@daemonet/rules';
+import {
+  arenaResultProblem,
   assertGrantReason,
   checkpointFields,
   intentLedgerReason,
@@ -20,11 +34,14 @@ import {
   samePayouts,
   SIM_LEDGER_REASONS,
   unpaidParticipants,
+  utcDayOf,
   stateFields as memStateFields,
   ticketAcceptProblem,
   ticketCapProblem,
   ticketState,
   withItems,
+  type ArenaResultInput,
+  type ArenaSettlement,
   type ChatRow,
   type IncidentRewardIntent,
   type IncidentRow,
@@ -149,8 +166,22 @@ async function lockOperator(tx: Tx, id: string): Promise<{ bits: bigint; diskCap
  * checked against SIM_INTENT_LEDGER_REASONS for the intent's kind. Call it only after `lockOperator` (seq order =
  * commit order, see `LedgerWrite.seq`).
  */
-async function intentLedgerRow<K extends SimLedgerKind>(tx: Tx, kind: K, operatorId: string, delta: number, reason: SimLedgerReason<K>, ref: string): Promise<void> {
-  await tx.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason: intentLedgerReason(kind, reason), ref } });
+async function intentLedgerRow<K extends SimLedgerKind>(tx: Tx, kind: K, operatorId: string, delta: number, reason: SimLedgerReason<K>, ref: string): Promise<number> {
+  const row = await tx.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason: intentLedgerReason(kind, reason), ref }, select: { seq: true } });
+  return Number(row.seq);
+}
+
+/** The settlement a stored match row records (a replay's answer), with the seq of each paid side's `arena` ledger row. */
+async function arenaSettlementOf(db: Pick<PrismaClient, 'bitsLedger'>, m: ArenaMatchRow): Promise<ArenaSettlement> {
+  const side = async (operatorId: string, before: number, after: number, reward: number, arenaWins: string[]) => {
+    const paid = reward > 0 ? await db.bitsLedger.findFirst({ where: { operatorId, reason: 'arena', ref: m.id }, select: { seq: true } }) : null;
+    return { before, after, reward, arenaWins: [...arenaWins], ...(paid ? { ledgerSeq: Number(paid.seq) } : {}) };
+  };
+  return {
+    counted: m.counted,
+    a: await side(m.aId, m.aBefore, m.aAfter, m.aReward, m.aWins),
+    b: await side(m.bId, m.bBefore, m.bAfter, m.bReward, m.bWins),
+  };
 }
 
 export class PrismaStore implements Store {
@@ -558,6 +589,96 @@ export class PrismaStore implements Store {
     await intentLedgerRow(tx, intent.kind, intent.operatorId, intent.reward, 'incident', intent.incidentId);
     const seq = await incidentLedgerSeq(tx, intent.operatorId, intent.incidentId);
     return seq === null ? { ok: true } : { ok: true, ledgerSeq: seq };
+  }
+
+  async arenaRating(operatorId: string, at: Date): Promise<number> {
+    const seasonId = seasonIdOf(at);
+    const row = await this.prisma.arenaRating.findUnique({ where: { operatorId_seasonId: { operatorId, seasonId } } });
+    if (row) return row.rating;
+    return seedRating(await this.prisma.arenaRating.findUnique({ where: { operatorId_seasonId: { operatorId, seasonId: previousSeasonId(seasonId) } } })).rating;
+  }
+
+  /**
+   * One transaction (economy contract, carry-forward #30/#31/#34): both operator rows are locked first, sorted by id;
+   * then the replay check, the caps (counted from committed ArenaMatch rows of the match's UTC day), the ratings (read
+   * from the stored rows, a new season's row seeded by the soft reset), the win bits with one `arena` ledger row
+   * (ref = match id) and `arenaWins` on the winner's daemons that dealt damage and that it still owns.
+   */
+  async recordArenaResult(input: ArenaResultInput): Promise<ArenaSettlement> {
+    const problem = arenaResultProblem(input);
+    if (problem) throw new RangeError(problem);
+    const endedAt = new Date(input.endedAt);
+    const seasonId = seasonIdOf(endedAt);
+    const today = utcDayOf(endedAt);
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        // Every result of either operator waits here, so a concurrent replay of this match finds its row below and
+        // two matches of the pair (or of the winner) count each other.
+        for (const id of [input.aId, input.bId].sort()) await lockOperator(tx, id);
+        const done = await tx.arenaMatch.findUnique({ where: { id: input.matchId } });
+        if (done) return arenaSettlementOf(tx, done);
+        const bounds = seasonBounds(seasonId);
+        // ON CONFLICT DO NOTHING: matches of other operators may create the season row at the same time.
+        await tx.arenaSeason.createMany({ data: [{ id: seasonId, startsAt: bounds.startsAt, endsAt: bounds.endsAt }], skipDuplicates: true });
+        const ratingOf = async (operatorId: string) => {
+          const key = { operatorId_seasonId: { operatorId, seasonId } };
+          const row = await tx.arenaRating.findUnique({ where: key });
+          if (row) return row;
+          const previous = await tx.arenaRating.findUnique({ where: { operatorId_seasonId: { operatorId, seasonId: previousSeasonId(seasonId) } } });
+          await tx.arenaRating.createMany({ data: [{ operatorId, seasonId, ...seedRating(previous) }], skipDuplicates: true });
+          return tx.arenaRating.findUniqueOrThrow({ where: key });
+        };
+        const a = await ratingOf(input.aId);
+        const b = await ratingOf(input.bId);
+        const pairCountedToday = await tx.arenaMatch.count({
+          where: { counted: true, endedAt: today, OR: [{ aId: input.aId, bId: input.bId }, { aId: input.bId, bId: input.aId }] },
+        });
+        const winnerRewardedToday = input.winnerId
+          ? await tx.arenaMatch.count({ where: { endedAt: today, OR: [{ aId: input.winnerId, aReward: { gt: 0 } }, { bId: input.winnerId, bReward: { gt: 0 } }] } })
+          : 0;
+        const winner = input.winnerId === null ? null : input.winnerId === input.aId ? 'a' : 'b';
+        const s = settleArena(input.mode, winner, { a, b, pairCountedToday, winnerRewardedToday, live: input.live ?? true });
+        const settlement: ArenaSettlement = {
+          counted: s.counted,
+          a: { before: a.rating, after: s.a.rating, reward: 0, arenaWins: [] },
+          b: { before: b.rating, after: s.b.rating, reward: 0, arenaWins: [] },
+        };
+        if (s.counted) {
+          const record = (side: 'a' | 'b') => (winner === null ? { draws: { increment: 1 } } : winner === side ? { wins: { increment: 1 } } : { losses: { increment: 1 } });
+          await tx.arenaRating.update({ where: { operatorId_seasonId: { operatorId: input.aId, seasonId } }, data: { rating: s.a.rating, rd: s.a.rd, vol: s.a.vol, ...record('a') } });
+          await tx.arenaRating.update({ where: { operatorId_seasonId: { operatorId: input.bId, seasonId } }, data: { rating: s.b.rating, rd: s.b.rd, vol: s.b.vol, ...record('b') } });
+          if (winner && input.winnerId) {
+            const won = settlement[winner];
+            if (s.reward > 0) {
+              await tx.operator.update({ where: { id: input.winnerId }, data: { bits: { increment: BigInt(s.reward) } } });
+              won.ledgerSeq = await intentLedgerRow(tx, 'arenaResult', input.winnerId, s.reward, 'arena', input.matchId);
+              won.reward = s.reward;
+            }
+            const ids = [...new Set(input.dealt[input.winnerId] ?? [])];
+            if (ids.length > 0) {
+              // Conditional on the owner: a daemon traded away or decompiled since the match is left alone.
+              const raised = await tx.$queryRaw<Array<{ id: string }>>`
+                UPDATE "Daemon" SET "arenaWins" = "arenaWins" + 1 WHERE "id" = ANY(${ids}::text[]) AND "operatorId" = ${input.winnerId} RETURNING "id"`;
+              const hit = new Set(raised.map((r) => r.id));
+              won.arenaWins = ids.filter((id) => hit.has(id));
+            }
+          }
+        }
+        await tx.arenaMatch.create({
+          data: {
+            id: input.matchId, seasonId, mode: input.mode, aId: input.aId, bId: input.bId, winnerId: input.winnerId, reason: input.reason,
+            aBefore: settlement.a.before, aAfter: settlement.a.after, bBefore: settlement.b.before, bAfter: settlement.b.after,
+            aReward: settlement.a.reward, bReward: settlement.b.reward, aWins: settlement.a.arenaWins, bWins: settlement.b.arenaWins,
+            counted: settlement.counted, durationMs: input.durationMs, endedAt,
+          },
+        });
+        return settlement;
+      });
+    } catch (err) {
+      // A retry that raced its first attempt (the lock makes this unlikely): the match row is there, report what it recorded.
+      if (!isUniqueViolation(err) || !violatedConstraint(err).includes('ArenaMatch')) throw err;
+      return arenaSettlementOf(this.prisma, await this.prisma.arenaMatch.findUniqueOrThrow({ where: { id: input.matchId } }));
+    }
   }
 
   async recordIncident(row: IncidentRow): Promise<void> {

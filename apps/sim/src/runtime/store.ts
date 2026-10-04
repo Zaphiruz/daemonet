@@ -13,9 +13,15 @@ import {
   getRecipe,
   getSpecies,
   isTradable,
+  previousSeasonId,
   recipeFragments,
+  seasonIdOf,
+  seedRating,
+  settleArena,
   ticketKey,
+  type ArenaMode,
   type FilterTerm,
+  type Glicko,
   type TicketKind,
   type TicketParams,
 } from '@daemonet/rules';
@@ -111,6 +117,16 @@ export interface Store extends ChatStore {
    * No-op for a missing row or participant.
    */
   markIncidentPayoutRefused(incidentId: string, operatorId: string): Promise<void>;
+  /**
+   * Records a finished match in one transaction: ratings (counted matches only), the per-win bits with their
+   * ledger row, `arenaWins` on the winner's daemons that dealt damage, and the match row. Idempotent by match id: a
+   * replay (also one that raced the first attempt) returns the stored settlement and changes nothing. Both operator
+   * rows are locked (sorted) first, so the pair-per-day and daily-reward caps are counted from committed rows. Throws
+   * RangeError for a malformed result (`arenaResultProblem`).
+   */
+  recordArenaResult(input: ArenaResultInput): Promise<ArenaSettlement>;
+  /** The operator's rating in the season of `at` (or what its first match there would start from). */
+  arenaRating(operatorId: string, at: Date): Promise<number>;
   /** The operator's most recent `limit` ledger rows, oldest first. */
   ledgerFor(operatorId: string, limit?: number): Promise<LedgerRow[]>;
   ping(): Promise<void>;
@@ -128,14 +144,16 @@ export interface LedgerRow {
 /**
  * The ledger reasons each store intent kind writes: the one source of truth for SIM_LEDGER_REASONS. Both stores write
  * intent ledger rows only through a helper typed (and checked) against this map, so a new bits-moving intent (e.g. an
- * incident payout) cannot write a row without listing its reason here. Pinned by store.test.ts.
+ * incident payout) cannot write a row without listing its reason here. `arenaResult` is `Store.recordArenaResult` (the
+ * sim's own write of a match's win bits, credited by the runtime itself). Pinned by store.test.ts.
  */
 export const SIM_INTENT_LEDGER_REASONS = Object.freeze({
   buy: Object.freeze(['shop', 'disk'] as const),
   craft: Object.freeze(['craft'] as const),
   completeTicket: Object.freeze(['ticket'] as const),
   incidentReward: Object.freeze(['incident'] as const),
-} satisfies Partial<Record<Intent['kind'], readonly string[]>>);
+  arenaResult: Object.freeze(['arena'] as const),
+} satisfies Partial<Record<Intent['kind'] | 'arenaResult', readonly string[]>>);
 
 /** An intent kind that writes ledger rows. */
 export type SimLedgerKind = keyof typeof SIM_INTENT_LEDGER_REASONS;
@@ -159,6 +177,61 @@ export function intentLedgerReason<K extends SimLedgerKind>(kind: K, reason: Sim
 /** Throws RangeError for a reason only the sim's intents may write (grantBits). */
 export function assertGrantReason(reason: string): void {
   if (SIM_LEDGER_REASONS.has(reason)) throw new RangeError(`ledger reason ${reason} belongs to the sim's intents`);
+}
+
+/** A finished arena match as the sim reports it (SP6 spec §6). `dealt`: operator id → its copies that dealt damage. */
+export interface ArenaResultInput {
+  matchId: string;
+  mode: ArenaMode;
+  aId: string;
+  bId: string;
+  winnerId: string | null;
+  reason: 'wipeout' | 'timeout' | 'forfeit' | 'disconnect';
+  durationMs: number;
+  /** ISO timestamp; decides the season and the UTC day of the caps. */
+  endedAt: string;
+  dealt: Record<string, string[]>;
+  /** False for a match that ended in its countdown (never counted, `settleArena`). Defaults to true. */
+  live?: boolean;
+}
+
+export interface ArenaSideResult {
+  before: number;
+  after: number;
+  reward: number;
+  /** Daemons whose `arenaWins` went up by one. */
+  arenaWins: string[];
+  /**
+   * Seq of the side's `arena` ledger row (only when `reward` > 0): the runtime credits the reward in memory exactly
+   * once by comparing it with the session's load watermark (`LoadedOperator.ledgerSeq`), wherever the operator is.
+   */
+  ledgerSeq?: number;
+}
+
+export interface ArenaSettlement {
+  counted: boolean;
+  a: ArenaSideResult;
+  b: ArenaSideResult;
+}
+
+const ARENA_END_REASONS: ReadonlySet<string> = new Set(['wipeout', 'timeout', 'forfeit', 'disconnect']);
+
+/** Shared by both stores: why a reported match cannot be recorded, or null. */
+export function arenaResultProblem(input: ArenaResultInput): string | null {
+  if (typeof input.matchId !== 'string' || input.matchId.length === 0) return 'invalid match id';
+  if (input.mode !== 'ranked' && input.mode !== 'unranked') return 'invalid mode';
+  if (input.aId === input.bId) return 'an operator cannot play itself';
+  if (input.winnerId !== null && input.winnerId !== input.aId && input.winnerId !== input.bId) return 'the winner did not play';
+  if (!ARENA_END_REASONS.has(input.reason)) return 'invalid reason';
+  if (!Number.isSafeInteger(input.durationMs) || input.durationMs < 0) return 'invalid duration';
+  if (Number.isNaN(Date.parse(input.endedAt))) return 'invalid end time';
+  return null;
+}
+
+/** The UTC day `[gte, lt)` an instant falls in (the arena caps are per UTC day). */
+export function utcDayOf(at: Date): { gte: Date; lt: Date } {
+  const gte = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
+  return { gte, lt: new Date(gte.getTime() + 86_400_000) };
 }
 
 /** A ledger row just written outside the sim's intents. */
@@ -545,6 +618,10 @@ export class MemoryStore implements Store {
   readonly orgs = new Map<string, OrgView>();
   /** Exchange vault rows, `${operatorId}:${item}` -> qty (mirrors ExchangeVault; an emptied row is deleted). */
   readonly vault = new Map<string, number>();
+  /** `${operatorId}:${seasonId}` -> rating and record (mirrors ArenaRating). */
+  readonly arenaRatings = new Map<string, Glicko & { wins: number; losses: number; draws: number }>();
+  /** Recorded matches by id (mirrors ArenaMatch). */
+  readonly arenaMatches = new Map<string, { input: ArenaResultInput; settlement: ArenaSettlement }>();
   /** Incident rows by id (mirrors the Incident table). */
   readonly incidents = new Map<string, IncidentRow & { closedAt: string | null }>();
   /** BitsLedger ids and seqs, parallel to `ledger` (kept apart so `ledger` stays in the LedgerRow shape). */
@@ -584,8 +661,8 @@ export class MemoryStore implements Store {
   }
 
   /** Appends the ledger row of a store intent (its reason checked against SIM_INTENT_LEDGER_REASONS). */
-  private addIntentLedger<K extends SimLedgerKind>(kind: K, row: Omit<LedgerRow, 'reason'> & { reason: SimLedgerReason<K> }): void {
-    this.addLedger({ ...row, reason: intentLedgerReason(kind, row.reason) });
+  private addIntentLedger<K extends SimLedgerKind>(kind: K, row: Omit<LedgerRow, 'reason'> & { reason: SimLedgerReason<K> }): { id: string; seq: number } {
+    return this.addLedger({ ...row, reason: intentLedgerReason(kind, row.reason) });
   }
 
   private maxLedgerSeq(operatorId: string): number {
@@ -877,6 +954,66 @@ export class MemoryStore implements Store {
   private incidentLedgerSeq(operatorId: string, incidentId: string): number | null {
     const i = this.ledger.findIndex((l) => l.operatorId === operatorId && l.reason === 'incident' && l.ref === incidentId);
     return i < 0 ? null : this.ledgerKeys[i]!.seq;
+  }
+
+  private arenaRow(operatorId: string, seasonId: string): Glicko & { wins: number; losses: number; draws: number } {
+    const key = `${operatorId}:${seasonId}`;
+    let row = this.arenaRatings.get(key);
+    if (!row) this.arenaRatings.set(key, (row = { ...seedRating(this.arenaRatings.get(`${operatorId}:${previousSeasonId(seasonId)}`)), wins: 0, losses: 0, draws: 0 }));
+    return row;
+  }
+
+  async arenaRating(operatorId: string, at: Date): Promise<number> {
+    const season = seasonIdOf(at);
+    return (this.arenaRatings.get(`${operatorId}:${season}`) ?? seedRating(this.arenaRatings.get(`${operatorId}:${previousSeasonId(season)}`))).rating;
+  }
+
+  async recordArenaResult(input: ArenaResultInput): Promise<ArenaSettlement> {
+    const problem = arenaResultProblem(input);
+    if (problem) throw new RangeError(problem);
+    // Mirrors PrismaStore: the stored match row answers a replay.
+    const done = this.arenaMatches.get(input.matchId);
+    if (done) return structuredClone(done.settlement);
+    for (const id of [input.aId, input.bId]) if (!this.operators.has(id)) throw new Error(`unknown operator ${id}`);
+    const endedAt = new Date(input.endedAt);
+    const season = seasonIdOf(endedAt);
+    const day = utcDayOf(endedAt);
+    const today = (iso: string) => Date.parse(iso) >= day.gte.getTime() && Date.parse(iso) < day.lt.getTime();
+    const a = this.arenaRow(input.aId, season);
+    const b = this.arenaRow(input.bId, season);
+    const samePair = (m: ArenaResultInput) => (m.aId === input.aId && m.bId === input.bId) || (m.aId === input.bId && m.bId === input.aId);
+    const pairCountedToday = [...this.arenaMatches.values()].filter((m) => m.settlement.counted && today(m.input.endedAt) && samePair(m.input)).length;
+    const w = input.winnerId;
+    const winnerRewardedToday = w
+      ? [...this.arenaMatches.values()].filter((m) => today(m.input.endedAt) && ((m.input.aId === w && m.settlement.a.reward > 0) || (m.input.bId === w && m.settlement.b.reward > 0))).length
+      : 0;
+    const winner = input.winnerId === null ? null : input.winnerId === input.aId ? 'a' : 'b';
+    const s = settleArena(input.mode, winner, { a, b, pairCountedToday, winnerRewardedToday, live: input.live ?? true });
+    const side = (before: number, after: number): ArenaSideResult => ({ before, after, reward: 0, arenaWins: [] });
+    const settlement: ArenaSettlement = { counted: s.counted, a: side(a.rating, s.a.rating), b: side(b.rating, s.b.rating) };
+    if (s.counted) {
+      const record = (me: 'a' | 'b', row: { wins: number; losses: number; draws: number }) =>
+        winner === null ? { draws: row.draws + 1 } : winner === me ? { wins: row.wins + 1 } : { losses: row.losses + 1 };
+      Object.assign(a, { rating: s.a.rating, rd: s.a.rd, vol: s.a.vol }, record('a', a));
+      Object.assign(b, { rating: s.b.rating, rd: s.b.rd, vol: s.b.vol }, record('b', b));
+      if (winner && input.winnerId) {
+        const won = settlement[winner];
+        if (s.reward > 0) {
+          this.operators.get(input.winnerId)!.bits += s.reward;
+          won.ledgerSeq = this.addIntentLedger('arenaResult', { operatorId: input.winnerId, delta: s.reward, reason: 'arena', ref: input.matchId, at: this.now() }).seq;
+          won.reward = s.reward;
+        }
+        // Only daemons the winner still owns: one traded away or decompiled since the match is left alone.
+        for (const id of new Set(input.dealt[input.winnerId] ?? [])) {
+          const d = this.daemons.get(id);
+          if (!d || d.operatorId !== input.winnerId) continue;
+          d.arenaWins++;
+          won.arenaWins.push(id);
+        }
+      }
+    }
+    this.arenaMatches.set(input.matchId, { input: structuredClone(input), settlement });
+    return structuredClone(settlement);
   }
 
   async recordIncident(row: IncidentRow): Promise<void> {
