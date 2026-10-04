@@ -16,6 +16,10 @@ const OrderBody = z.object({
   qty: z.number().int().min(1).max(MAX_QTY),
 });
 
+/** How many closed (filled, cancelled, expired) orders `GET /api/exchange/orders` returns; open ones are never cut. */
+export const CLOSED_ORDERS_SHOWN = 64;
+const OrdersQuery = z.object({ status: z.enum(['OPEN', 'FILLED', 'CANCELLED', 'EXPIRED']).optional() });
+
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const r = schema.safeParse(value);
   if (!r.success) throw badRequest(r.error.issues[0]?.message ?? 'invalid request');
@@ -66,9 +70,20 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
     return bookFor(prisma, req.params.item);
   });
 
-  /** The caller's 64 most recent orders, any status. */
-  app.get('/api/exchange/orders', auth, async (req) => {
-    const rows = await prisma.order.findMany({ where: { operatorId: req.operator!.id }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 64 });
+  /**
+   * The caller's orders, newest first: every OPEN one (bounded by the open-order cap plus any not yet swept by expiry),
+   * then the CLOSED_ORDERS_SHOWN most recent closed ones. `?status=` narrows it to one status (closed ones still capped).
+   */
+  app.get<{ Querystring: unknown }>('/api/exchange/orders', auth, async (req) => {
+    const { status } = parse(OrdersQuery, req.query);
+    const operatorId = req.operator!.id;
+    const orderBy = [{ createdAt: 'desc' as const }, { id: 'desc' as const }];
+    const open = status === undefined || status === 'OPEN' ? await prisma.order.findMany({ where: { operatorId, status: 'OPEN' }, orderBy }) : [];
+    const closed =
+      status === 'OPEN'
+        ? []
+        : await prisma.order.findMany({ where: { operatorId, status: status ?? { not: 'OPEN' } }, orderBy, take: CLOSED_ORDERS_SHOWN });
+    const rows = [...open, ...closed].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
     return rows.map((o) => ({ id: o.id, item: o.item, side: o.side, price: o.price, qty: o.qty, remaining: o.remaining, status: o.status, createdAt: o.createdAt, expiresAt: o.expiresAt }));
   });
 

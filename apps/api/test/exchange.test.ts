@@ -351,6 +351,25 @@ describe.skipIf(!url)('Exchange order book (needs DATABASE_URL)', () => {
     expect((await prisma!.operator.findUniqueOrThrow({ where: { id: t.id } })).inventory).toEqual({});
   });
 
+  it('my orders: every OPEN order however old, plus the 64 most recent closed ones; optional status filter', async () => {
+    const t = await trader('mo', 100);
+    const base = Date.now() - 86_400_000;
+    const row = (i: number, status: 'OPEN' | 'FILLED' | 'CANCELLED') => ({
+      id: `mo-${String(i).padStart(3, '0')}`, operatorId: t.id, item: 'frag:packet', side: 'BUY' as const, price: 1, qty: 1,
+      remaining: status === 'OPEN' ? 1 : 0, status, createdAt: new Date(base + i * 1000), expiresAt: new Date(base + i * 1000 + ORDER_TTL_MS),
+    });
+    await prisma!.order.createMany({ data: [row(0, 'OPEN'), ...Array.from({ length: 70 }, (_, i) => row(i + 1, i % 10 === 0 ? 'CANCELLED' : 'FILLED'))] });
+    const all = (await t.get('/orders')).body as Array<{ id: string; status: string }>;
+    expect(all.filter((o) => o.status === 'OPEN').map((o) => o.id)).toEqual(['mo-000']);
+    expect(all.filter((o) => o.status !== 'OPEN')).toHaveLength(64);
+    expect(all.filter((o) => o.status !== 'OPEN').map((o) => o.id)).not.toContain('mo-001'); // the oldest closed fall off
+    expect(((await t.get('/orders?status=OPEN')).body as Array<{ id: string }>).map((o) => o.id)).toEqual(['mo-000']);
+    const cancelled = (await t.get('/orders?status=CANCELLED')).body as Array<{ status: string }>;
+    expect(cancelled).toHaveLength(7);
+    expect(new Set(cancelled.map((o) => o.status))).toEqual(new Set(['CANCELLED']));
+    expect((await t.get('/orders?status=nonsense')).status).toBe(400);
+  });
+
   it('every Exchange response is no-store', async () => {
     const t = await trader('ns', 100);
     for (const path of ['/items', '/book/frag:packet', '/orders', '/vault']) {
