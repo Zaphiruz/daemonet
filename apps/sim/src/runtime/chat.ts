@@ -55,7 +55,14 @@ const Until = z.iso.datetime({ offset: true }).nullable();
  * kinds this service does not handle (`incident:start`, …) are ignored.
  */
 const AdminMessage = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('mute'), operatorId: OperatorId, until: Until, reason: z.string().max(64).optional() }),
+  z.object({
+    kind: z.literal('mute'),
+    operatorId: OperatorId,
+    until: Until,
+    reason: z.string().max(64).optional(),
+    /** Who decided it: the sim's own announcements (filter auto-mutes) come back on the bus and are ignored. */
+    origin: z.enum(['sim', 'api']).optional(),
+  }),
   z.object({ kind: z.literal('unmute'), operatorId: OperatorId }),
   z.object({ kind: z.literal('delete'), id: z.string().min(1).max(64), channel: z.string().min(3).max(80) }),
   z.object({
@@ -70,7 +77,7 @@ const ADMIN_KINDS: ReadonlySet<unknown> = new Set(['mute', 'unmute', 'delete', '
 
 /** DM guard lookups (target exists, not blocked: store reads) allowed per operator per CHAT_INTERVAL_MS. */
 const DM_LOOKUPS_PER_INTERVAL = 4;
-/** Recent lines whose recipients are remembered, so an admin deletion reaches whoever saw the line. */
+/** Recent lines whose sender and recipients are remembered, so an admin deletion reaches whoever saw the line. */
 const RECENT_LINES = 1024;
 /** Per-operator bookkeeping maps are swept once they hold this many entries. */
 const SWEEP_AT = 4096;
@@ -101,9 +108,11 @@ export class ChatService {
    * may predate it, so `loadMute` keeps the live value for these operators.
    */
   private readonly unconfirmed = new Set<string>();
+  /** Bumped by every admin mute decision from the bus: a `mute` whose store write raced one yields to it. */
+  private readonly generation = new Map<string, number>();
   private readonly hits = new Map<string, number[]>();
   private readonly dmLookups = new Map<string, { since: number; n: number }>();
-  private readonly recent = new Map<string, string[]>();
+  private readonly recent = new Map<string, { from: string; to: string[] }>();
   private readonly unsubscribe: () => void;
 
   constructor(
@@ -122,7 +131,9 @@ export class ChatService {
 
   /** Called when an operator's record is loaded (mute from the DB). */
   loadMute(operatorId: string, until: string | null): void {
-    if (this.unconfirmed.has(operatorId)) return;
+    // An unconfirmed mute of ours that is still running outranks the record (which may predate it).
+    if (this.unconfirmed.has(operatorId) && this.isMuted(operatorId)) return;
+    this.unconfirmed.delete(operatorId);
     const at = until ? Date.parse(until) : NaN;
     if (Number.isFinite(at) && at > this.host.now()) this.muted.set(operatorId, at);
     else this.muted.delete(operatorId);
@@ -133,6 +144,7 @@ export class ChatService {
     if (until === undefined) return false;
     if (until <= this.host.now()) {
       this.muted.delete(operatorId);
+      this.unconfirmed.delete(operatorId);
       return false;
     }
     return true;
@@ -202,6 +214,8 @@ export class ChatService {
         return { code: 'E_INVALID', message: 'message blocked by the chat filter' };
       }
       this.lastAt.set(from, now);
+      // A mute (admin or automatic) may have landed while the guards awaited the store.
+      if (this.isMuted(from)) return { code: 'E_STATE', message: `muted until ${new Date(this.muted.get(from)!).toISOString()}` };
       const line: ChatLine = { id: `m${now.toString(36)}${randomHex(6)}`, channel, from, name, tag, text: filtered.text, at: new Date(now).toISOString() };
       try {
         await this.store.appendChat({ id: line.id, channel, operatorId: from, toId: dmTo, text: line.text, at: line.at });
@@ -212,8 +226,10 @@ export class ChatService {
       }
       // Membership may have changed while the row was written (travel, leave): deliver to the channel as it is now.
       const to = this.recipients(from, channel) ?? before;
-      this.remember(line.id, to);
-      for (const oid of to) this.host.send(oid, { t: 'chat', seq: 0, d: line });
+      this.remember(line.id, from, to);
+      // A DM is filed under the other party's id on each side (spec §5): the sender sees dm:<recipient>, the recipient
+      // dm:<sender>, so replying to `line.channel` reaches the right operator. Stored and published as the sender's view.
+      for (const oid of to) this.host.send(oid, { t: 'chat', seq: 0, d: dmTo !== null && oid !== from ? { ...line, channel: `dm:${from}` } : line });
       this.publish('chat', line);
       return null;
     } catch (err) {
@@ -256,16 +272,29 @@ export class ChatService {
 
   /** Mutes (or unmutes with null), persists through the store, tells the operator and announces it on the bus. */
   async mute(operatorId: string, until: string | null, reason = 'admin'): Promise<void> {
+    const gen = this.generation.get(operatorId) ?? 0;
     this.setMuted(operatorId, until);
-    this.unconfirmed.add(operatorId);
+    if (until) this.unconfirmed.add(operatorId);
+    else this.unconfirmed.delete(operatorId);
     try {
       await this.store.setMute(operatorId, until);
-      this.unconfirmed.delete(operatorId);
+      if ((this.generation.get(operatorId) ?? 0) === gen) this.unconfirmed.delete(operatorId);
     } catch (err) {
       this.log.warn({ operator: operatorId, reason, err: errInfo(err) }, 'mute not stored');
     }
+    if ((this.generation.get(operatorId) ?? 0) !== gen) {
+      // An admin decision arrived while our write was in flight and may have committed before it: write the admin's
+      // (current) value back so the store agrees with the sim, and announce nothing.
+      const current = this.muted.get(operatorId);
+      try {
+        await this.store.setMute(operatorId, current === undefined ? null : new Date(current).toISOString());
+      } catch (err) {
+        this.log.warn({ operator: operatorId, reason, err: errInfo(err) }, 'mute not restored');
+      }
+      return;
+    }
     this.host.send(operatorId, { t: 'muted', seq: 0, d: { until } });
-    this.publish('admin', { kind: 'mute', operatorId, until, reason });
+    this.publish('admin', { kind: 'mute', operatorId, until, reason, origin: 'sim' });
   }
 
   /** Applies a mute state; true when it changed. */
@@ -289,32 +318,43 @@ export class ChatService {
     switch (m.kind) {
       case 'mute':
       case 'unmute': {
+        // Our own announcements come back here too (the bus delivers to the publisher).
+        if (m.kind === 'mute' && m.origin === 'sim') return;
         const until = m.kind === 'mute' ? m.until : null;
-        // Our own announcements come back here too (the bus delivers to the publisher): an unchanged state does
-        // nothing. A change was written by the api and supersedes any mute of ours that is still unconfirmed.
-        if (!this.setMuted(m.operatorId, until)) return;
+        // An admin decision (written by the api) supersedes any mute of ours, confirmed or not.
+        this.generation.set(m.operatorId, (this.generation.get(m.operatorId) ?? 0) + 1);
         this.unconfirmed.delete(m.operatorId);
-        this.host.send(m.operatorId, { t: 'muted', seq: 0, d: { until } });
+        if (this.setMuted(m.operatorId, until)) this.host.send(m.operatorId, { t: 'muted', seq: 0, d: { until } });
         return;
       }
-      case 'delete':
-        for (const oid of this.audience(m.id, m.channel)) this.host.send(oid, { t: 'chatDeleted', seq: 0, d: { id: m.id, channel: m.channel } });
+      case 'delete': {
+        const from = this.recent.get(m.id)?.from;
+        const dmTo = m.channel.startsWith('dm:') ? m.channel.slice(3) : null;
+        for (const oid of this.audience(m.id, m.channel)) {
+          // The DM's recipient files it under the sender's id (when the sender is remembered).
+          const channel = dmTo !== null && oid === dmTo && from !== undefined && from !== dmTo ? `dm:${from}` : m.channel;
+          this.host.send(oid, { t: 'chatDeleted', seq: 0, d: { id: m.id, channel } });
+        }
         return;
+      }
       case 'filter':
         this.setExtraTerms(m.terms);
         return;
     }
   }
 
-  /** Who a deletion goes to: whoever the line reached (when remembered) and whoever can read the channel now. */
+  /**
+   * Who a deletion goes to: for a subnet line, the operators in that subnet now; for any other line, whoever it reached
+   * (when remembered) and whoever can read the channel now.
+   */
   private audience(id: string, channel: string): Set<string> {
-    const out = new Set(this.recent.get(id) ?? []);
     const colon = channel.indexOf(':');
     const kind = channel.slice(0, colon);
     const target = channel.slice(colon + 1);
+    const out = new Set(kind === 'subnet' ? [] : (this.recent.get(id)?.to ?? []));
     for (const oid of this.host.operatorIds()) {
       const reads =
-        kind === 'subnet' ? true // public history
+        kind === 'subnet' ? this.host.operator(oid)?.subnet === target
         : kind === 'dm' ? oid === target
         : kind === 'cluster' ? this.host.clusterOf?.(oid)?.id === target
         : kind === 'org' ? this.host.orgOf?.(oid)?.id === target
@@ -324,8 +364,8 @@ export class ChatService {
     return out;
   }
 
-  private remember(id: string, to: readonly string[]): void {
-    this.recent.set(id, [...to]);
+  private remember(id: string, from: string, to: readonly string[]): void {
+    this.recent.set(id, { from, to: [...to] });
     if (this.recent.size > RECENT_LINES) this.recent.delete(this.recent.keys().next().value!);
   }
 

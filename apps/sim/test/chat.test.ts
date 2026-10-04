@@ -70,9 +70,10 @@ describe('ChatService', () => {
     h.tick(2000);
     expect(await h.chat.post('a', 'dm:d', 'psst')).toMatchObject({ code: 'E_STATE' });
     expect(await h.chat.post('a', 'dm:b', 'psst')).toBeNull();
-    expect(h.lines('b').at(-1)).toMatchObject({ channel: 'dm:b', from: 'a', text: 'psst' });
+    // spec §5: each side files the DM under the other party's id
+    expect(h.lines('b').at(-1)).toMatchObject({ channel: 'dm:a', from: 'a', text: 'psst' });
     expect(h.lines('a').at(-1)).toMatchObject({ channel: 'dm:b', text: 'psst' });
-    expect(h.store.chat.at(-1)).toMatchObject({ toId: 'b' });
+    expect(h.store.chat.at(-1)).toMatchObject({ channel: 'dm:b', toId: 'b' });
     h.tick(2000);
     expect(await h.chat.post('a', 'dm:a', 'me')).toMatchObject({ code: 'E_STATE' });
   });
@@ -168,6 +169,87 @@ describe('ChatService', () => {
     expect(await h.chat.post('a', 'dm:c', 'now?')).toBeNull();
   });
 
+  it('DM replies to line.channel reach the other party, filed under the other id on both sides', async () => {
+    const h = harness();
+    h.roster.set('a', { name: 'alice', subnet: 'lo' });
+    h.roster.set('b', { name: 'bob', subnet: 'lan' });
+    expect(await h.chat.post('a', 'dm:b', 'ping')).toBeNull();
+    const got = h.lines('b').at(-1)!;
+    expect(got.channel).toBe('dm:a');
+    expect(await h.chat.post('b', got.channel, 'pong')).toBeNull();
+    expect(h.lines('a').map((l) => [l.channel, l.from, l.text])).toEqual([
+      ['dm:b', 'a', 'ping'],
+      ['dm:b', 'b', 'pong'],
+    ]);
+    expect(h.lines('b').map((l) => [l.channel, l.from, l.text])).toEqual([
+      ['dm:a', 'a', 'ping'],
+      ['dm:a', 'b', 'pong'],
+    ]);
+    expect(h.store.chat.map((c) => [c.channel, c.operatorId, c.toId])).toEqual([
+      ['dm:b', 'a', 'b'],
+      ['dm:a', 'b', 'a'],
+    ]);
+  });
+
+  it('an admin mute that arrives while an auto-mute is being written wins in memory and in the store', async () => {
+    const h = harness();
+    h.roster.set('a', { name: 'alice', subnet: 'lo' });
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const writes: Array<string | null> = [];
+    let first = true;
+    h.store.setMute = async (id, until) => {
+      if (first) {
+        first = false;
+        await gate;
+      }
+      writes.push(until);
+      h.store.mutes.set(id, until);
+    };
+    const auto = h.chat.mute('a', new Date(Date.parse(FIXED_CLOCK) + 600_000).toISOString(), 'filter');
+    const admin = new Date(Date.parse(FIXED_CLOCK) + 86_400_000).toISOString();
+    await h.bus.publish('admin', { kind: 'mute', operatorId: 'a', until: admin, reason: 'admin' });
+    open();
+    await auto;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(writes).toEqual([new Date(Date.parse(FIXED_CLOCK) + 600_000).toISOString(), admin]);
+    expect(h.store.mutes.get('a')).toBe(admin);
+    expect(h.sent.filter((x) => x.msg.t === 'muted').map((x) => (x.msg as Extract<ServerMessage, { t: 'muted' }>).d.until)).toEqual([admin]);
+    expect((h.bus as MemoryBus).log.filter((l) => l.channel === 'admin')).toHaveLength(1);
+    h.tick(3_600_000);
+    expect(h.chat.isMuted('a')).toBe(true);
+  });
+
+  it('drops an unconfirmed mute once it has expired, so the record applies again', async () => {
+    const h = harness();
+    h.roster.set('a', { name: 'alice', subnet: 'lo' });
+    h.store.setMute = async () => {
+      throw new Error('db down');
+    };
+    await h.chat.mute('a', new Date(Date.parse(FIXED_CLOCK) + 600_000).toISOString(), 'filter');
+    h.tick(11 * 60_000);
+    h.chat.loadMute('a', new Date(Date.parse(FIXED_CLOCK) + 3_600_000).toISOString());
+    expect(h.chat.isMuted('a')).toBe(true);
+  });
+
+  it('re-checks the mute after the guards awaited the store', async () => {
+    const h = harness();
+    h.roster.set('a', { name: 'alice', subnet: 'lo' });
+    h.roster.set('b', { name: 'bob', subnet: 'lo' });
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    h.store.isBlocked = async () => {
+      await gate;
+      return false;
+    };
+    const post = h.chat.post('a', 'dm:b', 'sneaky');
+    await h.bus.publish('admin', { kind: 'mute', operatorId: 'a', until: new Date(Date.parse(FIXED_CLOCK) + 60_000).toISOString() });
+    open();
+    expect(await post).toMatchObject({ code: 'E_STATE', message: expect.stringMatching(/^muted until/) });
+    expect(h.store.chat).toHaveLength(0);
+    expect(h.lines('b')).toHaveLength(0);
+  });
+
   it('allows one line in flight per operator (concurrent commands cannot both pass the 2-second limit)', async () => {
     const h = harness();
     h.roster.set('a', { name: 'alice', subnet: 'lo' });
@@ -202,6 +284,7 @@ describe('ChatService', () => {
       { kind: 'delete', id: 'm1', channel: 'x'.repeat(500) },
       { kind: 'filter', terms: 'kys' },
       { kind: 'filter', terms: [{ pattern: 'hello', kind: 'EVAL', action: 'BLOCK' }] },
+      { kind: 'mute', operatorId: 'a', until: null, origin: 'elsewhere' },
       { kind: 'incident:start' },
       { kind: { toString: 'mute' } },
     ];
@@ -210,7 +293,7 @@ describe('ChatService', () => {
     expect(h.sent).toHaveLength(0);
     expect(await h.chat.post('a', 'subnet:lo', 'hello')).toBeNull();
     // only well-known kinds are reported, by kind
-    expect(h.logs.map((l) => l.msg)).toEqual(Array(7).fill('dropped a malformed admin message'));
+    expect(h.logs.map((l) => l.msg)).toEqual(Array(8).fill('dropped a malformed admin message'));
   });
 
   it('never logs chat text, and a bus outage does not fail a line', async () => {
@@ -239,7 +322,7 @@ describe('ChatService', () => {
     expect(JSON.stringify(h.logs)).not.toMatch(/secret|insert failed/);
   });
 
-  it('sends a deletion to whoever the line reached and whoever can read the channel, not to everyone', async () => {
+  it('sends a deletion only to the line’s parties / the subnet’s current occupants, each under their own channel name', async () => {
     const h = harness();
     h.roster.set('a', { name: 'alice', subnet: 'lo' });
     h.roster.set('b', { name: 'bob', subnet: 'lo' });
@@ -248,10 +331,13 @@ describe('ChatService', () => {
     const id = h.lines('b')[0]!.id;
     h.sent.length = 0;
     await h.bus.publish('admin', { kind: 'delete', id, channel: 'dm:b' });
-    expect(h.sent.map((s) => s.to).sort()).toEqual(['a', 'b']);
+    expect(h.sent.map((s) => [s.to, (s.msg as Extract<ServerMessage, { t: 'chatDeleted' }>).d.channel]).sort()).toEqual([
+      ['a', 'dm:b'],
+      ['b', 'dm:a'],
+    ]);
     h.sent.length = 0;
     await h.bus.publish('admin', { kind: 'delete', id: 'old', channel: 'subnet:lo' });
-    expect(h.sent.map((s) => s.to).sort()).toEqual(['a', 'b', 'c']);
+    expect(h.sent.map((s) => s.to).sort()).toEqual(['a', 'b']);
   });
 });
 
