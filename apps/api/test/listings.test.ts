@@ -304,7 +304,7 @@ describe.skipIf(!url)('Exchange daemon listings (needs DATABASE_URL)', () => {
     const buying = buyer.buy(made.id);
     // wait until the buy blocks on the slot's unique index entry, then let the capture commit
     for (let i = 0; i < 200; i++) {
-      const [{ n }] = await prisma!.$queryRaw<Array<{ n: bigint }>>`SELECT count(*) AS n FROM pg_locks WHERE NOT granted`;
+      const { n } = (await prisma!.$queryRaw<Array<{ n: bigint }>>`SELECT count(*) AS n FROM pg_locks WHERE NOT granted`)[0]!;
       if (n > 0n) break;
       await new Promise((r) => setTimeout(r, 25));
     }
