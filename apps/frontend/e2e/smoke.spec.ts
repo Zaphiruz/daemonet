@@ -287,3 +287,64 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await a.close();
   await b.close();
 });
+
+test('two operators queue unranked, fight in the sandbox, one forfeits, both come home with their daemons', async ({ browser }) => {
+  const a = await browser.newContext();
+  const b = await browser.newContext();
+  const pa = await a.newPage();
+  const pb = await b.newPage();
+  // Behind Caddy the pages carry a strict CSP; the arena HUD and tab must not trip it either.
+  const violations: string[] = [];
+  for (const p of [pa, pb]) {
+    p.on('console', (m) => {
+      if (/content security policy/i.test(m.text())) violations.push(m.text());
+    });
+    p.on('pageerror', (e) => violations.push(`pageerror: ${e.message}`));
+  }
+  const headers = { 'x-requested-with': 'daemonet' };
+  const who = { a: `${name}ra`, b: `${name}rb` };
+  for (const [page, op] of [
+    [pa, who.a],
+    [pb, who.b],
+  ] as const) {
+    await login(page, op);
+    // the arena needs two daemons in RAM: seed one on Disk and load it at the host (the spawn point is within reach)
+    expect((await page.request.post('/api/dev/daemon', { data: { species: 'pingling', level: 8 }, headers })).ok()).toBeTruthy();
+    await page.getByTestId('tab-disk').click();
+    await page.getByRole('button', { name: 'refresh' }).click();
+    await page.getByRole('button', { name: 'load into RAM' }).click();
+    await page.getByTestId('tab-ram').click();
+    await expect(page.getByTestId('ram-1-name')).toHaveText('Pingling', { timeout: 15_000 });
+    await page.getByTestId('tab-arena').click();
+    await expect(page.getByTestId('arena-me')).toContainText('rating 1500', { timeout: 10_000 });
+    await expect(page.getByTestId('arena-queue-unranked')).toBeEnabled({ timeout: 10_000 });
+  }
+  await pa.getByTestId('arena-queue-unranked').click();
+  await expect(pa.getByTestId('arena-waiting')).toContainText('waiting for a unranked match', { timeout: 10_000 });
+  await pb.getByTestId('arena-queue-unranked').click();
+
+  // both are moved into a sandbox world; the HUD shows the clock and both teams
+  await expect(pa.getByTestId('arena-hud')).toBeVisible({ timeout: 15_000 });
+  await expect(pb.getByTestId('arena-hud')).toBeVisible({ timeout: 15_000 });
+  await expect(pa.getByTestId('arena-theirs')).toContainText(who.b, { timeout: 10_000 });
+  await expect(pa.getByTestId('arena-theirs')).toContainText('Pingling L8');
+  await expect(pa.getByTestId('subnet')).toHaveText('sandbox');
+  await expect(pa.getByTestId('arena-queue-unranked')).toBeDisabled();
+
+  await pb.getByTestId('arena-forfeit').click();
+  await expect(pa.getByTestId('arena-result')).toContainText('you won by forfeit', { timeout: 10_000 });
+  await expect(pb.getByTestId('arena-result')).toContainText('you lost by forfeit', { timeout: 10_000 });
+
+  // a few seconds later both are home, with the daemons they brought
+  await expect(pa.getByTestId('arena-hud')).toHaveCount(0, { timeout: 15_000 });
+  await expect(pa.getByTestId('subnet')).toHaveText('lo');
+  await expect(pb.getByTestId('subnet')).toHaveText('lo', { timeout: 15_000 });
+  await expect(pa.getByTestId('arena-last')).toContainText('you won by forfeit', { timeout: 10_000 });
+  await expect(pa.getByTestId('arena-history')).toContainText(`vs ${who.b}`, { timeout: 10_000 });
+  await pa.getByTestId('tab-ram').click();
+  await expect(pa.getByTestId('ram-1-name')).toHaveText('Pingling');
+  await expect(pa.getByTestId('ram-0')).toBeVisible();
+  expect(violations).toEqual([]);
+  await a.close();
+  await b.close();
+});
