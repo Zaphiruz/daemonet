@@ -51,8 +51,16 @@ declare module '@daemonet/sdk' {
   }
   export class DaemonsApi { get(id: string): DaemonHandle; script(fn: (ctx: DaemonScriptContext) => void): () => void }
   export interface CaptureStartEvent { captureId: string; targetId: string; challenge: { kind: 'single' | 'chain'; families: string[]; params: unknown; payload: unknown }; deadlineTick: number }
+  export interface ChatLine { id: string; channel: string; from: string; name: string | null; tag: string | null; text: string; at: string }
+  /** Chat: one line per 2 s, queued for you (send never rejects with E_RATE). A DM line arrives with channel "dm:<your id>"; reply to line.channel. */
+  export class ChatApi {
+    /** Channels you can post to right now: your subnet, plus cluster and org channels once you are in them. */
+    readonly channels: string[];
+    send(channel: string, text: string): Promise<unknown>;
+    dm(operatorId: string, text: string): Promise<unknown>;
+  }
   export class GameClient {
-    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, Entity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi;
+    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, Entity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi; readonly chat: ChatApi;
     on(name: 'captureStart', handler: (ev: CaptureStartEvent) => void): () => void;
     on(name: 'captureResult', handler: (ev: { captureId: string; ok: boolean; reason?: string }) => void): () => void;
     on(name: 'tick', handler: (tick: number) => void): () => void;
@@ -63,6 +71,10 @@ declare module '@daemonet/sdk' {
     on(name: 'decompiled', handler: (ev: { daemon: string; species: string; fragments: Record<string, number> }) => void): () => void;
     on(name: 'ticketProgress', handler: (ev: { ticketId: string; progress: number; target: number }) => void): () => void;
     on(name: 'ticketDone', handler: (ev: { ticketId: string; reward: number; unpaid?: boolean }) => void): () => void;
+    on(name: 'chat', handler: (line: ChatLine) => void): () => void;
+    on(name: 'chatDeleted', handler: (ev: { id: string; channel: string }) => void): () => void;
+    /** Your mute state changed: until is the end of the mute (ISO time), or null when it was lifted. */
+    on(name: 'muted', handler: (ev: { until: string | null }) => void): () => void;
     on(name: string, handler: (value: any) => void): () => void;
   }
 }

@@ -1,6 +1,16 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 const name = `e2e${Date.now().toString(36).slice(-6)}`;
+
+async function login(page: Page, who: string) {
+  await page.goto('/');
+  await page.getByTestId('dev-name').fill(who);
+  await page.getByTestId('dev-login').click();
+  await expect(page.getByTestId('status')).toHaveText('online', { timeout: 20_000 });
+  await page.getByTestId('name-input').fill(who);
+  await page.getByTestId('claim').click();
+  await expect(page.getByTestId('operator-name')).toHaveText(who, { timeout: 15_000 });
+}
 
 test('dev login, claim a starter, run a daemon, move by clicking, run the starter script in the sandbox', async ({ page }) => {
   // Behind Caddy the pages carry a strict CSP; any violation (host page, Monaco, sandbox) fails the run.
@@ -130,4 +140,30 @@ test('with dev bits: buy a tap at the host, decompile a seeded daemon into fragm
   await expect(page.getByTestId('board-0')).toContainText('open');
   await page.getByRole('button', { name: 'abandon' }).click();
   await expect(page.getByTestId('tickets')).toContainText('open (0/2) · accepted today 1/8', { timeout: 10_000 });
+});
+
+test('two operators chat in subnet:lo; the filter masks and blocks; a line can be reported', async ({ browser }) => {
+  const a = await browser.newContext();
+  const b = await browser.newContext();
+  const pa = await a.newPage();
+  const pb = await b.newPage();
+  await login(pa, `${name}ca`);
+  await login(pb, `${name}cb`);
+  await pa.getByTestId('tab-chat').click();
+  await pb.getByTestId('tab-chat').click();
+  await pa.getByTestId('chat-input').fill('hello from a, what the fuck');
+  await pa.getByTestId('chat-send').click();
+  await expect(pb.getByTestId('chat-lines')).toContainText('hello from a, what the ***', { timeout: 10_000 });
+  await expect(pa.getByTestId('chat-lines')).toContainText(`${name}ca`);
+  await pb.getByTestId('chat-input').fill('kys');
+  await pb.getByTestId('chat-send').click();
+  await pb.getByTestId('tab-log').click();
+  await expect(pb.getByTestId('log')).toContainText('message blocked by the chat filter', { timeout: 10_000 });
+  await pb.getByTestId('tab-chat').click();
+  await pb.locator('[data-testid^="report-m"]').first().click();
+  await pb.getByTestId('report-send').click();
+  await pb.getByTestId('tab-log').click();
+  await expect(pb.getByTestId('log')).toContainText('report received', { timeout: 10_000 });
+  await a.close();
+  await b.close();
 });

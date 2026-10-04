@@ -53,8 +53,12 @@ export interface Bridge {
 
 type Envelope = { t?: unknown; d?: unknown };
 
-/** Server frame types relayed to the sandbox. */
-const RELAYED: ReadonlySet<string> = new Set(['delta', 'ack', 'err', 'kick']);
+/**
+ * Server frame types relayed to the sandbox. `chat`, `chatDeleted` and `muted` (SP4) are deliberate additions: they carry
+ * public chat lines and the operator's own mute state, no credential, so a script can read and answer chat. A script's
+ * `chat` commands are ordinary `cmd` frames and share the per-tick command budget and the frame flood budget.
+ */
+const RELAYED: ReadonlySet<string> = new Set(['delta', 'ack', 'err', 'kick', 'chat', 'chatDeleted', 'muted']);
 
 /** Error replies per tick; beyond this a flooding script gets silence rather than more work for the host. */
 const MAX_ERRORS_PER_TICK = 8;

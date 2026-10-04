@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { api, fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
 import { store } from '../store.ts';
 import { capture as appCapture, type CaptureStore } from './capture.ts';
+import { chatStore, setMe, type ChatStore } from './chat.ts';
 import { getControls, setControls } from './controls.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
@@ -35,6 +36,8 @@ export interface ConnectionDeps {
   capture: CaptureStore;
   /** Ends the sandboxed script (its bridge is tied to the client being replaced or lost). */
   stopSandbox(): void;
+  /** Holds chat lines and the mute state (they arrive before any panel mounts). Optional: tests may omit it. */
+  chat?: ChatStore;
   /** Drops the cached Codex so an open panel refetches (a live discovery reveals a hidden requirement). */
   invalidateCodex(): void;
   /** Drops the cached ticket board and history (a ticket finished or moved). Optional: tests may omit it. */
@@ -112,6 +115,7 @@ export function createConnection(deps: ConnectionDeps) {
     if (!current(gen, client)) return;
     deps.stopSandbox();
     deps.capture.clear();
+    deps.chat?.clear();
     client.close();
     set({ status, kickReason: reason, client: null });
   };
@@ -152,6 +156,13 @@ export function createConnection(deps: ConnectionDeps) {
     on('tick', () => set({ version: state.version + 1 }));
     on('captureStart', (e) => deps.capture.start(e));
     on('captureResult', (e) => deps.capture.result(e));
+    // chat goes into a store wired here, not into panel effects: lines arrive whether or not the Chat tab is open
+    on('chat', (line) => deps.chat?.push(line));
+    on('chatDeleted', (d) => deps.chat?.remove(d.id));
+    on('muted', (d) => {
+      deps.chat?.setMuted(d.until);
+      deps.log.push('system', d.until ? `you are muted until ${new Date(d.until).toLocaleString()}` : 'your mute was lifted');
+    });
     on('disconnect', () => {
       deps.capture.clear();
       if (state.status === 'online') set({ status: 'reconnecting' });
@@ -216,6 +227,7 @@ export function createConnection(deps: ConnectionDeps) {
       return { kind: 'cancelled' };
     }
     subnet = c.subnet;
+    setMe(c.operatorId);
     set({ status: 'online', client: c, role, kickReason: null });
     deps.log.push('system', `connected as ${role}`);
     return { kind: 'online' };
@@ -261,6 +273,7 @@ export function createConnection(deps: ConnectionDeps) {
     cancelPending();
     deps.stopSandbox();
     deps.capture.clear();
+    deps.chat?.clear();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
   }
@@ -286,6 +299,7 @@ const connection = createConnection({
   url: wsUrl,
   log: appLog,
   capture: appCapture,
+  chat: chatStore,
   stopSandbox,
   invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
   invalidateTickets: () => store.dispatch(api.util.invalidateTags(['Tickets'])),

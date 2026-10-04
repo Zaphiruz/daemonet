@@ -5,6 +5,8 @@ import { TopBar } from './components/TopBar.tsx';
 import { WorldCanvas } from './components/WorldCanvas.tsx';
 import { open, useConnection } from './game/connection.ts';
 import { CodexPanel, ItemsPanel } from './panels/CodexPanel.tsx';
+import { AdminPanel } from './panels/AdminPanel.tsx';
+import { ChatPanel } from './panels/ChatPanel.tsx';
 import { DiskPanel } from './panels/DiskPanel.tsx';
 import { HostPanel } from './panels/HostPanel.tsx';
 import { LogPanel } from './panels/LogPanel.tsx';
@@ -14,7 +16,7 @@ import { RamPanel } from './panels/RamPanel.tsx';
 // Monaco is big: load it (and its workers) only when the Script tab is first opened, never on the login page.
 const ScriptPanel = lazy(() => import('./panels/ScriptPanel.tsx'));
 
-const TABS = ['play', 'ram', 'disk', 'host', 'items', 'codex', 'script', 'log'] as const;
+const TABS = ['play', 'ram', 'disk', 'host', 'items', 'codex', 'chat', 'script', 'log', 'admin'] as const;
 type Tab = (typeof TABS)[number];
 
 export function Login() {
@@ -59,6 +61,8 @@ export function App() {
   if (me.isLoading) return <p className="p-4 text-neutral-500">loading…</p>;
   if (me.isError || !me.data) return <Login />;
   const client = conn.client;
+  const isAdmin = me.data.isAdmin === true;
+  const tabs = TABS.filter((t) => t !== 'admin' || isAdmin);
   const ended = conn.status === 'kicked' || conn.status === 'failed';
   return (
     <div className="flex h-full flex-col">
@@ -85,7 +89,7 @@ export function App() {
         </div>
         <aside className="flex w-[26rem] shrink-0 flex-col border-l border-neutral-800">
           <nav className="flex border-b border-neutral-800 text-xs">
-            {TABS.map((t) => (
+            {tabs.map((t) => (
               <button key={t} className={`flex-1 py-1.5 uppercase tracking-wide ${tab === t ? 'bg-neutral-800 text-sky-300' : 'text-neutral-400 hover:text-neutral-200'}`} onClick={() => setTab(t)} data-testid={`tab-${t}`}>
                 {t}
               </button>
@@ -99,6 +103,8 @@ export function App() {
             {tab === 'host' && client?.self && <HostPanel client={client} />}
             {tab === 'items' && client?.self && <ItemsPanel inventory={client.self.inventory} />}
             {tab === 'codex' && <CodexPanel />}
+            {tab === 'chat' && (client?.self ? <ChatPanel client={client} isAdmin={isAdmin} /> : <p className="p-3 text-sm text-neutral-500">connecting…</p>)}
+            {tab === 'admin' && isAdmin && <AdminPanel />}
             {tab === 'script' && (
                 <Suspense fallback={<p className="p-3 text-sm text-neutral-500">loading editor…</p>}>
                   <ScriptPanel client={client} />

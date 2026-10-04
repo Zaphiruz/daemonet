@@ -255,7 +255,7 @@ describe('createBridge flood budget', () => {
 });
 
 describe('createBridge relay allowlist', () => {
-  it('relays only delta/ack/err/kick to the sandbox', async () => {
+  it('relays only delta/ack/err/kick (and the chat messages, see below) to the sandbox', async () => {
     const { port2, frames, bridge, done } = setup();
     port2.postMessage(auth);
     await until(() => frames().length >= 2);
@@ -266,6 +266,55 @@ describe('createBridge relay allowlist', () => {
     bridge.deliver(JSON.stringify({ t: 'kick', seq: 1, d: { reason: 'idle' } }));
     await settle();
     expect(frames().slice(2).map((g) => g.t)).toEqual(['delta', 'ack', 'err', 'kick']);
+    done();
+  });
+});
+
+describe('createBridge chat (SP4)', () => {
+  const chatLine = JSON.stringify({ t: 'chat', seq: 1, d: { id: 'm1', channel: 'subnet:lo', from: 'op2', name: 'bob', tag: null, text: 'hi', at: '2026-09-30T00:00:00.000Z' } });
+  const chatCmd = (reqId: string) => JSON.stringify({ t: 'cmd', seq: 2, d: { reqId, cmd: 'chat', actor: 'self', args: { channel: 'subnet:lo', text: 'hello' } } });
+
+  it('relays chat, chatDeleted and muted to the script (credential-free), re-sequenced, but still never a snapshot', async () => {
+    const { port2, frames, bridge, done } = setup();
+    port2.postMessage(auth);
+    await until(() => frames().length >= 2);
+    bridge.deliver(chatLine);
+    bridge.deliver(JSON.stringify({ t: 'chatDeleted', seq: 9, d: { id: 'm1', channel: 'subnet:lo' } }));
+    bridge.deliver(JSON.stringify({ t: 'muted', seq: 9, d: { until: null } }));
+    bridge.deliver(JSON.stringify({ t: 'snapshot', seq: 9, d: {} }));
+    await settle();
+    const got = frames().slice(2);
+    expect(got.map((g) => g.t)).toEqual(['chat', 'chatDeleted', 'muted']);
+    expect(got.map((g) => g.seq)).toEqual([3, 4, 5]);
+    expect(got[0]!.d.text).toBe('hi');
+    done();
+  });
+
+  it('does not relay chat before the script authenticated', async () => {
+    const { port2, frames, bridge, done } = setup();
+    bridge.deliver(chatLine);
+    await settle();
+    expect(frames()).toEqual([]);
+    port2.postMessage(auth);
+    await until(() => frames().length >= 2);
+    expect(frames().map((g) => g.t)).toEqual(['authOk', 'snapshot']);
+    done();
+  });
+
+  it('sends a script chat command as an s:-prefixed cmd frame counted in the per-tick command budget', async () => {
+    const { port2, sent, frames, bridge, done } = setup({ commandsPerTick: 2 });
+    port2.postMessage(auth);
+    await until(() => frames().length >= 2);
+    port2.postMessage(chatCmd('a'));
+    port2.postMessage(chatCmd('b'));
+    port2.postMessage(chatCmd('c'));
+    await until(() => frames().some((g) => g.t === 'err'));
+    expect(sent.map((s) => (JSON.parse(s) as { d: { reqId: string; cmd: string } }).d.reqId)).toEqual(['s:a', 's:b']);
+    expect(frames().find((g) => g.t === 'err')!.d).toMatchObject({ code: 'E_RATE', reqId: 'c' });
+    bridge.deliver(delta(50));
+    port2.postMessage(chatCmd('d'));
+    await until(() => sent.length >= 3);
+    expect(sent.length).toBe(3);
     done();
   });
 });
