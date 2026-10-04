@@ -131,6 +131,17 @@ export function PlayPanel({ client }: { client: GameClient }) {
 
 /** One card per gateway of the current subnet within reach; travel resets the connection's world (a new snapshot). */
 export function GatewaySection({ client, me, manual }: { client: GameClient; me: GameClient['self']; manual: boolean }) {
+  // one travel at a time: the button stays disabled until the request settles (the snapshot has arrived, or it failed)
+  const [inFlight, setInFlight] = useState(false);
+  const travel = (gatewayId: string) => {
+    setInFlight(true);
+    const p = client.operator.travel(gatewayId);
+    run(p, 'travel');
+    void p.then(
+      () => setInFlight(false),
+      () => setInFlight(false),
+    );
+  };
   return (
     <>
       {client.world.gateways
@@ -143,11 +154,11 @@ export function GatewaySection({ client, me, manual }: { client: GameClient; me:
             </div>
             <button
               className="mt-1 rounded bg-sky-700 px-2 py-0.5 hover:bg-sky-600 disabled:opacity-40"
-              disabled={!manual || me.running.length > 0 || !!me.capture}
-              onClick={() => run(client.operator.travel(g.id), 'travel')}
+              disabled={!manual || inFlight || me.running.length > 0 || !!me.capture}
+              onClick={() => travel(g.id)}
               data-testid={`travel-${g.id}`}
             >
-              travel {me.running.length > 0 ? '(recall first)' : ''}
+              {inFlight ? 'travelling…' : `travel ${me.running.length > 0 ? '(recall first)' : ''}`}
             </button>
           </section>
         ))}

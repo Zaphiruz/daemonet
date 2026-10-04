@@ -3,6 +3,7 @@ import { useSyncExternalStore } from 'react';
 import { api, fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
 import { store } from '../store.ts';
 import { capture as appCapture, type CaptureStore } from './capture.ts';
+import { getControls, setControls } from './controls.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
 
@@ -166,7 +167,18 @@ export function createConnection(deps: ConnectionDeps) {
     on('evolved', (e) => deps.log.push('event', `${e.daemon} evolved: ${e.from} -> ${e.to}`));
     on('travelled', (e) => deps.log.push('event', `travelled ${e.from} -> ${e.to}`));
     // a snapshot after the first one (travel) swaps the whole world: re-render without waiting for the next tick
-    on('ready', () => set({ version: state.version + 1 }));
+    /** The subnet of the last snapshot this store saw (set when the client goes online). */
+    let subnet: string | null = null;
+    on('ready', () => {
+      if (subnet !== null && c.subnet !== subnet) {
+        // travelled: the target belonged to the old subnet, and a selected actor must still be in RAM
+        const { actor } = getControls();
+        const keep = actor === 'self' || c.self.ram.some((d) => d.id === actor);
+        setControls({ targetId: null, actor: keep ? actor : 'self' });
+      }
+      subnet = c.subnet;
+      set({ version: state.version + 1 });
+    });
     on('discovery', (e) => {
       deps.log.push('event', `${e.operatorName ?? 'someone'} discovered ${e.form}`);
       deps.invalidateCodex();
@@ -194,6 +206,7 @@ export function createConnection(deps: ConnectionDeps) {
       c.close();
       return { kind: 'cancelled' };
     }
+    subnet = c.subnet;
     set({ status: 'online', client: c, role, kickReason: null });
     deps.log.push('system', `connected as ${role}`);
     return { kind: 'online' };

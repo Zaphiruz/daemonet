@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fetchTicket, TicketError } from '../src/api.ts';
 import { createConnection, MAX_UNAUTHORIZED_RETRIES, RETRY_MAX_MS, RETRY_MIN_MS, type ConnectionDeps } from '../src/game/connection.ts';
 import { createCaptureStore } from '../src/game/capture.ts';
+import { getControls, setControls } from '../src/game/controls.ts';
 import { createLog } from '../src/game/log.ts';
 
 type Handler = (v: unknown) => void;
@@ -13,6 +14,8 @@ class FakeClient {
   readonly handlers = new Map<string, Set<Handler>>();
   token: string | null = null;
   closed = false;
+  subnet = 'lo';
+  self: { ram: Array<{ id: string }> } = { ram: [] };
   constructor(
     readonly opts: ConnectOptions,
     private readonly outcome: Outcome,
@@ -331,5 +334,23 @@ describe('travel', () => {
     expect(t.texts()).toContain('event:travelled lo -> lan');
     c.emit('ready');
     expect(t.conn.get().version).toBe(before + 1);
+  });
+
+  it('a travel snapshot clears the target and resets an actor that is no longer in RAM; a same-subnet snapshot keeps them', async () => {
+    const t = setup([{ kind: 'ready' }]);
+    await t.conn.open('controller');
+    const c = t.clients[0]!;
+    c.self = { ram: [{ id: 'd1' }, { id: 'd2' }] };
+    setControls({ targetId: 'w1', actor: 'd1' });
+    c.emit('ready'); // a fresh snapshot of the same subnet (e.g. a resume that fell back)
+    expect(getControls()).toMatchObject({ targetId: 'w1', actor: 'd1' });
+    c.subnet = 'lan';
+    c.emit('ready');
+    expect(getControls()).toMatchObject({ targetId: null, actor: 'd1' });
+    setControls({ targetId: 'w9', actor: 'gone' });
+    c.subnet = 'dmz';
+    c.emit('ready');
+    expect(getControls()).toMatchObject({ targetId: null, actor: 'self' });
+    setControls({ targetId: null, actor: 'self' });
   });
 });

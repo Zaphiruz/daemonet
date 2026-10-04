@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { getSubnet } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SubnetStat } from '../src/components/TopBar.tsx';
 import { drawWorld } from '../src/render/draw.ts';
@@ -49,6 +49,31 @@ describe('GatewaySection', () => {
     expect(btn.disabled).toBe(false);
     fireEvent.click(btn);
     expect(travel).toHaveBeenCalledWith(gw.id);
+  });
+
+  it('disables travel while a travel is in flight, until the promise settles (either way)', async () => {
+    for (const outcome of ['resolve', 'reject'] as const) {
+      const { client, travel } = fakeClient({ x: gw.at.x, y: gw.at.y });
+      let settle!: () => void;
+      travel.mockImplementation(
+        () =>
+          new Promise((resolve, reject) => {
+            settle = () => (outcome === 'resolve' ? resolve({ ok: true }) : reject(new Error('refused')));
+          }),
+      );
+      const { unmount } = render(<GatewaySection client={client} me={client.self} manual />);
+      const btn = () => screen.getByTestId(`travel-${gw.id}`) as HTMLButtonElement;
+      fireEvent.click(btn());
+      expect(btn().disabled).toBe(true);
+      fireEvent.click(btn());
+      expect(travel).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        settle();
+        await Promise.resolve();
+      });
+      expect(btn().disabled).toBe(false);
+      unmount();
+    }
   });
 
   it('renders nothing away from every gateway', () => {
