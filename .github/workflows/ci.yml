@@ -40,6 +40,8 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @daemonet/frontend build
+      # hidden evolution requirements must not reach the browser bundle or the sandbox static files
+      - run: pnpm check:bundles
 
   e2e:
     needs: check
