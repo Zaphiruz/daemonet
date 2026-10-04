@@ -18,3 +18,7 @@ export type { PacketParams, PacketPayload, PacketAnswer, PacketFragment } from '
 export type { CryptoParams, CryptoPayload, CryptoAnswer } from './capture/crypto.js';
 export type { GlitchParams, GlitchPayload, GlitchAnswer } from './capture/glitch.js';
 export type { NullParams, NullPayload, NullAnswer } from './capture/null.js';
+export type { KernelParams, KernelPayload, KernelAnswer, KernelProcess } from './capture/kernel.js';
+export type { CacheParams, CachePayload, CacheAnswer } from './capture/cache.js';
+export type { ThreadParams, ThreadPayload, ThreadAnswer, ThreadEvent } from './capture/thread.js';
+export type { SignalParams, SignalPayload, SignalAnswer, SignalEvent } from './capture/signal.js';

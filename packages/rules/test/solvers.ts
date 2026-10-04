@@ -4,7 +4,11 @@
  */
 import { fnv1a32Hex, fromHex, fromUtf8, utf8, xorRepeating } from '../src/capture/common.js';
 import type { CryptoParams, CryptoPayload } from '../src/capture/crypto.js';
+import type { CacheParams, CachePayload } from '../src/capture/cache.js';
 import type { GlitchPayload } from '../src/capture/glitch.js';
+import type { KernelParams, KernelPayload } from '../src/capture/kernel.js';
+import type { SignalParams, SignalPayload } from '../src/capture/signal.js';
+import type { ThreadPayload } from '../src/capture/thread.js';
 import type { NullParams, NullPayload } from '../src/capture/null.js';
 import { packetCrc, type PacketParams, type PacketPayload } from '../src/capture/packet.js';
 import { unsealStage, type ChainPayload, type PublicChallenge } from '../src/capture/index.js';
@@ -52,11 +56,95 @@ export function solveNull(params: NullParams, payload: NullPayload): { sum: numb
   return { sum };
 }
 
+export function solveKernel(params: KernelParams, payload: KernelPayload): { order: number[] } {
+  const live = payload.processes.filter((p) => p.burst > 0).map((p) => ({ ...p, left: p.burst }));
+  const pending = [...live].sort((a, b) => a.arrival - b.arrival || a.pid - b.pid);
+  const queue: typeof live = [];
+  const order: number[] = [];
+  let t = 0;
+  const admit = () => {
+    while (pending.length && pending[0]!.arrival <= t) queue.push(pending.shift()!);
+  };
+  while (pending.length || queue.length) {
+    admit();
+    if (!queue.length) {
+      t = pending[0]!.arrival;
+      continue;
+    }
+    const p = queue.shift()!;
+    const run = Math.min(params.quantum, p.left);
+    t += run;
+    p.left -= run;
+    admit();
+    if (p.left === 0) order.push(p.pid);
+    else queue.push(p);
+  }
+  return { order };
+}
+
+export function solveCache(params: CacheParams, payload: CachePayload): { hits: number } {
+  const order: string[] = [];
+  let hits = 0;
+  for (const key of payload.trace) {
+    if (key.startsWith('#')) continue;
+    const i = order.indexOf(key);
+    if (i >= 0) {
+      hits++;
+      order.splice(i, 1);
+    } else if (order.length >= params.capacity) order.shift();
+    order.push(key);
+  }
+  return { hits };
+}
+
+export function solveThread(_params: unknown, payload: ThreadPayload): { race: [number, number] } {
+  const held = new Map<number, Set<string>>();
+  const acc: Array<{ i: number; thread: number; obj: string; write: boolean; locks: Set<string> }> = [];
+  payload.events.forEach((e, i) => {
+    const locks = held.get(e.thread) ?? new Set<string>();
+    held.set(e.thread, locks);
+    if (e.op === 'lock') locks.add(e.obj);
+    else if (e.op === 'unlock') locks.delete(e.obj);
+    else acc.push({ i, thread: e.thread, obj: e.obj, write: e.op === 'write', locks: new Set(locks) });
+  });
+  for (let a = 0; a < acc.length; a++)
+    for (let b = a + 1; b < acc.length; b++) {
+      const x = acc[a]!;
+      const y = acc[b]!;
+      if (x.thread !== y.thread && x.obj === y.obj && (x.write || y.write) && ![...x.locks].some((l) => y.locks.has(l))) return { race: [x.i, y.i] };
+    }
+  return { race: [-1, -1] };
+}
+
+export function solveSignal(params: SignalParams, payload: SignalPayload): { order: number[] } {
+  const masked = new Set(params.masked);
+  const pending = new Set<number>();
+  const order: number[] = [];
+  let lifted = false;
+  const sorted = payload.signals.map((s, i) => ({ ...s, i })).sort((a, b) => a.t - b.t || a.i - b.i);
+  const flush = () => {
+    for (const sig of [...pending].sort((a, b) => a - b)) order.push(sig);
+    pending.clear();
+    lifted = true;
+  };
+  for (const s of sorted) {
+    if (!lifted && s.t >= params.unmaskAt) flush();
+    if (!lifted && masked.has(s.sig)) pending.add(s.sig);
+    else order.push(s.sig);
+  }
+  if (!lifted) flush();
+  return { order };
+}
+
 const SOLVERS: Partial<Record<TypeId, (params: never, payload: never) => unknown>> = {
   packet: solvePacket,
   crypto: solveCrypto,
   glitch: solveGlitch,
   null: solveNull,
+  kernel: solveKernel,
+  cache: solveCache,
+  thread: solveThread,
+  signal: solveSignal,
 };
 
 export function solve(challenge: PublicChallenge): unknown {

@@ -13,21 +13,28 @@ import {
 import { challengeSize, type ChallengeTarget } from '../src/capture/size.js';
 import { getTool, type Noise } from '../src/content/items.js';
 import { createRng } from '../src/rng.js';
-import type { TypeId } from '../src/types.js';
+import { TYPES, type TypeId } from '../src/types.js';
 import { solve } from './solvers.js';
 
-const FAMILIES: TypeId[] = ['packet', 'crypto', 'glitch', 'null'];
+const FAMILIES: TypeId[] = ['packet', 'crypto', 'glitch', 'null', 'kernel', 'cache', 'thread', 'signal'];
 
-/** Change the answer so it is still schema-valid but wrong. */
+/** Change the answer so it is still schema-valid but wrong (every family's answer shape is covered). */
 function mutate(answer: Record<string, unknown>): Record<string, unknown> {
   const [key, value] = Object.entries(answer)[0]!;
   if (typeof value === 'number') return { [key]: value + 1 };
-  const s = value as string;
-  if (key === 'checksum' || key === 'hex') {
-    const flipped = s[0] === '0' ? '1' : '0';
-    return { [key]: flipped + s.slice(1) };
+  if (typeof value === 'string') {
+    if (key === 'checksum' || key === 'hex' || key === 'contents') return { [key]: value === '' ? '00' : (value[0] === '0' ? '1' : '0') + value.slice(1) };
+    if (key === 'allowed') return { [key]: (value[0] === '1' ? '0' : '1') + value.slice(1) };
+    return { [key]: value + 'x' };
   }
-  return { [key]: s + 'x' };
+  if (Array.isArray(value)) {
+    if (key === 'race') return { [key]: [value[0] === -1 ? 0 : -1, value[1]] };
+    return { [key]: [...value, typeof value[0] === 'number' ? 1 : 'x'] };
+  }
+  const entries = Object.entries(value as Record<string, string>);
+  if (entries.length === 0) return { [key]: { extra: 'CLOSED' } };
+  const [k, v] = entries[0]!;
+  return { [key]: { ...(value as Record<string, string>), [k]: v === 'CLOSED' ? 'ESTABLISHED' : 'CLOSED' } };
 }
 
 describe('challengeSize', () => {
@@ -59,7 +66,10 @@ describe('hammingEncode', () => {
 });
 
 describe.each(FAMILIES)('%s family', (type) => {
-  it('is registered', () => expect(hasFamily(type)).toBe(true));
+  it('is registered', () => {
+    expect(TYPES).toContain(type);
+    expect(hasFamily(type)).toBe(true);
+  });
 
   it('the reference solver passes and a mutated answer fails', () => {
     fc.assert(
@@ -137,8 +147,8 @@ describe('chained challenges', () => {
     expect(publicChallenge(challenge)).not.toHaveProperty('answer');
   });
 
-  it('rejects unknown families and bad type counts', () => {
-    expect(() => generateChallenge(['kernel'], 16, 0, createRng(3))).toThrow(RangeError);
+  it('rejects bad type counts', () => {
     expect(() => generateChallenge([], 16, 0, createRng(3))).toThrow(RangeError);
+    expect(() => generateChallenge(['kernel', 'heap', 'null'], 16, 0, createRng(3))).toThrow(RangeError);
   });
 });
