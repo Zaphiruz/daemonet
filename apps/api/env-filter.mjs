@@ -20,6 +20,7 @@ export const ALLOWED_VAULT_KEYS = Object.freeze([
   'TRUST_PROXY_HOPS',
   'LOG_LEVEL',
   'PORT',
+  'REDIS_URL',
 ]);
 
 /** Split a Vault secret bag into values that may be applied and the key NAMES (never values) that were dropped. */

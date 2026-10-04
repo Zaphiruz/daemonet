@@ -29,6 +29,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@daemonet/bus':
+        specifier: workspace:*
+        version: link:../../packages/bus
       '@daemonet/db':
         specifier: workspace:*
         version: link:../../packages/db

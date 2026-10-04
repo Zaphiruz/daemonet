@@ -1,3 +1,4 @@
+import { MemoryBus, type Bus } from '@daemonet/bus';
 import { createPrisma } from '@daemonet/db';
 import { EVOLUTION_RULES } from '@daemonet/rules/evolution';
 import type { FastifyInstance } from 'fastify';
@@ -9,6 +10,7 @@ import { hashToken } from '../src/auth/session.js';
 import { loadConfig } from '../src/config.js';
 import { ensureOperator } from '../src/auth/routes.js';
 import { loggerOptions } from '../src/log.js';
+import { nameAllowed, pruneChat } from '../src/routes/chat.js';
 import { KEPT_VERSIONS, MAX_SCRIPT_BYTES } from '../src/routes/scripts.js';
 
 const csrf = { [CSRF_HEADER]: CSRF_VALUE };
@@ -42,12 +44,15 @@ describe('config', () => {
     expect(() => loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', NODE_ENV: 'production' })).toThrow(/production/);
     const full = loadConfig({ ...base, AUTHENTIK_WEB_ISSUER_URL: 'https://a/', AUTHENTIK_CLIENT_ID: 'c', AUTHENTIK_CLIENT_SECRET: 'x', AUTHENTIK_REDIRECT_URI: 'https://d/api/auth/callback' });
     expect(full.oidc?.clientId).toBe('c');
+    expect(full.redisUrl).toBeUndefined();
+    expect(loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', REDIS_URL: 'redis://127.0.0.1:6379/4' }).redisUrl).toBe('redis://127.0.0.1:6379/4');
   });
 });
 
 describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   let app: FastifyInstance;
   let oidc: ReturnType<typeof fakeOidc>;
+  const bus = new MemoryBus();
 
   beforeAll(async () => {
     oidc = fakeOidc();
@@ -58,7 +63,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
       endSessionUrl: (t, r) => oidc.endSessionUrl(t, r),
     };
     app = await buildApp({
-      prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      prisma: prisma!, bus, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
       oidcClient: delegate, requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: true, disableRateLimit: true,
     });
     await app.ready();
@@ -69,6 +74,7 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
   });
   beforeEach(async () => {
     oidc = fakeOidc();
+    bus.log.length = 0;
     await prisma!.$executeRawUnsafe('TRUNCATE "ScriptVersion", "Script", "WsTicket", "Session", "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "DaemonArchive", "BitsLedger", "Ticket", "Research", "ChatMessage", "ChatBlock", "ChatFilterTerm", "ChatFilterHit", "Report" CASCADE');
   });
 
@@ -385,6 +391,254 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(sum._sum.delta).toBe(12n);
   });
 
+  it('serves chat history per channel, blocks, reports with a daily cap, and admin moderation through the bus', async () => {
+    const a = await app.inject({ method: 'GET', url: '/api/auth/dev?name=ann' });
+    const b = await app.inject({ method: 'GET', url: '/api/auth/dev?name=ben&admin=true' });
+    const ca = { [COOKIE_NAME]: a.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const cb = { [COOKIE_NAME]: b.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const ann = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-ann' } });
+    const ben = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-ben' } });
+    await prisma!.chatMessage.createMany({
+      data: [
+        { id: 'm1', channel: 'subnet:lo', operatorId: ann.id, text: 'one', at: new Date('2026-09-30T00:00:01Z') },
+        { id: 'm2', channel: 'subnet:lo', operatorId: ben.id, text: 'two', at: new Date('2026-09-30T00:00:02Z') },
+        { id: 'm3', channel: `dm:${ben.id}`, operatorId: ann.id, toId: ben.id, text: 'psst', at: new Date('2026-09-30T00:00:03Z') },
+        { id: 'm4', channel: `dm:${ann.id}`, operatorId: ben.id, toId: ann.id, text: 'yes?', at: new Date('2026-09-30T00:00:04Z') },
+        { id: 'old', channel: 'subnet:lo', operatorId: ann.id, text: 'ancient', at: new Date('2026-09-01T00:00:00Z') },
+      ],
+    });
+    const history = (await app.inject({ method: 'GET', url: '/api/chat/subnet:lo', cookies: ca })).json();
+    expect(history.map((m: { id: string }) => m.id)).toEqual(['old', 'm1', 'm2']);
+    expect(history[1]).toMatchObject({ from: ann.id, name: null, text: 'one' });
+    const before = (await app.inject({ method: 'GET', url: '/api/chat/subnet:lo?before=2026-09-30T00:00:02Z&limit=1', cookies: ca })).json();
+    expect(before.map((m: { id: string }) => m.id)).toEqual(['m1']);
+    const dm = (await app.inject({ method: 'GET', url: `/api/chat/dm:${ben.id}`, cookies: ca })).json();
+    expect(dm.map((m: { id: string }) => m.id)).toEqual(['m3', 'm4']);
+    expect((await app.inject({ method: 'GET', url: '/api/chat/org:x', cookies: ca })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/chat/bogus', cookies: ca })).statusCode).toBe(400);
+
+    expect((await app.inject({ method: 'POST', url: '/api/chat/block', cookies: ca, headers: csrf, payload: { operatorId: ben.id } })).json()).toEqual({ ok: true });
+    expect(await prisma!.chatBlock.count()).toBe(1);
+    expect((await app.inject({ method: 'DELETE', url: '/api/chat/block', cookies: ca, headers: csrf, payload: { operatorId: ben.id } })).json()).toEqual({ ok: true });
+    expect(await prisma!.chatBlock.count()).toBe(0);
+
+    const report = await app.inject({ method: 'POST', url: '/api/reports', cookies: ca, headers: csrf, payload: { targetId: ben.id, messageId: 'm2', reason: 'SPAM', note: 'ads' } });
+    expect(report.json()).toMatchObject({ ok: true, id: expect.any(String) });
+    expect((await app.inject({ method: 'POST', url: '/api/reports', cookies: ca, headers: csrf, payload: { targetId: ben.id, messageId: 'm2', reason: 'SPAM' } })).json()).toMatchObject({ duplicate: true });
+    expect((await app.inject({ method: 'POST', url: '/api/reports', cookies: ca, headers: csrf, payload: { targetId: ben.id, messageId: 'm1', reason: 'SPAM' } })).statusCode).toBe(400);
+    for (let i = 0; i < 7; i++) await app.inject({ method: 'POST', url: '/api/reports', cookies: ca, headers: csrf, payload: { targetId: ben.id, reason: 'OTHER', note: `r${i}` } });
+    expect((await app.inject({ method: 'POST', url: '/api/reports', cookies: ca, headers: csrf, payload: { targetId: ben.id, reason: 'OTHER' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/admin/reports', cookies: ca })).statusCode).toBe(403);
+    const queue = (await app.inject({ method: 'GET', url: '/api/admin/reports', cookies: cb })).json();
+    expect(queue).toHaveLength(8);
+    expect(queue[0]).toMatchObject({ reason: 'SPAM', targetName: null, message: { id: 'm2', text: 'two' } });
+    const resolved = await app.inject({ method: 'POST', url: `/api/admin/reports/${queue[0].id}/resolve`, cookies: cb, headers: csrf, payload: { action: 'DELETE' } });
+    expect(resolved.json()).toEqual({ ok: true });
+    expect((await prisma!.chatMessage.findUniqueOrThrow({ where: { id: 'm2' } })).deletedAt).not.toBeNull();
+    expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'delete', id: 'm2', channel: 'subnet:lo' } });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/reports?status=ACTIONED', cookies: cb })).json()).toHaveLength(1);
+
+    const mute = await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies: cb, headers: csrf, payload: { operatorId: ann.id, minutes: 30 } });
+    expect(mute.statusCode).toBe(200);
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { id: ann.id } })).mutedUntil).not.toBeNull();
+    expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'mute', operatorId: ann.id } });
+    const term = await app.inject({ method: 'POST', url: '/api/admin/chat/filter', cookies: cb, headers: csrf, payload: { pattern: 'banana', kind: 'WORD', action: 'BLOCK' } });
+    expect(term.statusCode).toBe(200);
+    expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'filter', terms: [{ pattern: 'banana', action: 'BLOCK' }] } });
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/filter', cookies: cb, headers: csrf, payload: { pattern: '(', kind: 'REGEX', action: 'BLOCK' } })).statusCode).toBe(400);
+    expect(await nameAllowed(prisma!, 'banana-man')).toBe(false);
+    expect(await nameAllowed(prisma!, 'alice')).toBe(true);
+    expect(await pruneChat(prisma!, new Date('2026-09-30T12:00:00Z'))).toBe(1);
+  });
+
+  it('chat authorization: admin rights from the operator row on every request, DMs per pair under the viewer’s name, own blocks only', async () => {
+    const session = async (name: string, admin = false) => {
+      const r = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}${admin ? '&admin=true' : ''}` });
+      return { [COOKIE_NAME]: r.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    };
+    const ca = await session('ann');
+    const cb = await session('ben', true);
+    const cc = await session('cat');
+    const op = (n: string) => prisma!.operator.findFirstOrThrow({ where: { sub: `dev-${n}` } });
+    const [ann, ben, cat] = await Promise.all([op('ann'), op('ben'), op('cat')]);
+
+    // every admin route refuses a player
+    const adminCalls = [
+      { method: 'POST', url: '/api/admin/chat/mute', payload: { operatorId: cat.id, minutes: 5 } },
+      { method: 'DELETE', url: '/api/admin/chat/x' },
+      { method: 'GET', url: '/api/admin/chat/filter' },
+      { method: 'POST', url: '/api/admin/chat/filter', payload: { pattern: 'kiwi', kind: 'WORD', action: 'MASK' } },
+      { method: 'DELETE', url: '/api/admin/chat/filter/x' },
+      { method: 'GET', url: '/api/admin/chat/hits' },
+      { method: 'GET', url: '/api/admin/reports' },
+      { method: 'POST', url: '/api/admin/reports/x/resolve', payload: { action: 'DISMISS' } },
+    ] as const;
+    for (const c of adminCalls) {
+      const r = await app.inject({ ...c, cookies: ca, headers: csrf });
+      expect([c.method, c.url, r.statusCode]).toEqual([c.method, c.url, 403]);
+    }
+    expect(bus.log).toHaveLength(0);
+    expect(await prisma!.chatFilterTerm.count()).toBe(0);
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { id: cat.id } })).mutedUntil).toBeNull();
+    // demotion takes effect on the next request
+    expect((await app.inject({ method: 'GET', url: '/api/admin/chat/hits', cookies: cb })).statusCode).toBe(200);
+    await prisma!.operator.update({ where: { id: ben.id }, data: { isAdmin: false } });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/chat/hits', cookies: cb })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies: cb, headers: csrf, payload: { operatorId: cat.id, minutes: 5 } })).statusCode).toBe(403);
+
+    // history needs a session; cluster and org history are not served
+    expect((await app.inject({ method: 'GET', url: '/api/chat/subnet:lo' })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: '/api/chat/cluster:c1', cookies: ca })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'GET', url: '/api/chat/subnet:lo?limit=0', cookies: ca })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'GET', url: '/api/chat/subnet:lo?before=yesterday', cookies: ca })).statusCode).toBe(400);
+
+    // DM rows are stored in the sender's form (dm:<recipient>); each side reads both directions under dm:<other>
+    await prisma!.chatMessage.createMany({
+      data: [
+        { id: 'a1', channel: `dm:${ben.id}`, operatorId: ann.id, toId: ben.id, text: 'hi ben', at: new Date(Date.now() - 4000) },
+        { id: 'b1', channel: `dm:${ann.id}`, operatorId: ben.id, toId: ann.id, text: 'hi ann', at: new Date(Date.now() - 3000) },
+        { id: 'c1', channel: `dm:${ben.id}`, operatorId: cat.id, toId: ben.id, text: 'hi from cat', at: new Date(Date.now() - 2000) },
+        { id: 'b2', channel: `dm:${cat.id}`, operatorId: ben.id, toId: cat.id, text: 'hi cat', at: new Date(Date.now() - 1000) },
+      ],
+    });
+    const read = async (cookies: Record<string, string>, channel: string) =>
+      (await app.inject({ method: 'GET', url: `/api/chat/${channel}`, cookies })).json() as Array<{ id: string; channel: string; from: string }>;
+    const annBen = await read(ca, `dm:${ben.id}`);
+    expect(annBen.map((m) => m.id)).toEqual(['a1', 'b1']);
+    expect(annBen.map((m) => m.channel)).toEqual([`dm:${ben.id}`, `dm:${ben.id}`]);
+    expect(annBen.map((m) => m.from)).toEqual([ann.id, ben.id]);
+    const benAnn = await read(cb, `dm:${ann.id}`);
+    expect(benAnn.map((m) => [m.id, m.channel])).toEqual([['a1', `dm:${ann.id}`], ['b1', `dm:${ann.id}`]]);
+    expect((await read(cc, `dm:${ben.id}`)).map((m) => m.id)).toEqual(['c1', 'b2']);
+    expect(await read(ca, `dm:${cat.id}`)).toEqual([]);
+    expect(await read(cc, `dm:${ann.id}`)).toEqual([]);
+    await prisma!.chatMessage.update({ where: { id: 'b1' }, data: { deletedAt: new Date() } });
+    expect((await read(ca, `dm:${ben.id}`)).map((m) => m.id)).toEqual(['a1']);
+
+    // blocks: only the caller's own rows, never self, never an unknown operator
+    expect((await app.inject({ method: 'POST', url: '/api/chat/block', cookies: cc, headers: csrf, payload: { operatorId: ben.id } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'DELETE', url: '/api/chat/block', cookies: ca, headers: csrf, payload: { operatorId: ben.id } })).statusCode).toBe(200);
+    expect(await prisma!.chatBlock.findMany()).toMatchObject([{ blockerId: cat.id, blockedId: ben.id }]);
+    expect((await app.inject({ method: 'POST', url: '/api/chat/block', cookies: ca, headers: csrf, payload: { operatorId: ann.id } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/chat/block', cookies: ca, headers: csrf, payload: { operatorId: 'nobody' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/chat/block', cookies: ca, payload: { operatorId: ben.id } })).statusCode).toBe(403);
+    expect(await prisma!.chatBlock.count()).toBe(1);
+
+    // reports: a DM line can only be reported by its two sides, and the refusal does not reveal that it exists
+    const reportA1 = (cookies: Record<string, string>) => app.inject({ method: 'POST', url: '/api/reports', cookies, headers: csrf, payload: { targetId: ann.id, messageId: 'a1', reason: 'HARASSMENT' } });
+    const byCat = await reportA1(cc);
+    const unknown = await app.inject({ method: 'POST', url: '/api/reports', cookies: cc, headers: csrf, payload: { targetId: ann.id, messageId: 'zz', reason: 'SPAM' } });
+    expect(byCat.statusCode).toBe(400);
+    expect(byCat.json().message).toBe(unknown.json().message);
+    expect((await app.inject({ method: 'POST', url: '/api/reports', cookies: cc, headers: csrf, payload: { targetId: 'nobody', reason: 'SPAM' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/reports', cookies: cc, headers: csrf, payload: { targetId: cat.id, reason: 'SPAM' } })).statusCode).toBe(400);
+    expect((await app.inject({ method: 'POST', url: '/api/reports', cookies: cc, headers: csrf, payload: { targetId: ann.id, reason: 'SPAM', note: 'x'.repeat(257) } })).statusCode).toBe(400);
+    const byBen = await reportA1(cb);
+    expect(byBen.statusCode).toBe(200);
+    // the reporter never learns the outcome: a later duplicate answers the same shape whatever happened
+    await prisma!.report.update({ where: { id: byBen.json().id }, data: { status: 'ACTIONED', action: 'MUTE' } });
+    const again = await reportA1(cb);
+    expect(Object.keys(again.json()).sort()).toEqual(['duplicate', 'id', 'ok']);
+    expect(Object.keys(byBen.json()).sort()).toEqual(['id', 'ok']);
+
+    // concurrent reports respect the daily cap and the (reporter, message) dedupe
+    const burst = await Promise.all(Array.from({ length: 12 }, (_, i) => app.inject({ method: 'POST', url: '/api/reports', cookies: ca, headers: csrf, payload: { targetId: cat.id, reason: 'OTHER', note: `n${i}` } })));
+    expect(burst.filter((r) => r.statusCode === 200)).toHaveLength(8);
+    expect(burst.filter((r) => r.statusCode === 400)).toHaveLength(4);
+    expect(burst.some((r) => r.statusCode >= 500)).toBe(false);
+    expect(await prisma!.report.count({ where: { reporterId: ann.id } })).toBe(8);
+    const dupes = await Promise.all(Array.from({ length: 4 }, () => app.inject({ method: 'POST', url: '/api/reports', cookies: cc, headers: csrf, payload: { targetId: ben.id, messageId: 'c1', reason: 'SPAM' } })));
+    expect(dupes.map((r) => r.statusCode)).toEqual([400, 400, 400, 400]); // c1 is cat's own line: target mismatch
+    const dm2 = await Promise.all(Array.from({ length: 4 }, () => app.inject({ method: 'POST', url: '/api/reports', cookies: cc, headers: csrf, payload: { targetId: ben.id, messageId: 'b2', reason: 'SPAM' } })));
+    expect(dm2.map((r) => r.statusCode)).toEqual([200, 200, 200, 200]);
+    expect(dm2.filter((r) => r.json().duplicate === true)).toHaveLength(3);
+    expect(await prisma!.report.count({ where: { reporterId: cat.id, messageId: 'b2' } })).toBe(1);
+  });
+
+  it('admin moderation publishes origin api, validates filter terms, resolves reports once, and prune keeps 7 days', async () => {
+    const session = async (name: string, admin = false) => {
+      const r = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}${admin ? '&admin=true' : ''}` });
+      return { [COOKIE_NAME]: r.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    };
+    const ca = await session('ann');
+    const cb = await session('ben', true);
+    const op = (n: string) => prisma!.operator.findFirstOrThrow({ where: { sub: `dev-${n}` } });
+    const [ann, ben] = await Promise.all([op('ann'), op('ben')]);
+
+    // mute / unmute
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies: cb, headers: csrf, payload: { operatorId: ann.id, minutes: 10 } })).statusCode).toBe(200);
+    expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'mute', operatorId: ann.id, until: expect.any(String), origin: 'api' } });
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies: cb, headers: csrf, payload: { operatorId: ann.id, minutes: 0 } })).statusCode).toBe(200);
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { id: ann.id } })).mutedUntil).toBeNull();
+    expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'mute', operatorId: ann.id, until: null, origin: 'api' } });
+    const n = bus.log.length;
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies: cb, headers: csrf, payload: { operatorId: 'nobody', minutes: 5 } })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies: cb, headers: csrf, payload: { operatorId: ann.id, minutes: -1 } })).statusCode).toBe(400);
+    expect(bus.log).toHaveLength(n);
+
+    // delete
+    await prisma!.chatMessage.create({ data: { id: 'd1', channel: `dm:${ben.id}`, operatorId: ann.id, toId: ben.id, text: 'rude', at: new Date() } });
+    expect((await app.inject({ method: 'DELETE', url: '/api/admin/chat/d1', cookies: cb, headers: csrf })).json()).toEqual({ ok: true });
+    expect(bus.log.at(-1)).toEqual({ channel: 'admin', message: { kind: 'delete', id: 'd1', channel: `dm:${ben.id}` } });
+    expect((await app.inject({ method: 'DELETE', url: '/api/admin/chat/nope', cookies: cb, headers: csrf })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/chat/dm:${ann.id}`, cookies: cb })).json()).toEqual([]);
+
+    // filter terms: unsafe / empty / invalid refused with the reason, nothing stored or published
+    const addTerm = (payload: object) => app.inject({ method: 'POST', url: '/api/admin/chat/filter', cookies: cb, headers: csrf, payload });
+    const unsafe = await addTerm({ pattern: '(a+)+$', kind: 'REGEX', action: 'BLOCK' });
+    expect(unsafe.statusCode).toBe(400);
+    expect(unsafe.json().message).toContain('unsafe');
+    const empty = await addTerm({ pattern: '???', kind: 'WORD', action: 'MASK' });
+    expect(empty.statusCode).toBe(400);
+    expect(empty.json().message).toContain('empty');
+    expect((await addTerm({ pattern: 'kiwi', kind: 'SUBSTRING', action: 'MASK' })).statusCode).toBe(400);
+    expect(await prisma!.chatFilterTerm.count()).toBe(0);
+    const kiwi = (await addTerm({ pattern: 'kiwi', kind: 'WORD', action: 'MASK' })).json();
+    const plum = (await addTerm({ pattern: 'plum+', kind: 'REGEX', action: 'BLOCK' })).json();
+    expect(bus.log.at(-1)!.message).toEqual({ kind: 'filter', terms: [{ pattern: 'kiwi', kind: 'WORD', action: 'MASK' }, { pattern: 'plum+', kind: 'REGEX', action: 'BLOCK' }] });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/chat/filter', cookies: cb })).json().map((t: { id: string }) => t.id)).toEqual([kiwi.id, plum.id]);
+    expect((await app.inject({ method: 'DELETE', url: `/api/admin/chat/filter/${kiwi.id}`, cookies: cb, headers: csrf })).json()).toEqual({ ok: true });
+    expect(bus.log.at(-1)!.message).toEqual({ kind: 'filter', terms: [{ pattern: 'plum+', kind: 'REGEX', action: 'BLOCK' }] });
+    expect(await nameAllowed(prisma!, 'kiwi')).toBe(true);
+    expect(await nameAllowed(prisma!, 'plummm')).toBe(false);
+
+    // the report queue carries the target's recent lines and filter hits; a report resolves exactly once
+    await prisma!.chatMessage.create({ data: { id: 's1', channel: 'subnet:lo', operatorId: ben.id, text: 'buy gold', at: new Date() } });
+    await prisma!.chatFilterHit.create({ data: { operatorId: ben.id, channel: 'subnet:lo', text: 'plum plum', term: 'plum+' } });
+    const r1 = (await app.inject({ method: 'POST', url: '/api/reports', cookies: ca, headers: csrf, payload: { targetId: ben.id, messageId: 's1', reason: 'SPAM' } })).json();
+    const r2 = (await app.inject({ method: 'POST', url: '/api/reports', cookies: ca, headers: csrf, payload: { targetId: ben.id, reason: 'NAME' } })).json();
+    const queue = (await app.inject({ method: 'GET', url: '/api/admin/reports?status=OPEN', cookies: cb })).json();
+    expect(queue).toHaveLength(2);
+    expect(queue[0]).toMatchObject({ id: r1.id, recent: [{ id: 's1', text: 'buy gold' }], hits: [{ term: 'plum+' }] });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/chat/hits', cookies: cb })).json()).toMatchObject([{ operatorId: ben.id, term: 'plum+' }]);
+    const resolve = (id: string, payload: object) => app.inject({ method: 'POST', url: `/api/admin/reports/${id}/resolve`, cookies: cb, headers: csrf, payload });
+    expect((await resolve(r2.id, { action: 'DELETE' })).statusCode).toBe(400); // no message on this report
+    expect((await prisma!.report.findUniqueOrThrow({ where: { id: r2.id } })).status).toBe('OPEN');
+    const both = await Promise.all([resolve(r2.id, { action: 'MUTE', minutes: 15 }), resolve(r2.id, { action: 'MUTE', minutes: 15 })]);
+    expect(both.map((r) => r.statusCode).sort()).toEqual([200, 400]);
+    expect(bus.log.filter((l) => (l.message as { kind: string }).kind === 'mute' && (l.message as { operatorId: string }).operatorId === ben.id)).toHaveLength(1);
+    expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'mute', operatorId: ben.id, reason: 'report', origin: 'api' } });
+    expect((await prisma!.operator.findUniqueOrThrow({ where: { id: ben.id } })).mutedUntil).not.toBeNull();
+    expect(await prisma!.report.findUniqueOrThrow({ where: { id: r2.id } })).toMatchObject({ status: 'ACTIONED', action: 'MUTE', resolvedBy: ben.id });
+    expect((await resolve(r1.id, { action: 'DISMISS' })).json()).toEqual({ ok: true });
+    expect((await app.inject({ method: 'GET', url: '/api/admin/reports?status=DISMISSED', cookies: cb })).json()).toHaveLength(1);
+    expect((await resolve('nope', { action: 'DISMISS' })).statusCode).toBe(404);
+
+    // prune keeps exactly 7 days
+    const now = new Date('2026-10-04T12:00:00Z');
+    const day = 86_400_000;
+    await prisma!.chatMessage.createMany({
+      data: [
+        { id: 'p-in', channel: 'subnet:lo', operatorId: ann.id, text: 'x', at: new Date(now.getTime() - 7 * day + 60_000) },
+        { id: 'p-out', channel: 'subnet:lo', operatorId: ann.id, text: 'x', at: new Date(now.getTime() - 7 * day - 60_000) },
+      ],
+    });
+    await prisma!.chatMessage.updateMany({ where: { id: { in: ['d1', 's1'] } }, data: { at: now } });
+    expect(await pruneChat(prisma!, now)).toBe(1);
+    expect(await prisma!.chatMessage.findUnique({ where: { id: 'p-in' } })).not.toBeNull();
+    expect(await prisma!.chatMessage.findUnique({ where: { id: 'p-out' } })).toBeNull();
+  });
+
   it('dev daemon seeding honours the operator’s Disk capacity', async () => {
     const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=jo' });
     const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
@@ -423,7 +677,7 @@ describe.skipIf(!url)('API session lifetime and admin rights', () => {
     await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator" CASCADE');
     const oidc = fakeOidc();
     const app = await buildApp({
-      prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      prisma: prisma!, bus: new MemoryBus(), sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
       oidcClient: oidc, requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false, disableRateLimit: true,
     });
     app.get('/api/test/admin', { preHandler: [app.requireAuth, app.requireAdmin] }, async () => ({ ok: true }));
@@ -458,7 +712,7 @@ describe.skipIf(!url)('API error handling and operator creation', () => {
   it('maps non-AppError client errors to bad_request/payload_too_large and logs the stack of real 500s', async () => {
     const lines: string[] = [];
     const app = await buildApp({
-      prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      prisma: prisma!, bus: new MemoryBus(), sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
       oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false, disableRateLimit: true,
       logger: { ...loggerOptions('info'), stream: { write: (l: string) => void lines.push(l) } },
     });
@@ -506,7 +760,7 @@ describe.skipIf(!url)('API logging', () => {
     const lines: string[] = [];
     const stream = { write: (l: string) => void lines.push(l) };
     const app = await buildApp({
-      prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      prisma: prisma!, bus: new MemoryBus(), sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
       oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false, disableRateLimit: true,
       logger: { ...loggerOptions('info'), stream },
     });
@@ -523,10 +777,41 @@ describe.skipIf(!url)('API logging', () => {
   });
 });
 
+describe.skipIf(!url)('API chat with a failing bus', () => {
+  it('answers admin actions when the bus is down, logs the failure without chat text, and leaves no unhandled rejection', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Session", "Operator", "ChatMessage", "ChatFilterTerm", "Report" CASCADE');
+    const lines: string[] = [];
+    const failing: Bus = {
+      publish: async () => {
+        throw Object.assign(new Error('Connection is closed. secret chat text'), { name: 'ReplyError', code: 'ECONNREFUSED' });
+      },
+      subscribe: () => () => {},
+      close: async () => {},
+    };
+    const app = await buildApp({
+      prisma: prisma!, bus: failing, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: true, disableRateLimit: true,
+      logger: { ...loggerOptions('info'), stream: { write: (l: string) => void lines.push(l) } },
+    });
+    const dev = await app.inject({ method: 'GET', url: '/api/auth/dev?name=root&admin=true' });
+    const cookies = { [COOKIE_NAME]: dev.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const op = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-root' } });
+    await prisma!.chatMessage.create({ data: { id: 'f1', channel: 'subnet:lo', operatorId: op.id, text: 'secret chat text', at: new Date() } });
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/mute', cookies, headers: csrf, payload: { operatorId: op.id, minutes: 5 } })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'DELETE', url: '/api/admin/chat/f1', cookies, headers: csrf })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: '/api/admin/chat/filter', cookies, headers: csrf, payload: { pattern: 'fig', kind: 'WORD', action: 'MASK' } })).statusCode).toBe(200);
+    await new Promise((r) => setTimeout(r, 20));
+    await app.close();
+    const failures = lines.map((l) => JSON.parse(l) as { msg?: string; kind?: string }).filter((l) => l.msg === 'bus publish failed');
+    expect(failures.map((l) => l.kind)).toEqual(['mute', 'delete', 'filter']);
+    expect(lines.join('')).not.toContain('secret chat text');
+  });
+});
+
 describe.skipIf(!url)('API without the dev bypass', () => {
   it('does not register /api/auth/dev', async () => {
     const app = await buildApp({
-      prisma: prisma!, sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
+      prisma: prisma!, bus: new MemoryBus(), sessionSecret: 'test-secret-test-secret-test-secret!', cookieSecure: false, frontendOrigin: 'https://daemonet.test',
       oidcClient: fakeOidc(), requiredGroup: 'daemonet-users', adminGroup: 'daemonet-admins', devBypass: false, disableRateLimit: true,
     });
     expect((await app.inject({ method: 'GET', url: '/api/auth/dev?name=alice' })).statusCode).toBe(404);

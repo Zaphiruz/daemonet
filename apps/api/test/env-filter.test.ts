@@ -18,6 +18,7 @@ describe('filterSecrets', () => {
       'TRUST_PROXY_HOPS',
       'LOG_LEVEL',
       'PORT',
+      'REDIS_URL',
     ]);
     expect(filterSecrets(doc)).toEqual({ applied: doc, ignored: [] });
   });

@@ -5,6 +5,7 @@ WORKDIR /repo
 FROM base AS deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json ./
 COPY packages/rules/package.json packages/rules/
+COPY packages/bus/package.json packages/bus/
 COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/sdk/package.json packages/sdk/
@@ -15,6 +16,7 @@ RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
 COPY packages/rules packages/rules
+COPY packages/bus packages/bus
 COPY packages/db packages/db
 COPY apps/api apps/api
 RUN pnpm --filter @daemonet/db generate && pnpm exec tsc -b apps/api
@@ -28,6 +30,9 @@ COPY --from=build --chown=node:node /repo/package.json ./
 COPY --from=build --chown=node:node /repo/packages/rules/package.json packages/rules/
 COPY --from=build --chown=node:node /repo/packages/rules/dist packages/rules/dist
 COPY --from=build --chown=node:node /repo/packages/rules/node_modules packages/rules/node_modules
+COPY --from=build --chown=node:node /repo/packages/bus/package.json packages/bus/
+COPY --from=build --chown=node:node /repo/packages/bus/dist packages/bus/dist
+COPY --from=build --chown=node:node /repo/packages/bus/node_modules packages/bus/node_modules
 COPY --from=build --chown=node:node /repo/packages/db/package.json packages/db/
 COPY --from=build --chown=node:node /repo/packages/db/dist packages/db/dist
 COPY --from=build --chown=node:node /repo/packages/db/node_modules packages/db/node_modules

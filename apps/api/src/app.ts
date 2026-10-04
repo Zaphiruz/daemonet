@@ -1,5 +1,6 @@
 import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
+import type { Bus } from '@daemonet/bus';
 import type { PrismaClient } from '@daemonet/db';
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { registerDevBypass } from './auth/dev-bypass.js';
@@ -8,6 +9,7 @@ import type { OidcClient } from './auth/oidc.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import { createSessionStore } from './auth/session.js';
 import { AppError } from './errors.js';
+import { registerChatRoutes } from './routes/chat.js';
 import { registerEconomyRoutes } from './routes/economy.js';
 import { registerMiscRoutes } from './routes/misc.js';
 import { registerScriptRoutes } from './routes/scripts.js';
@@ -17,6 +19,8 @@ export const SESSION_TTL_SECONDS = 7 * 24 * 3600;
 
 export interface BuildAppOptions {
   prisma: PrismaClient;
+  /** The sim ⇄ api bus: admin chat actions are published on its `admin` channel. */
+  bus: Bus;
   sessionSecret: string;
   cookieSecure: boolean;
   frontendOrigin: string;
@@ -65,5 +69,6 @@ export async function buildApp(o: BuildAppOptions): Promise<FastifyInstance> {
   registerScriptRoutes(app, o.prisma);
   registerMiscRoutes(app, o.prisma);
   registerEconomyRoutes(app, o.prisma);
+  registerChatRoutes(app, o.prisma, o.bus);
   return app;
 }

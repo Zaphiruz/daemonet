@@ -16,6 +16,8 @@ const Env = z.object({
   AUTH_DEV_BYPASS: z.enum(['true', 'false']).default('false'),
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  /** The sim ⇄ api bus (SP4 §4); unset → an in-process bus (admin chat actions then never reach the sim). */
+  REDIS_URL: z.string().min(1).optional(),
 });
 
 export interface ApiConfig {
@@ -31,6 +33,7 @@ export interface ApiConfig {
   devBypass: boolean;
   trustProxyHops: number;
   logLevel: string;
+  redisUrl: string | undefined;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): ApiConfig {
@@ -55,5 +58,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     devBypass,
     trustProxyHops: e.TRUST_PROXY_HOPS,
     logLevel: e.LOG_LEVEL,
+    redisUrl: e.REDIS_URL,
   };
 }
