@@ -164,13 +164,14 @@ export class ArenaService {
     if (id === targetId) return fail('you cannot challenge yourself', 'E_INVALID');
     const ok = this.eligible(id);
     if (isArenaError(ok)) return ok;
-    if (this.byOperator.has(targetId)) return fail('that operator is in a match');
-    if (!this.deps.locate(targetId) || !this.deps.connected(targetId)) return fail('that operator is not online');
+    // every attempt counts before the target is looked at, so the replies are no free presence oracle
     const now = this.deps.now();
     const recent = (this.sentChallenges.get(id) ?? []).filter((t) => now - t < MINUTE_MS);
     if (recent.length >= CHALLENGES_PER_MINUTE) return fail('too many challenges; wait a moment', 'E_RATE');
     recent.push(now);
     this.sentChallenges.set(id, recent);
+    if (this.byOperator.has(targetId)) return fail('that operator is in a match');
+    if (!this.deps.locate(targetId) || !this.deps.connected(targetId)) return fail('that operator is not online');
     for (const c of [...this.challenges.values()]) if (c.from === id) this.challenges.delete(c.id);
     const c: Challenge = { id: this.deps.newId(), from: id, to: targetId, mode, expiresAt: now + ARENA_CHALLENGE_TTL_MS };
     this.challenges.set(c.id, c);
@@ -232,13 +233,18 @@ export class ArenaService {
 
   // ---- matches ----
 
+  private static day(now: number): string {
+    return new Date(now).toISOString().slice(0, 10);
+  }
+
   private pairKey(a: string, b: string): string {
-    return `${[a, b].sort().join('|')}:${new Date(this.deps.now()).toISOString().slice(0, 10)}`;
+    return `${[a, b].sort().join('|')}:${ArenaService.day(this.deps.now())}`;
   }
 
   /**
    * Builds the match world and hands both operators over. Null (and nobody moved) when a hand-over fails: the side
-   * already moved goes straight back, so the core never resolves a match against a missing operator.
+   * already moved goes straight back, so the core never resolves a match against a missing operator, and both are
+   * told (out of the queue, with the reason).
    */
   private start(aId: string, bId: string, wanted: ArenaMode): Match | null {
     // win-trading guard: past the daily cap a ranked pairing is played as unranked
@@ -261,6 +267,7 @@ export class ArenaService {
       const record = loc?.world.checkpoint(opId);
       if (!loc || !record || !this.deps.transfer(opId, world, arenaRecord(record, mode, SANDBOX.id, SANDBOX.arenaSpawns[i as 0 | 1]))) {
         for (const side of match.sides) this.sendHome(match, side);
+        for (const who of [aId, bId]) this.deps.event(who, { e: 'arenaQueued', mode: null, reason: 'the match could not start' });
         return null;
       }
       for (const form of loc.world.discovered) world.discovered.add(form);
@@ -340,6 +347,8 @@ export class ArenaService {
       const now = this.deps.now();
       for (const c of [...this.challenges.values()]) if (c.expiresAt <= now) this.challenges.delete(c.id);
       for (const [id, times] of this.sentChallenges) if (times.every((t) => now - t >= MINUTE_MS)) this.sentChallenges.delete(id);
+      const today = `:${ArenaService.day(now)}`;
+      for (const key of [...this.pairCounts.keys()]) if (!key.endsWith(today)) this.pairCounts.delete(key);
       this.matchmake(now);
     }
   }

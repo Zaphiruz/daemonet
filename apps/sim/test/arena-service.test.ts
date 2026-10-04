@@ -310,6 +310,42 @@ describe('ArenaService', () => {
     h.tick(GONE + RETURN);
     expect(h.of('arenaResult')).toEqual([]);
     expect(h.of('arenaMatch')).toEqual([]);
+    // both are told (the challenger has no reply of its own to learn it from)
+    for (const name of ['alice', 'bob']) expect(h.of('arenaQueued', name)).toEqual([{ e: 'arenaQueued', mode: null, reason: 'the match could not start' }]);
+
+    // from the queue: both drop out of it and are told why
+    const q = harness(['alice', 'bob']);
+    q.arena.queueUp('alice', 'unranked');
+    q.arena.queueUp('bob', 'unranked');
+    q.failTransfer.add('bob');
+    q.tick(16);
+    expect(q.arena.worlds()).toEqual([]);
+    for (const name of ['alice', 'bob']) {
+      expect(q.arena.queued(name)).toBeNull();
+      expect(q.of('arenaQueued', name).at(-1)).toEqual({ e: 'arenaQueued', mode: null, reason: 'the match could not start' });
+    }
+  });
+
+  it('counts a challenge against the limit before saying whether the target is online or in a match', () => {
+    const h = harness(['alice', 'bob']);
+    for (let i = 0; i < 8; i++) expect(h.arena.challenge('alice', 'nobody', 'unranked')).toMatchObject({ message: 'that operator is not online' });
+    expect(h.arena.challenge('alice', 'nobody', 'unranked')).toMatchObject({ code: 'E_RATE' });
+    expect(h.arena.challenge('alice', 'bob', 'unranked')).toMatchObject({ code: 'E_RATE' });
+    expect(h.sent).toEqual([]);
+  });
+
+  it('forgets earlier days’ ranked pair counts in the matchmaking sweep', () => {
+    const h = harness(['alice', 'bob']);
+    h.arena.accept('bob', h.challenge('alice', 'bob', 'ranked'));
+    h.arena.forfeit('alice');
+    h.tick(RETURN + 2);
+    const counts = (h.arena as unknown as { pairCounts: Map<string, number> }).pairCounts;
+    expect(counts.size).toBe(1);
+    h.tick(16);
+    expect(counts.size).toBe(1); // same day: kept
+    h.advance(24 * 3600_000);
+    h.tick(16);
+    expect(counts.size).toBe(0);
   });
 
   it('ending every match (shutdown) sends everyone home without a result', () => {
