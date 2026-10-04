@@ -140,3 +140,14 @@ Fixed before merge: hidden evolution requirements moved to server-only @daemonet
 Task F: minor (deferred): evolve button has no in-flight state (RamDaemon carries no `pending`; double-click → 'daemon is busy' in Log) — SP3b should put `pending` on the wire for load/store/evolve
 Task F: minor (deferred): a11y — evolve buttons lack aria-label with the form name, held-item select unlabelled, ✓ discovery only a title tooltip, ??? has no text alternative
 Task F: minor (deferred): /api/codex refetched on every Codex tab mount (few hundred KB) — add ETag/cache headers when SP3b widens it; pin a drift test between capture doc comments and `rules`
+
+## 2026-09-30-daemonet-sp3b-plan1-subnets-travel
+
+Fixed before merge: pnpm typecheck fixes; wild tags released on leave/travel; hosted-destination check in the executing world; failed hand-off reconciled; client clears target and gates the travel button; SDK gateways tests; level bands per spec
+
+- T1: SUBNET_IDS is an alias of OPEN_SUBNET_IDS (extra API surface until kernelspace/sandbox split)
+- T3: no sandbox test for stop/kick during the travel-restart window or two snapshots in quick succession
+- T3: no real-travel e2e / manual gateway walk (unit tests with fakes only)
+Task F: minor (deferred): a hand-off that fails after commit still acks ok {subnet: to} (only reachable if a hosted world disappears mid-intent; store reconciled)
+Task F: minor (deferred): travel button can re-enable between the ack and the new snapshot (server rejects a second travel); OperatorSelf has no `travelling` flag
+Task F: minor (deferred): watch `tick stats` after the first multi-world deploy (six worlds per tick)
