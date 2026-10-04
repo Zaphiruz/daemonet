@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { getSubnet } from '@daemonet/rules';
+import { INCIDENT_MAX_OPERATORS, INCIDENT_SUBNET, SUBNETS, getSubnet } from '@daemonet/rules';
 import type { ConnectOptions, GameClient } from '@daemonet/sdk';
 import { configureStore } from '@reduxjs/toolkit';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IncidentList } from '../src/api.ts';
 import { createCaptureStore } from '../src/game/capture.ts';
 import { createConnection, type ConnectionDeps } from '../src/game/connection.ts';
-import { createIncidentStore, incidentStore, type IncidentEvent } from '../src/game/incident.ts';
+import { INCIDENT_STALE_MS, createIncidentStore, incidentStore, isIncidentLive, type IncidentEvent } from '../src/game/incident.ts';
 import { createLog } from '../src/game/log.ts';
 import { scale } from '../src/render/camera.ts';
 
@@ -178,6 +178,7 @@ describe('Incident events in the connection (captured before any panel mounts)',
     expect(invalidateIncidents).toHaveBeenCalled(); // online: ask the API what is running now
     invalidateIncidents.mockClear();
     c.emit('incident', { e: 'incident', ...ev('open') });
+    invalidateIncidents.mockClear(); // the open phase refetches too (see below)
     c.emit('disconnect');
     c.emit('reconnect');
     expect(incident.get().current).toBeNull(); // the end may have been missed while away
@@ -433,5 +434,139 @@ describe('admin: start an Incident', () => {
     fireEvent.click(screen.getByTestId('admin-view-incidents'));
     await act(async () => void fireEvent.click(screen.getByTestId('incident-start')));
     expect(screen.getByRole('alert').textContent).toBe('an Incident is already running');
+  });
+});
+
+describe('final review: panels follow the live Incident, one liveness rule', () => {
+  const running = (id = 'c') => list({ current: { id, n: 2, species: 'pidzero', openedAt: '2026-10-04T08:00:00.000Z', endsAt: ends(60_000) } });
+
+  it('the open phase refetches /api/incidents too', async () => {
+    const { conn, clients, invalidateIncidents } = setup();
+    await conn.open('controller');
+    invalidateIncidents.mockClear();
+    clients[0]!.emit('incident', { e: 'incident', ...ev('open') });
+    expect(invalidateIncidents).toHaveBeenCalledTimes(1);
+    clients[0]!.emit('incident', { e: 'incident', ...ev('shield') });
+    expect(invalidateIncidents).toHaveBeenCalledTimes(1);
+  });
+
+  it('admin start: disabled as soon as the open event arrives, enabled again when it ends even if the cached list still says running', () => {
+    mocks.list.data = list();
+    render(<AdminPanel />);
+    fireEvent.click(screen.getByTestId('admin-view-incidents'));
+    const btn = () => screen.getByTestId('incident-start') as HTMLButtonElement;
+    expect(btn().disabled).toBe(false);
+    act(() => incidentStore.onEvent(ev('open', { id: 'c' })));
+    expect(btn().disabled).toBe(true);
+    cleanup();
+    // the API seeds a page opened mid-Incident; the end event wins over the cached answer
+    incidentStore.reset();
+    mocks.list.data = running('c');
+    render(<AdminPanel />);
+    fireEvent.click(screen.getByTestId('admin-view-incidents'));
+    expect(btn().disabled).toBe(true);
+    act(() => incidentStore.onEvent(ev('cleared', { id: 'c' })));
+    expect(btn().disabled).toBe(false);
+  });
+
+  it('Incidents tab: "running now" appears with the open event and goes with the end event, whatever the cached list says', () => {
+    mocks.list.data = list();
+    render(<IncidentsPanel />);
+    expect(screen.queryByTestId('incident-current')).toBeNull();
+    act(() => incidentStore.onEvent(ev('open', { id: 'live', species: 'pingodeth' })));
+    expect(screen.getByTestId('incident-current').textContent).toContain('pingodeth');
+    cleanup();
+    incidentStore.reset();
+    mocks.list.data = running('c');
+    render(<IncidentsPanel />);
+    expect(screen.getByTestId('incident-current').textContent).toContain('pidzero');
+    act(() => incidentStore.onEvent(ev('expired', { id: 'c' })));
+    expect(screen.queryByTestId('incident-current')).toBeNull();
+  });
+
+  it('Incidents tab text takes the gateway level and the cap from the rules', () => {
+    const gate = SUBNETS.flatMap((s) => s.gateways.map((g) => ({ ...g, from: s.id }))).find((g) => g.incidentOnly && g.to === INCIDENT_SUBNET)!;
+    mocks.list.data = running('c');
+    render(<IncidentsPanel />);
+    const text = screen.getByTestId('incident-current').textContent!;
+    expect(text).toContain(`gateway in ${gate.from}`);
+    expect(text).toContain(`level ${gate.requires.level} daemon`);
+    expect(text).toContain(`${INCIDENT_MAX_OPERATORS} operators at most`);
+  });
+
+  it('one liveness rule: known, and not more than the grace past its end', () => {
+    const info = { id: 'i', species: 'pidzero', endsAt: '2026-10-04T00:20:00.000Z', phase: 'open' as const, bossId: null };
+    const end = Date.parse(info.endsAt);
+    expect(isIncidentLive(null, end)).toBe(false);
+    expect(isIncidentLive(info, end)).toBe(true);
+    expect(isIncidentLive(info, end + INCIDENT_STALE_MS)).toBe(true);
+    expect(isIncidentLive(info, end + INCIDENT_STALE_MS + 1)).toBe(false);
+  });
+
+  it('the gateway card closes again once the Incident is past its end and the end event never came', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-04T00:00:00.000Z'));
+    const gate = getSubnet('backbone').gateways.find((g) => g.incidentOnly)!;
+    const c = { subnet: 'backbone', role: 'controller', tick: 1, self: { x: gate.at.x, y: gate.at.y, running: [], capture: null, ram: [], inventory: {}, bits: 0 }, world: { gateways: getSubnet('backbone').gateways.map((g) => ({ ...g })) }, operator: { travel: vi.fn() }, entities: new Map() };
+    render(<GatewaySection client={c as unknown as GameClient} me={c.self as never} manual />);
+    act(() => incidentStore.onEvent(ev('open', { endsAt: '2026-10-04T00:00:05.000Z' })));
+    const btn = () => screen.getByTestId(`travel-${gate.id}`) as HTMLButtonElement;
+    expect(btn().disabled).toBe(false);
+    act(() => void vi.advanceTimersByTime(5_000 + INCIDENT_STALE_MS + 2_000));
+    expect(btn().disabled).toBe(true);
+    expect(screen.getByTestId(`gateway-${gate.id}`).textContent).toContain('closed');
+  });
+
+  it('the banner calls the unshield phase "exposed"', () => {
+    render(<TopBar me={me} />);
+    act(() => incidentStore.onEvent(ev('unshield')));
+    expect(screen.getByTestId('incident-banner').textContent).toContain('exposed');
+    expect(screen.getByTestId('incident-banner').textContent).not.toContain('unshield');
+  });
+
+  it('the map marks the Incident-only gateway closed while no Incident is live', () => {
+    const cam = { cx: 122, cy: 64, zoom: 2 as const, width: 400, height: 300 };
+    const controls = { zoom: 2 as const, actor: null, targetId: null, tool: 'sniff' as const };
+    const c = { subnet: 'backbone', tick: 1, operatorId: 'me', self: { x: 122, y: 64, capture: null }, entities: new Map() } as unknown as GameClient;
+    const label = (texts: string[]) => texts.find((t) => t.startsWith(`→ ${INCIDENT_SUBNET}`))!;
+    const a = recordingCtx();
+    drawWorld({ ctx: a.ctx, cam, client: c, controls: controls as never, hover: null });
+    expect(label(a.texts)).toContain('closed');
+    expect(a.texts.filter((t) => t.startsWith('→ ') && !t.startsWith(`→ ${INCIDENT_SUBNET}`)).some((t) => t.includes('closed'))).toBe(false);
+    incidentStore.onEvent(ev('open'));
+    const b = recordingCtx();
+    drawWorld({ ctx: b.ctx, cam, client: c, controls: controls as never, hover: null });
+    expect(label(b.texts)).not.toContain('closed');
+  });
+});
+
+describe('final review: admin start during a bus outage', () => {
+  it('shows "requested" until the open event arrives', async () => {
+    mocks.list.data = list();
+    mocks.start.mockReturnValue({ unwrap: () => Promise.resolve({ ok: true }) });
+    render(<AdminPanel />);
+    fireEvent.click(screen.getByTestId('admin-view-incidents'));
+    await act(async () => void fireEvent.click(screen.getByTestId('incident-start')));
+    expect(screen.getByTestId('incident-requested').textContent).toContain('requested');
+    expect((screen.getByTestId('incident-start') as HTMLButtonElement).disabled).toBe(true);
+    act(() => incidentStore.onEvent(ev('open', { id: 'n1' })));
+    expect(screen.queryByTestId('incident-requested')).toBeNull();
+    expect((screen.getByTestId('incident-start') as HTMLButtonElement).disabled).toBe(true);
+    act(() => incidentStore.onEvent(ev('cleared', { id: 'n1' })));
+    expect(screen.queryByTestId('incident-requested')).toBeNull();
+    expect((screen.getByTestId('incident-start') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('says the request may have been lost when no open event came in time, and lets the admin try again', async () => {
+    vi.useFakeTimers();
+    mocks.list.data = list();
+    mocks.start.mockReturnValue({ unwrap: () => Promise.resolve({ ok: true }) });
+    render(<AdminPanel />);
+    fireEvent.click(screen.getByTestId('admin-view-incidents'));
+    await act(async () => void fireEvent.click(screen.getByTestId('incident-start')));
+    expect(screen.getByTestId('incident-requested').textContent).toContain('requested');
+    act(() => void vi.advanceTimersByTime(31_000));
+    expect(screen.getByTestId('incident-requested').textContent).toContain('lost');
+    expect((screen.getByTestId('incident-start') as HTMLButtonElement).disabled).toBe(false);
   });
 });

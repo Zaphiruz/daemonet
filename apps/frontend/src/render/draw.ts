@@ -2,7 +2,7 @@ import { getSubnet, INCIDENT_SUBNET, TICK_HZ, type SubnetDef } from '@daemonet/r
 import type { GameClient } from '@daemonet/sdk';
 import { signatureColor, spriteFor, SPRITE_SIZE } from '@daemonet/sprites';
 import type { Controls } from '../game/controls.ts';
-import { incidentStore } from '../game/incident.ts';
+import { incidentStore, isIncidentLive } from '../game/incident.ts';
 import { taggedName } from '../game/names.ts';
 import { scale, visibleTiles, worldToScreen, type Camera } from './camera.ts';
 
@@ -69,6 +69,7 @@ const COLORS = {
   path: 'rgba(125, 211, 252, 0.6)',
   link: '#a78bfa',
   gateway: '#38bdf8',
+  gatewayClosed: '#525252',
   boss: '#f43f5e',
   shield: '#93c5fd',
   telegraph: 'rgba(244, 63, 94, 0.35)',
@@ -102,15 +103,18 @@ export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): voi
   ctx.fillStyle = COLORS.host;
   ctx.font = `${Math.max(10, s * 0.6)}px ui-monospace`;
   ctx.fillText('host', host.sx - s, host.sy - s - 4);
+  // the Incident-only gateway is closed unless an Incident is live (the same rule as the banner and the gateway card)
+  const incidentLive = isIncidentLive(incidentStore.get().current, Date.now());
   for (const g of def.gateways) {
     const p = worldToScreen(cam, g.at.x, g.at.y);
-    ctx.strokeStyle = COLORS.gateway;
+    const closed = g.incidentOnly === true && !incidentLive;
+    ctx.strokeStyle = closed ? COLORS.gatewayClosed : COLORS.gateway;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(p.sx, p.sy, s, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = COLORS.gateway;
-    ctx.fillText(`→ ${g.to}${g.requires.level ? ` L${g.requires.level}` : ''}`, p.sx + s + 2, p.sy + 4);
+    ctx.fillStyle = closed ? COLORS.gatewayClosed : COLORS.gateway;
+    ctx.fillText(`→ ${g.to}${g.requires.level ? ` L${g.requires.level}` : ''}${closed ? ' · closed' : ''}`, p.sx + s + 2, p.sy + 4);
   }
 
   // blasts that land in two seconds (kernelspace only; the store drops them once they have landed)

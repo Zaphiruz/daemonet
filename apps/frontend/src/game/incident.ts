@@ -1,4 +1,5 @@
-import { useSyncExternalStore } from 'react';
+import { INCIDENT_SUBNET, SUBNETS } from '@daemonet/rules';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 
 export interface IncidentInfo {
   id: string;
@@ -102,6 +103,55 @@ export type IncidentStore = ReturnType<typeof createIncidentStore>;
 export const incidentStore = createIncidentStore();
 export function useIncident(): IncidentSnapshot {
   return useSyncExternalStore(incidentStore.subscribe, incidentStore.get, incidentStore.get);
+}
+
+/** An Incident whose end passed this long ago without an end event is treated as over (the event was lost). */
+export const INCIDENT_STALE_MS = 10_000;
+
+/**
+ * The one liveness rule (banner, gateway card, map label, Incidents and admin panels): an Incident is live while it is
+ * known and its end is at most `INCIDENT_STALE_MS` ago.
+ */
+export function isIncidentLive(info: IncidentInfo | null, now: number): info is IncidentInfo {
+  return info !== null && now <= Date.parse(info.endsAt) + INCIDENT_STALE_MS;
+}
+
+/** The clock, re-read every second while `active` (countdowns, staleness). */
+export function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return now;
+}
+
+/** The live Incident (`isIncidentLive`) or null, and the clock it was judged by; re-renders every second while one is known. */
+export function useLiveIncident(): { incident: IncidentInfo | null; now: number } {
+  const current = useIncident().current;
+  const now = useNow(current !== null);
+  return { incident: isIncidentLive(current, now) ? current : null, now };
+}
+
+/**
+ * Seeds the store from an /api/incidents answer: a page loaded mid-Incident gets no event until the phase changes. The
+ * answer is only a seed: events (open, phases, end) are what panels show (`seed` never revives an ended Incident).
+ */
+export function useSeedIncident(current: { id: string; species: string; endsAt: string } | null | undefined, fetchedAt?: number): void {
+  useEffect(() => incidentStore.seed(current ?? null), [current, fetchedAt]);
+}
+
+/** The gateway into the Incident arena (backbone → kernelspace): its subnet and the daemon level it requires. */
+export const INCIDENT_GATEWAY: { from: string; level: number } | null = (() => {
+  for (const s of SUBNETS) for (const g of s.gateways) if (g.incidentOnly && g.to === INCIDENT_SUBNET) return { from: s.id, level: g.requires.level };
+  return null;
+})();
+
+/** The banner's word for a phase. */
+export function phaseLabel(phase: IncidentInfo['phase']): string {
+  return phase === 'shield' ? 'shielded' : phase === 'unshield' ? 'exposed' : phase;
 }
 
 /** Plain-words log line per phase. */

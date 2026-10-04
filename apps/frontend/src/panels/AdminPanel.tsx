@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { describeApiError, useAddFilterTermMutation, useAdminEconomyQuery, useAdminReportsQuery, useDeleteFilterTermMutation, useFilterTermsQuery, useIncidentsQuery, useResolveReportMutation, useStartIncidentMutation } from '../api.ts';
+import { useLiveIncident, useNow, useSeedIncident } from '../game/incident.ts';
 
 const VIEWS = ['reports', 'filter', 'economy', 'incidents'] as const;
 type View = (typeof VIEWS)[number];
@@ -50,22 +51,60 @@ export function AdminPanel() {
   );
 }
 
-/** Start an Incident now (the sim refuses while one runs; the API answers 409 then), next schedule and recent outcomes. */
+/** How long a start may wait for the sim's `open` event before the panel says the request was probably lost. */
+const START_WAIT_MS = 30_000;
+
+/**
+ * Start an Incident now (the sim refuses while one runs; the API answers 409 then), next schedule and recent outcomes.
+ * "Running" is the live Incident (events; the list only seeds it). The API answers 200 even when the bus is down, so a
+ * start is shown as "requested" until the `open` event arrives, and as probably lost if none came in time.
+ */
 function Incidents() {
-  const list = useIncidentsQuery();
+  const [requestedAt, setRequestedAt] = useState<number | null>(null);
+  const waiting = requestedAt !== null;
+  // while a start waits for the sim, poll the list too: an admin page without a game connection gets no events
+  const list = useIncidentsQuery(undefined, waiting ? { pollingInterval: 2_000 } : undefined);
+  useSeedIncident(list.data?.current, list.fulfilledTimeStamp);
+  const { incident } = useLiveIncident();
+  const now = useNow(waiting);
   const [start, state] = useStartIncidentMutation();
   const { error, act } = useAction();
+  useEffect(() => {
+    if (incident && requestedAt !== null) setRequestedAt(null); // the open event arrived
+  }, [incident, requestedAt]);
+  const pending = !incident && requestedAt !== null && now - requestedAt < START_WAIT_MS;
+  const lost = !incident && requestedAt !== null && !pending;
   return (
     <section className="space-y-1 text-xs" data-testid="admin-incidents">
       <ErrorNote error={list.error ?? error} />
       <button
         className="rounded bg-red-900 px-2 py-0.5 hover:bg-red-800 disabled:opacity-40"
-        disabled={state.isLoading || !!list.data?.current}
-        onClick={() => void act(() => start()).then(() => list.refetch())}
+        disabled={state.isLoading || incident !== null || pending}
+        onClick={() =>
+          void act(() => start()).then((ok) => {
+            if (ok) setRequestedAt(Date.now());
+            return list.refetch();
+          })
+        }
         data-testid="incident-start"
       >
         start an Incident now
       </button>
+      {pending && (
+        <p className="text-amber-300" data-testid="incident-requested">
+          requested: waiting for the sim to open it…
+        </p>
+      )}
+      {lost && (
+        <p className="text-amber-300" data-testid="incident-requested">
+          no Incident opened: the request was probably lost (message bus down?); try again
+        </p>
+      )}
+      {incident && (
+        <p className="text-red-300">
+          running: {incident.species} until {new Date(incident.endsAt).toLocaleString()}
+        </p>
+      )}
       {list.data && (
         <p className="text-neutral-500">
           next scheduled: {new Date(list.data.next.at).toLocaleString()} ({list.data.next.species})

@@ -1,4 +1,6 @@
+import { INCIDENT_MAX_OPERATORS, INCIDENT_SUBNET } from '@daemonet/rules';
 import { describeApiError, useIncidentsQuery, type IncidentRecord } from '../api.ts';
+import { INCIDENT_GATEWAY, phaseLabel, useLiveIncident, useSeedIncident } from '../game/incident.ts';
 
 const pct = (share: number) => `${Math.round(share * 100)}%`;
 const when = (iso: string) => new Date(iso).toLocaleString();
@@ -37,6 +39,9 @@ function Row({ r }: { r: IncidentRecord }) {
 export function IncidentsPanel() {
   const list = useIncidentsQuery(undefined, { refetchOnMountOrArgChange: true });
   const data = list.data;
+  // the list only seeds the live store: what is running now follows the events (open, end), like the banner
+  useSeedIncident(data?.current, list.fulfilledTimeStamp);
+  const { incident } = useLiveIncident();
   return (
     <div className="space-y-2 p-3 text-sm" data-testid="incidents-panel">
       {list.error && (
@@ -45,9 +50,10 @@ export function IncidentsPanel() {
         </p>
       )}
       {!data && !list.error && <p className="text-neutral-500">loading…</p>}
-      {data?.current && (
+      {incident && (
         <p className="rounded bg-red-950 px-2 py-1 text-red-200" data-testid="incident-current">
-          running now: a {data.current.species} kernel daemon in kernelspace until {when(data.current.endsAt)} (gateway in backbone, level 32 daemon, 16 operators at most)
+          running now: a {incident.species} kernel daemon in {INCIDENT_SUBNET} ({phaseLabel(incident.phase)}) until {when(incident.endsAt)}
+          {INCIDENT_GATEWAY && ` (gateway in ${INCIDENT_GATEWAY.from}, level ${INCIDENT_GATEWAY.level} daemon, ${INCIDENT_MAX_OPERATORS} operators at most)`}
         </p>
       )}
       {data && (

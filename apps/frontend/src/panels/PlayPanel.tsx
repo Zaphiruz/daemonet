@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { run } from '../components/WorldCanvas.tsx';
 import { useCaptureChallenge } from '../game/capture.ts';
 import { parseAnswer, setControls, useControls } from '../game/controls.ts';
-import { useIncident } from '../game/incident.ts';
+import { useLiveIncident } from '../game/incident.ts';
 
 const TOOLS: ToolId[] = ['sniff', 'tap', 'mirror', 'dump'];
 
@@ -142,7 +142,7 @@ export function PlayPanel({ client }: { client: GameClient }) {
 export function GatewaySection({ client, me, manual }: { client: GameClient; me: GameClient['self']; manual: boolean }) {
   // one travel at a time: the button stays disabled until the request settles (the snapshot has arrived, or it failed)
   const [inFlight, setInFlight] = useState(false);
-  const incident = useIncident().current;
+  const { incident } = useLiveIncident();
   const travel = (gatewayId: string) => {
     setInFlight(true);
     const p = client.operator.travel(gatewayId);
@@ -157,7 +157,7 @@ export function GatewaySection({ client, me, manual }: { client: GameClient; me:
       {client.world.gateways
         .filter((g) => Math.hypot(g.at.x - me.x, g.at.y - me.y) <= GATEWAY_RADIUS)
         .map((g) => {
-          // the kernelspace gateway only works while an Incident is running there (and while it has room)
+          // the kernelspace gateway only works while an Incident is live there (and while it has room)
           const closed = g.incidentOnly === true && incident === null;
           return (
           <section key={g.id} className="rounded border border-sky-700 p-2" data-testid={`gateway-${g.id}`}>

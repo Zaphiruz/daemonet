@@ -185,7 +185,8 @@ export function createConnection(deps: ConnectionDeps) {
     on('incident', (e) => {
       deps.incident?.onEvent(e);
       deps.log.push('event', describeIncidentEvent(e));
-      if (e.phase === 'cleared' || e.phase === 'expired') deps.invalidateIncidents?.();
+      // open: the Incidents tab and the admin panel list the new row; cleared / expired: the outcome
+      if (e.phase === 'open' || e.phase === 'cleared' || e.phase === 'expired') deps.invalidateIncidents?.();
     });
     on('telegraph', (t) => deps.incident?.onTelegraph({ x: t.x, y: t.y, radius: t.radius, atTick: t.atTick }));
     on('incidentReward', (e) => deps.log.push('event', `Incident reward: ${e.reward} bits for ${Math.round(e.share * 100)}% of the damage`));
