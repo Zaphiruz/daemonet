@@ -5,7 +5,13 @@ import { describeApiError, useBookQuery, useCancelOrderMutation, useExchangeItem
 import { describeFill, orderPreview, simulateOrder, spread, useExchangeFills } from '../game/exchange.ts';
 import { log } from '../game/log.ts';
 
-const POLL_MS = 4000;
+/**
+ * Background refresh only: a fill reaches the player as a sim `exchange` event (the connection invalidates the orders,
+ * book and vault queries at once) and every placement or cancel invalidates them too, so polling only catches other
+ * players' book changes. Well inside the per-operator Exchange budget.
+ */
+const POLL_MS = 16_000;
+const ITEMS_POLL_MS = 60_000;
 const clamp = (raw: string, max: number) => Math.max(1, Math.min(max, Math.trunc(Number(raw)) || 1));
 
 /**
@@ -13,7 +19,7 @@ const clamp = (raw: string, max: number) => Math.max(1, Math.min(max, Math.trunc
  * Everything shown before placing is a preview of what the api's engine will do; the api is authoritative.
  */
 export function ExchangePanel({ client }: { client: GameClient }) {
-  const items = useExchangeItemsQuery(undefined, { pollingInterval: POLL_MS * 4 });
+  const items = useExchangeItemsQuery(undefined, { pollingInterval: ITEMS_POLL_MS });
   const [item, setItem] = useState('frag:packet');
   const book = useBookQuery(item, { pollingInterval: POLL_MS });
   const orders = useMyOrdersQuery(undefined, { pollingInterval: POLL_MS });

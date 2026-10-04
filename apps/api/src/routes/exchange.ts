@@ -1,13 +1,19 @@
 import type { Bus } from '@daemonet/bus';
 import type { PrismaClient } from '@daemonet/db';
 import { ITEMS, isTradable } from '@daemonet/rules';
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import { normalizeIP } from '@fastify/rate-limit';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { badRequest, notFound, rateLimited } from '../errors.js';
 import { MAX_PRICE, MAX_QTY, bookFor, cancelOrder, placeOrder } from '../exchange/orders.js';
 
-/** Exchange request budget (SP5 spec): per operator, and separately per client IP. */
+/** Exchange request budget per operator (SP5 spec: 120 / minute), shared by every Exchange route. */
 export const EXCHANGE_RATE = { max: 120, timeWindow: '1 minute' } as const;
+/**
+ * Per client address (IPv6 by /64), before authentication: several operators behind one address (NAT, a household)
+ * share it, so it is a multiple of the per-operator budget; it still throttles token guessing.
+ */
+export const EXCHANGE_IP_RATE = { max: 4 * EXCHANGE_RATE.max, timeWindow: EXCHANGE_RATE.timeWindow } as const;
 
 const OrderBody = z.object({
   item: z.string().min(1).max(64),
@@ -33,16 +39,26 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
   // by spreading requests over several addresses. (The plugin's per-route limit is off here: its local store keeps one
   // counter per route, so it could not share a budget across routes.) Without the rate-limit plugin (tests) only auth
   // applies.
-  const limiter = (keyGenerator: (req: FastifyRequest) => string) => {
-    const limit = app.hasDecorator('createRateLimit') ? app.createRateLimit({ ...EXCHANGE_RATE, keyGenerator }) : null;
-    return async (req: FastifyRequest): Promise<void> => {
+  // Every response carries the tighter budget's x-ratelimit-* headers; a 429 adds retry-after.
+  const limiter = (rate: { max: number; timeWindow: string }, keyGenerator: (req: FastifyRequest) => string) => {
+    const limit = app.hasDecorator('createRateLimit') ? app.createRateLimit({ ...rate, keyGenerator }) : null;
+    return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
       if (!limit) return;
       const r = await limit(req);
-      if (!r.isAllowed && r.isExceeded) throw rateLimited();
+      if (r.isAllowed) return;
+      const shown = reply.getHeader('x-ratelimit-remaining');
+      if (shown === undefined || Number(shown) >= r.remaining) {
+        reply.header('x-ratelimit-limit', r.max).header('x-ratelimit-remaining', r.remaining).header('x-ratelimit-reset', r.ttlInSeconds);
+      }
+      if (r.isExceeded) {
+        reply.header('retry-after', r.ttlInSeconds);
+        throw rateLimited();
+      }
     };
   };
-  const perIp = limiter((req) => `exchange-ip:${req.ip}`);
-  const perOperator = limiter((req) => (req.operator ? `exchange-op:${req.operator.id}` : `exchange-ip:${req.ip}`));
+  // the plugin's own key normalisation: an IPv6 client is one /64 (rotating interface ids buys no fresh budget)
+  const perIp = limiter(EXCHANGE_IP_RATE, (req) => `exchange-ip:${normalizeIP(req.ip)}`);
+  const perOperator = limiter(EXCHANGE_RATE, (req) => (req.operator ? `exchange-op:${req.operator.id}` : `exchange-ip:${normalizeIP(req.ip)}`));
   const auth = { onRequest: perIp, preHandler: [app.requireAuth, perOperator], config: { bearer: true, rateLimit: false as const } };
   const log = app.log;
 

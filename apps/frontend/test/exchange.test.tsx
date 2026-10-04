@@ -166,13 +166,15 @@ const q = vi.hoisted(() => ({
   place: vi.fn(),
   cancel: vi.fn(),
   bookArgs: [] as unknown[],
+  polls: {} as Record<string, number | undefined>,
 }));
+type Poll = { pollingInterval?: number } | undefined;
 vi.mock('../src/api.ts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/api.ts')>()),
-  useExchangeItemsQuery: () => q.items,
-  useBookQuery: (item: string) => (q.bookArgs.push(item), q.book),
-  useMyOrdersQuery: () => q.orders,
-  useVaultQuery: () => q.vault,
+  useExchangeItemsQuery: (_: unknown, o: Poll) => ((q.polls.items = o?.pollingInterval), q.items),
+  useBookQuery: (item: string, o: Poll) => (q.bookArgs.push(item), (q.polls.book = o?.pollingInterval), q.book),
+  useMyOrdersQuery: (_: unknown, o: Poll) => ((q.polls.orders = o?.pollingInterval), q.orders),
+  useVaultQuery: (_: unknown, o: Poll) => ((q.polls.vault = o?.pollingInterval), q.vault),
   usePlaceOrderMutation: () => [q.place],
   useCancelOrderMutation: () => [q.cancel],
 }));
@@ -286,6 +288,11 @@ describe('ExchangePanel', () => {
     fireEvent.click(screen.getByTestId('side-SELL'));
     expect((screen.getByTestId('order-place') as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByTestId('order-why').textContent).toContain(`${MAX_OPEN_ORDERS} open orders`);
+  });
+
+  it('polls slowly (fills and actions refetch at once through events and tag invalidation)', () => {
+    render(<ExchangePanel client={client(1000)} />);
+    expect(q.polls).toEqual({ items: 60_000, book: 16_000, orders: 16_000, vault: 16_000 });
   });
 
   it('the open-order cap counts only orders that have not expired (as the api does)', () => {

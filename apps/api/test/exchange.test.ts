@@ -8,6 +8,7 @@ import { BitsPush } from '../../sim/src/runtime/pushes.js';
 import { SIM_LEDGER_REASONS } from '../../sim/src/runtime/store.js';
 import { buildApp } from '../src/app.js';
 import { createDevBearerVerifier } from '../src/auth/bearer.js';
+import { EXCHANGE_IP_RATE, EXCHANGE_RATE } from '../src/routes/exchange.js';
 import { MAX_OPEN_ORDERS, MAX_PRICE, MAX_QTY, ORDER_TTL_MS, expireOrders, feeOn } from '../src/exchange/orders.js';
 
 const url = process.env.DATABASE_URL;
@@ -435,14 +436,26 @@ describe.skipIf(!url)('Exchange rate limits (needs DATABASE_URL)', () => {
     const limited = await as('dev:hammer', 'GET', '/orders', ip());
     expect(limited.statusCode).toBe(429);
     expect(limited.json().error).toBe('rate_limited');
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0);
+    expect(limited.headers['x-ratelimit-limit']).toBe(String(EXCHANGE_RATE.max));
+    expect(limited.headers['x-ratelimit-remaining']).toBe('0');
     expect((await as('dev:other', 'GET', '/orders', ip())).statusCode).toBe(200);
 
-    // per address, before authentication: refused tokens spread over the routes share one budget
+    // per address, before authentication: a budget several operators behind one address (a NAT, a household) share,
+    // a multiple of one operator's; refused tokens spread over the routes count against it too
+    expect(EXCHANGE_IP_RATE.max).toBe(4 * EXCHANGE_RATE.max);
     const E = '10.9.9.9';
     const paths = ['/items', '/book/frag:packet', '/orders', '/vault'];
-    for (let i = 0; i < 120; i++) expect((await as('garbage', 'GET', paths[i % paths.length]!, E)).statusCode).toBe(401);
-    expect((await as('dev:fresh', 'GET', '/items', E)).statusCode).toBe(429);
+    for (let i = 0; i < EXCHANGE_IP_RATE.max; i++) expect((await as('garbage', 'GET', paths[i % paths.length]!, E)).statusCode).toBe(401);
+    const refused = await as('dev:fresh', 'GET', '/items', E);
+    expect(refused.statusCode).toBe(429);
+    expect(Number(refused.headers['retry-after'])).toBeGreaterThan(0);
     expect((await as('dev:fresh', 'POST', '/orders', E, { item: 'frag:packet', side: 'BUY', price: 1, qty: 1 })).statusCode).toBe(429);
+
+    // IPv6 clients are keyed by their /64: rotating the interface id does not buy a fresh budget
+    for (let i = 0; i < EXCHANGE_IP_RATE.max; i++) expect((await as('garbage', 'GET', '/items', `2001:db8:1:2::${(i + 1).toString(16)}`)).statusCode).toBe(401);
+    expect((await as('garbage', 'GET', '/items', '2001:db8:1:2:abcd::9')).statusCode).toBe(429);
+    expect((await as('garbage', 'GET', '/items', '2001:db8:1:3::1')).statusCode).toBe(401);
     await app.close();
   });
 });
