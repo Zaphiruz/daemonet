@@ -1,7 +1,7 @@
 import { challengeSize, getTool, type PublicChallenge } from '@daemonet/rules';
 import type { GameEvent } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
-import type { StepResult, World } from '../src/core/index.js';
+import { DISK_SLOT_TAKEN, type StepResult, type World } from '../src/core/index.js';
 import { solve } from '../../../packages/rules/test/solvers.js';
 import { idle, input, makeWorld, operatorRecord, placeWild, self, step } from './helpers.js';
 
@@ -133,6 +133,49 @@ describe('capture', () => {
     expect(find([step(world)], 'captureResult')).toMatchObject({ ok: false, reason: 'persist_failed' });
     expect(op.inventory.mirror).toBe(2);
     expect(op.diskSlots.size).toBe(0);
+  });
+
+  it('a Disk slot taken behind the sim keeps it marked and re-raises the capture at the next free slot (nothing lost, one tool)', () => {
+    const { world, wildId } = setup();
+    const op = world.operators.get('alice')!;
+    for (let s = 2; s < 8; s++) op.reservedSlots.add(s);
+    const ev = start(world, wildId);
+    const r = submit(world, ev.captureId, solve(ev.challenge as PublicChallenge));
+    const first = r.intents.find((i) => i.kind === 'capture')!;
+    if (first.kind !== 'capture') throw new Error('unreachable');
+    expect(first).toMatchObject({ location: 'DISK', daemon: { slot: 0 } });
+    // a daemon bought on the Exchange landed in slot 0 first: the store refused the capture (rolled back)
+    world.completeIntent(first.id, { ok: false, reason: DISK_SLOT_TAKEN });
+    const retried = step(world);
+    expect(find([retried], 'captureResult')).toBeUndefined();
+    const second = retried.intents.find((i) => i.kind === 'capture')!;
+    if (second.kind !== 'capture') throw new Error('unreachable');
+    expect(second.id).not.toBe(first.id);
+    expect(second).toMatchObject({ location: 'DISK', captureId: first.captureId, daemon: { id: first.daemon.id, slot: 1 } });
+    expect([...op.diskSlots].sort()).toEqual([0, 1]);
+    expect(op.inventory.mirror).toBe(1);
+    expect(op.captureId).toBe(first.captureId);
+    world.completeIntent(second.id, { ok: true, research: 1 });
+    expect(find([step(world)], 'captureResult')).toMatchObject({ ok: true });
+    expect(op.inventory.mirror).toBe(1);
+    expect(op.captureId).toBeNull();
+    expect([...op.diskSlots].sort()).toEqual([0, 1]);
+  });
+
+  it('a Disk slot taken behind the sim with the Disk now full fails the capture and refunds the tool once', () => {
+    const { world, wildId } = setup();
+    const op = world.operators.get('alice')!;
+    for (let s = 2; s < 8; s++) op.reservedSlots.add(s);
+    op.diskCapacity = 1;
+    const ev = start(world, wildId);
+    const r = submit(world, ev.captureId, solve(ev.challenge as PublicChallenge));
+    const intent = r.intents.find((i) => i.kind === 'capture')!;
+    world.completeIntent(intent.id, { ok: false, reason: DISK_SLOT_TAKEN });
+    const done = step(world);
+    expect(done.intents).toEqual([]);
+    expect(find([done], 'captureResult')).toMatchObject({ ok: false, reason: 'persist_failed' });
+    expect(op.inventory.mirror).toBe(2);
+    expect([...op.diskSlots]).toEqual([0]);
   });
 
   it('fails with packet loss when the target is defeated mid-capture, and clears the capture', () => {

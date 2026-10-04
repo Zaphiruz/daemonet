@@ -14,7 +14,7 @@ import {
   type ToolId,
 } from '@daemonet/rules';
 import { distance } from '../grid.js';
-import { Rejection, partyKey, type Capture, type Intent, type IntentResult, type Operator } from '../model.js';
+import { DISK_SLOT_TAKEN, Rejection, partyKey, type Capture, type Intent, type IntentResult, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import { toRamDaemon } from '../view.js';
 import { addResearch, type World } from '../world.js';
@@ -166,11 +166,23 @@ function commitCapture(world: World, op: Operator, cap: Capture, out: Out): void
 }
 
 export function completeCaptureIntent(world: World, op: Operator, intent: Extract<Intent, { kind: 'capture' }>, result: IntentResult, out: Out): void {
+  const slotTaken = !result.ok && intent.location === 'DISK' && result.reason === DISK_SLOT_TAKEN;
+  if (slotTaken) {
+    // A daemon arrived in that Disk slot behind the sim (an Exchange purchase): the slot stays marked, and the store
+    // rolled the refused capture back entirely, so the solved capture is raised again, as a new intent, at the next
+    // free slot (the same daemon and capture; the tool was taken once). Bounded: every retry marks one more slot.
+    const slot = world.freeDiskSlot(op);
+    if (slot !== null) {
+      op.diskSlots.add(slot);
+      world.trackIntent({ ...intent, id: world.newId('i'), daemon: { ...intent.daemon, slot } }, out);
+      return;
+    }
+  }
   world.captures.delete(intent.captureId);
   op.captureId = null;
   if (intent.location === 'RAM') op.reservedSlots.delete(intent.daemon.slot);
   if (!result.ok) {
-    if (intent.location === 'DISK') op.diskSlots.delete(intent.daemon.slot);
+    if (intent.location === 'DISK' && !slotTaken) op.diskSlots.delete(intent.daemon.slot);
     op.inventory[intent.tool] = (op.inventory[intent.tool] ?? 0) + 1;
     out.emit({ e: 'captureResult', captureId: intent.captureId, ok: false, reason: 'persist_failed' }, { to: op.id });
     return;

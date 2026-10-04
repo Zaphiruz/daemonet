@@ -1,5 +1,5 @@
 import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient } from '@daemonet/db';
-import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OrgView, OwnedDaemonRecord, Point } from '../core/index.js';
+import { DISK_SLOT_TAKEN, type HistoryEntry, type Intent, type IntentResult, type OperatorRecord, type OrgView, type OwnedDaemonRecord, type Point } from '../core/index.js';
 import { DISK_EXPANSION_ITEM, DISK_STEP, dayKey, getSpecies, type FilterTerm, type TicketKind, type TicketParams } from '@daemonet/rules';
 import {
   assertGrantReason,
@@ -226,9 +226,10 @@ export class PrismaStore implements Store {
   async liveState(after: ReadonlyMap<string, number>): Promise<Map<string, LiveOperatorState>> {
     const ids = [...after.keys()];
     if (ids.length === 0) return new Map();
-    const [ops, members, rows] = await Promise.all([
+    const [ops, members, disk, rows] = await Promise.all([
       this.prisma.operator.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }),
       this.prisma.orgMember.findMany({ where: { operatorId: { in: ids } }, include: { org: true } }),
+      this.prisma.daemon.findMany({ where: { operatorId: { in: ids }, location: 'DISK' }, select: { operatorId: true, slot: true }, orderBy: { slot: 'asc' } }),
       // One statement: per operator, every row above the watermark that has committed (seq order = commit order).
       this.prisma.bitsLedger.findMany({
         where: { OR: ids.map((id) => ({ operatorId: id, seq: { gt: BigInt(after.get(id)!) } })) },
@@ -238,7 +239,8 @@ export class PrismaStore implements Store {
     ]);
     const orgs = new Map(members.map((m) => [m.operatorId, m]));
     const out = new Map<string, LiveOperatorState>();
-    for (const op of ops) out.set(op.id, { name: op.name, org: orgView(orgs.get(op.id)), ledgerSeq: after.get(op.id)!, ledger: [] });
+    for (const op of ops) out.set(op.id, { name: op.name, org: orgView(orgs.get(op.id)), ledgerSeq: after.get(op.id)!, ledger: [], diskSlots: [] });
+    for (const d of disk) out.get(d.operatorId)?.diskSlots.push(d.slot);
     for (const r of rows) {
       const state = out.get(r.operatorId);
       if (!state) continue;
@@ -509,6 +511,10 @@ export class PrismaStore implements Store {
         // The slot is occupied (the runtime retries unknown outcomes of these kinds until the store answers, so a
         // deterministic conflict must be a domain answer, not an error).
         if (violated.includes('Daemon_operatorId_location_slot_key') || /\(`operatorId`,`location`,`slot`\)|operatorId,location,slot/.test(violated)) {
+          // A Disk slot can be taken behind the sim (an Exchange purchase lands in the buyer's lowest free slot): the
+          // world keeps it marked and re-reads the Disk. (A replay of a committed intent never gets here: the
+          // AppliedAction marker answers it first.)
+          if (intent.kind === 'store' || (intent.kind === 'capture' && intent.location === 'DISK')) return { ok: false, reason: DISK_SLOT_TAKEN };
           if (intent.kind === 'capture') return { ok: false, reason: 'slot taken' };
           if (intent.kind === 'claimStarter') return { ok: false, reason: 'starter already claimed' };
         }

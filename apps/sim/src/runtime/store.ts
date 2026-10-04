@@ -19,7 +19,7 @@ import {
   type TicketKind,
   type TicketParams,
 } from '@daemonet/rules';
-import { incidentParticipants, incidentRewardId, type IncidentParticipant, type Intent, type IntentResult, type OpenTicket, type OperatorRecord, type OrgView, type OwnedDaemonRecord, type Point, type ShopIntent } from '../core/index.js';
+import { DISK_SLOT_TAKEN, incidentParticipants, incidentRewardId, type IncidentParticipant, type Intent, type IntentResult, type OpenTicket, type OperatorRecord, type OrgView, type OwnedDaemonRecord, type Point, type ShopIntent } from '../core/index.js';
 import { shopPrice } from '../core/systems/economy.js';
 import { boardTicket } from '../core/systems/tickets.js';
 
@@ -65,8 +65,8 @@ export interface Store extends ChatStore {
   loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<LoadedOperator>;
   /**
    * What changed outside the sim for connected operators (SP4 plan 3: the runtime's resync after bus outages): name,
-   * org and the ledger rows above each operator's watermark (`after`: operator id -> seq) that the sim's own intents
-   * did not write. Operators without a row are left out.
+   * org, the ledger rows above each operator's watermark (`after`: operator id -> seq) that the sim's own intents
+   * did not write, and the occupied Disk slots (SP5). Operators without a row are left out.
    */
   liveState(after: ReadonlyMap<string, number>): Promise<Map<string, LiveOperatorState>>;
   /**
@@ -196,6 +196,11 @@ export interface LiveOperatorState {
   ledgerSeq: number;
   /** Rows above the caller's watermark whose reason is not in SIM_LEDGER_REASONS, in seq order. */
   ledger: Array<{ id: string; seq: number; delta: number; reason: string }>;
+  /**
+   * Occupied Disk slots, ascending (Exchange sales move daemons between Disks behind the sim: a lost `disk` push heals
+   * here).
+   */
+  diskSlots: number[];
 }
 
 /**
@@ -601,7 +606,8 @@ export class MemoryStore implements Store {
     for (const [id, seq] of after) {
       const op = this.operators.get(id);
       if (!op) continue;
-      const state: LiveOperatorState = { name: op.name, org: this.orgOf(id), ledgerSeq: seq, ledger: [] };
+      const diskSlots = [...this.daemons.values()].filter((d) => d.operatorId === id && d.location === 'DISK').map((d) => d.slot).sort((a, b) => a - b);
+      const state: LiveOperatorState = { name: op.name, org: this.orgOf(id), ledgerSeq: seq, ledger: [], diskSlots };
       this.ledger.forEach((l, i) => {
         const key = this.ledgerKeys[i]!;
         if (l.operatorId !== id || key.seq <= seq) return;
@@ -716,7 +722,7 @@ export class MemoryStore implements Store {
       }
       case 'capture': {
         // Mirrors the Daemon (operatorId, location, slot) unique constraint.
-        if (this.slotTaken(op.id, intent.location, intent.daemon.slot)) return { ok: false, reason: 'slot taken' };
+        if (this.slotTaken(op.id, intent.location, intent.daemon.slot)) return { ok: false, reason: intent.location === 'DISK' ? DISK_SLOT_TAKEN : 'slot taken' };
         this.daemons.set(intent.daemon.id, { ...intent.daemon, originalOperatorId: intent.log.originalOperatorId, operatorId: op.id, location: intent.location });
         const research = this.addResearch(op.id, intent.daemon.species);
         this.applied.add(intent.id);
@@ -725,6 +731,8 @@ export class MemoryStore implements Store {
       case 'store': {
         const d = this.daemons.get(intent.daemonId);
         if (!d || d.operatorId !== op.id || d.location !== 'RAM') return { ok: false, reason: 'daemon not found' };
+        // Mirrors the Daemon (operatorId, location, slot) unique constraint (an Exchange purchase may hold the slot).
+        if (this.slotTaken(op.id, 'DISK', intent.diskSlot)) return { ok: false, reason: DISK_SLOT_TAKEN };
         Object.assign(d, ctx.storedDaemon ? stateFields(ctx.storedDaemon) : {}, { location: 'DISK', slot: intent.diskSlot });
         break;
       }

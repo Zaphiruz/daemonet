@@ -323,14 +323,8 @@ function store(world: World, op: Operator, c: Cmd<'store'>, input: Input, out: O
   const d = ownedDaemon(world, op, c.args.daemonId);
   if (d.active) throw new Rejection('E_STATE', 'recall the daemon first');
   if (d.pending) throw new Rejection('E_STATE', 'already being stored');
-  let slot = -1;
-  for (let s = 0; s < op.diskCapacity; s++) {
-    if (!op.diskSlots.has(s)) {
-      slot = s;
-      break;
-    }
-  }
-  if (slot < 0) throw new Rejection('E_STATE', 'Disk is full');
+  const slot = world.freeDiskSlot(op);
+  if (slot === null) throw new Rejection('E_STATE', 'Disk is full');
   d.pending = true;
   op.diskSlots.add(slot);
   world.trackIntent({ id: world.newId('i'), kind: 'store', operatorId: op.id, reqId: input.reqId, daemonId: d.id, diskSlot: slot }, out);

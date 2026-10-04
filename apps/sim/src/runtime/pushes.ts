@@ -1,3 +1,4 @@
+import { DISK_MAX } from '@daemonet/rules';
 import { OperatorName } from '@daemonet/shared';
 import { z } from 'zod';
 import { SIM_LEDGER_REASONS } from './store.js';
@@ -58,6 +59,18 @@ export const BitsPush = z.object({
 /** `admin` channel: the operator was renamed in the api (the api checks the name against the live chat filter). */
 export const RenamePush = z.object({ kind: z.literal('rename'), operatorId: Id, name: OperatorName, origin: Origin });
 
+const DiskSlot = z.number().int().min(0).max(DISK_MAX - 1);
+
+/**
+ * `admin` channel: a daemon arrived on (`add`) or left (`remove`) the operator's Disk outside the sim (an Exchange
+ * sale moves it from the seller's slot to the buyer's). The sim only tracks which slots are taken (to pick the slot of
+ * the next store or capture to Disk), so that is all the push carries. Pub/sub is at-most-once: the runtime also
+ * re-reads Disk occupancy with every resync (`Store.liveState`).
+ */
+export const DiskPush = z
+  .object({ kind: z.literal('disk'), operatorId: Id, add: DiskSlot.optional(), remove: DiskSlot.optional(), origin: Origin })
+  .refine((m) => m.add !== undefined || m.remove !== undefined, 'add or remove is required');
+
 /**
  * `admin` channel: start an Incident now (SP4 spec §8). A one-shot command, not state: pub/sub is at-most-once, so a
  * start published while the bus is down is simply lost (the admin presses the button again); nothing is resynced.
@@ -93,3 +106,4 @@ export function exchangeView(detail: Record<string, unknown>, operatorId: string
 export type OrgMembershipPush = z.infer<typeof OrgMembershipPush>;
 export type BitsPush = z.infer<typeof BitsPush>;
 export type RenamePush = z.infer<typeof RenamePush>;
+export type DiskPush = z.infer<typeof DiskPush>;

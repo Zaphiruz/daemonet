@@ -19,7 +19,7 @@ import {
   type SubnetDef,
 } from '@daemonet/rules';
 import { Grid, type Point } from './grid.js';
-import { freshEngagement, isEconomyIntent, partyKey, isInventoryIntent, type Capture, type Daemon, type IncidentState, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
+import { DISK_SLOT_TAKEN, freshEngagement, isEconomyIntent, partyKey, isInventoryIntent, type Capture, type Daemon, type IncidentState, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
 import { Out } from './out.js';
 import { planWild } from './systems/ai.js';
 import { executeQueuedUses, type QueuedUse } from './systems/combat.js';
@@ -453,6 +453,12 @@ export class World {
     return null;
   }
 
+  /** Lowest Disk slot below the operator's capacity not marked occupied, or null when the Disk is full. */
+  freeDiskSlot(op: Operator): number | null {
+    for (let s = 0; s < op.diskCapacity; s++) if (!op.diskSlots.has(s)) return s;
+    return null;
+  }
+
   /** Resolves an entity id to a position (daemon or operator). */
   locate(id: string): Point | null {
     const d = this.daemons.get(id);
@@ -537,7 +543,8 @@ export class World {
         const d = this.daemons.get(intent.daemonId);
         if (!result.ok) {
           if (d) d.pending = false;
-          op.diskSlots.delete(intent.diskSlot);
+          // a slot taken behind the sim (an Exchange purchase) stays marked: the player's retry picks the next one
+          if (result.reason !== DISK_SLOT_TAKEN) op.diskSlots.delete(intent.diskSlot);
           return out.fail(intent, 'E_STATE', result.reason);
         }
         this.removeDaemon(intent.daemonId);

@@ -1,7 +1,7 @@
 import { createPrisma, type PrismaClient } from '@daemonet/db';
 import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, ticketBoard } from '@daemonet/rules';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { incidentParticipants, incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
+import { DISK_SLOT_TAKEN, incidentParticipants, incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
 import { DEPOSIT_NOT_SAVED, MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type LiveOperatorState, type Store } from '../src/runtime/store.js';
 import { ownedRecord } from './helpers.js';
@@ -408,8 +408,8 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       const live = await store.liveState(new Map([[a.id, loaded.ledgerSeq], ['00000000-0000-0000-0000-000000000000', 0]]));
       expect([...live.keys()]).toEqual([a.id]);
       // the shop row is the sim's own (applied by the world at accept): it only moves the watermark
-      expect(live.get(a.id)).toEqual({ name: null, org: null, ledgerSeq: g2.seq, ledger: [{ id: g2.id, seq: g2.seq, delta: -100, reason: 'rename' }] });
-      expect((await store.liveState(new Map([[a.id, g2.seq]]))).get(a.id)).toEqual({ name: null, org: null, ledgerSeq: g2.seq, ledger: [] });
+      expect(live.get(a.id)).toEqual({ name: null, org: null, ledgerSeq: g2.seq, ledger: [{ id: g2.id, seq: g2.seq, delta: -100, reason: 'rename' }], diskSlots: [] });
+      expect((await store.liveState(new Map([[a.id, g2.seq]]))).get(a.id)).toEqual({ name: null, org: null, ledgerSeq: g2.seq, ledger: [], diskSlots: [] });
       expect(await store.liveState(new Map())).toEqual(new Map());
     });
 
@@ -600,6 +600,29 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
         reason: 'starter already claimed',
       });
       expect((await store.loadOrCreateOperator('sub-s1', 'lo', SPAWN)).ram.map((d) => d.id)).toEqual(['abcd1234-h1']);
+    });
+
+    it('a store or capture into a Disk slot taken behind the sim (an Exchange purchase) is the domain failure DISK_SLOT_TAKEN; a replay still answers ok', async () => {
+      const a = await store.loadOrCreateOperator('sub-ds1', 'lo', SPAWN);
+      const ctx = { seedId: 'abcd1234' };
+      await store.applyIntent(claim(a.id, 'dsa', ownedRecord('pingling', 5, 0, 'abcd1234-ds1')), ctx);
+      const toDisk = (id: string, daemonId: string): Intent => ({
+        id, kind: 'capture', operatorId: a.id, captureId: `c-${id}`, daemon: ownedRecord('bitrot', 6, 0, daemonId), location: 'DISK', tool: 'sniff',
+        log: { ...log, tool: 'sniff', spawnIndex: 1 },
+      });
+      const first = toDisk('i-ds-cap1', 'abcd1234-ds2');
+      expect(await store.applyIntent(first, ctx)).toEqual({ ok: true, research: 1 });
+      expect(await store.applyIntent(toDisk('i-ds-cap2', 'abcd1234-ds3'), ctx)).toEqual({ ok: false, reason: DISK_SLOT_TAKEN });
+      expect(await store.applyIntent({ id: 'i-ds-store', kind: 'store', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-ds1', diskSlot: 0 }, ctx)).toEqual({ ok: false, reason: DISK_SLOT_TAKEN });
+      // the until-known retry of the committed capture is answered from its marker, never as a slot clash
+      expect(await store.applyIntent(first, ctx)).toEqual({ ok: true, research: 1 });
+      const after = await store.loadOrCreateOperator('sub-ds1', 'lo', SPAWN);
+      expect(after.ram.map((d) => d.id)).toEqual(['abcd1234-ds1']);
+      expect(after.diskSlots).toEqual([0]);
+      expect((await store.liveState(new Map([[a.id, 0]]))).get(a.id)!.diskSlots).toEqual([0]);
+      // the refused intents left nothing behind: the slot-1 retry of the store goes through
+      expect(await store.applyIntent({ id: 'i-ds-store2', kind: 'store', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-ds1', diskSlot: 1 }, ctx)).toEqual({ ok: true });
+      expect((await store.liveState(new Map([[a.id, 0]]))).get(a.id)!.diskSlots).toEqual([0, 1]);
     });
 
     it('a second claim is refused once a starter is claimed, even with the starter slot free: no second starter, no inventory overwrite', async () => {

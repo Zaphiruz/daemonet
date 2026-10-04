@@ -5,9 +5,17 @@ import type { Point } from './grid.js';
 /** One line of a daemon's life story (SP3a spec §7). `at` is an ISO timestamp. */
 export interface HistoryEntry {
   at: string;
-  kind: 'captured' | 'evolved' | 'clean' | 'signature' | 'patched' | 'decompiled';
+  /** `traded`: the daemon changed hands on the Exchange (written by the api's sale). */
+  kind: 'captured' | 'evolved' | 'clean' | 'signature' | 'patched' | 'decompiled' | 'traded';
   detail: string;
 }
+
+/**
+ * The store's answer to a `store` or a capture to Disk whose Disk slot is already occupied: a daemon arrived there
+ * outside the sim (an Exchange purchase) before the world heard of it. The refused intent rolled back entirely; the
+ * slot really is taken, so the world keeps it marked (the runtime then re-reads the Disk from the store).
+ */
+export const DISK_SLOT_TAKEN = 'that Disk slot was just taken; try again';
 
 /** A daemon as persisted (RAM or Disk). Arrays are in STAT_KEYS order. */
 export interface OwnedDaemonRecord {

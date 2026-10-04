@@ -1,6 +1,6 @@
 import { SWAP_COOLDOWN_MS, msToTicks } from '@daemonet/rules';
 import { describe, expect, it } from 'vitest';
-import { toSelf } from '../src/core/index.js';
+import { DISK_SLOT_TAKEN, toSelf } from '../src/core/index.js';
 import { idle, input, makeWorld, operatorRecord, self, step } from './helpers.js';
 
 describe('claimStarter', () => {
@@ -147,6 +147,18 @@ describe('store and load', () => {
     expect(step(world).replies[0]).toMatchObject({ ok: true });
     expect(world.operators.get('alice')!.ram).toEqual(['alice-d0']);
     expect([...world.operators.get('alice')!.diskSlots]).toEqual([0]);
+  });
+
+  it('a store refused because its Disk slot was just taken keeps the slot marked, so the retry picks the next one', () => {
+    const world = makeWorld();
+    world.addOperator(operatorRecord('alice', { x: 4.5, y: 5.5 }));
+    const r = step(world, input('alice', { cmd: 'store', actor: self, args: { daemonId: 'alice-d1' } }));
+    expect(r.intents[0]).toMatchObject({ kind: 'store', diskSlot: 0 });
+    world.completeIntent(r.intents[0]!.id, { ok: false, reason: DISK_SLOT_TAKEN });
+    expect(step(world).replies[0]).toMatchObject({ ok: false, code: 'E_STATE', message: DISK_SLOT_TAKEN });
+    expect([...world.operators.get('alice')!.diskSlots]).toEqual([0]);
+    const retry = step(world, input('alice', { cmd: 'store', actor: self, args: { daemonId: 'alice-d1' } }));
+    expect(retry.intents[0]).toMatchObject({ kind: 'store', diskSlot: 1 });
   });
 
   it('load reserves a RAM slot and inserts the daemon the runtime supplies', () => {

@@ -3,6 +3,7 @@ import type { Bus } from '@daemonet/bus';
 import { INCIDENT_MAX_OPERATORS, INCIDENT_SUBNET, ticketKey } from '@daemonet/rules';
 import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Command, type Entity, type ErrorCode, type GameEvent, type ServerMessage } from '@daemonet/shared';
 import {
+  DISK_SLOT_TAKEN,
   EVICT_TO,
   INTEREST_RADIUS,
   distance,
@@ -22,7 +23,7 @@ import type { TokenVerifier } from './auth.js';
 import { ChatService } from './chat.js';
 import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
 import { diffEntities } from './interest.js';
-import { BitsPush, ExchangePush, exchangeView, IncidentStartPush, OrgMembershipPush, RenamePush } from './pushes.js';
+import { BitsPush, DiskPush, ExchangePush, exchangeView, IncidentStartPush, OrgMembershipPush, RenamePush } from './pushes.js';
 import { randomHex, withItems, type IncidentRow, type Store } from './store.js';
 
 /** Transport-independent connection. */
@@ -130,6 +131,8 @@ interface Session {
   /** Bumped by every org / rename push: a resync whose store read raced one does not overwrite it. */
   orgGen: number;
   nameGen: number;
+  /** Bumped by every `disk` push: a resync whose store read raced one leaves Disk occupancy alone. */
+  diskGen: number;
 }
 
 const BUCKET_MAX = 64;
@@ -155,7 +158,17 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const sameOrg = (a: OrgView | null, b: OrgView | null) => a === b || (a !== null && b !== null && a.id === b.id && a.name === b.name && a.tag === b.tag && a.rank === b.rank);
 
 /** Bus message kinds this class handles on the `admin` channel (the chat service handles the others). */
-const ADMIN_KINDS: ReadonlySet<unknown> = new Set(['bits', 'rename', 'incident:start']);
+const ADMIN_KINDS: ReadonlySet<unknown> = new Set(['bits', 'rename', 'incident:start', 'disk']);
+
+/** The Disk slots reserved by the operator's store and capture-to-Disk intents still waiting for the store, by intent id. */
+function pendingDiskSlots(world: World, operatorId: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const i of world.pendingIntents(operatorId)) {
+    if (i.kind === 'store') out.set(i.id, i.diskSlot);
+    else if (i.kind === 'capture' && i.location === 'DISK') out.set(i.id, i.daemon.slot);
+  }
+  return out;
+}
 
 /** Constant-time string comparison; different lengths never match. */
 function sameSecret(a: string, b: string): boolean {
@@ -316,8 +329,8 @@ export class Game {
   }
 
   /**
-   * `admin` channel: bits spent or granted in the api, renames, and Incident starts (mutes, deletions and filters go to
-   * the chat).
+   * `admin` channel: bits spent or granted in the api, renames, Disk slots that changed hands on the Exchange, and
+   * Incident starts (mutes, deletions and filters go to the chat).
    */
   private onAdminPush(raw: unknown): void {
     const kind = (raw as { kind?: unknown } | null)?.kind;
@@ -327,6 +340,19 @@ export class Game {
       if (!start.success) return this.log.warn({ kind }, 'dropped a malformed admin message');
       if (start.data.origin === 'sim') return;
       if (!this.startIncident()) this.log.info({}, 'incident start ignored: one is already running (or kernelspace is not hosted)');
+      return;
+    }
+    if (kind === 'disk') {
+      const disk = DiskPush.safeParse(raw);
+      if (!disk.success) return this.log.warn({ kind }, 'dropped a malformed admin message');
+      const m = disk.data;
+      if (m.origin === 'sim') return;
+      const live = this.live(m.operatorId);
+      if (!live) return;
+      // a daemon arrived on (or left) this operator's Disk through the Exchange
+      live.session.diskGen++;
+      if (typeof m.add === 'number') live.op.diskSlots.add(m.add);
+      if (typeof m.remove === 'number') live.op.diskSlots.delete(m.remove);
       return;
     }
     const parsed = (kind === 'bits' ? BitsPush : RenamePush).safeParse(raw);
@@ -365,17 +391,20 @@ export class Game {
   }
 
   /**
-   * Re-reads org membership, names and the ledger rows above each watermark for these operators (bus reconnects and
+   * Re-reads org membership, names, Disk occupancy and the ledger rows above each watermark for these operators (bus reconnects and
    * the periodic chat resync). A push that arrived while the read was in flight wins over it (generations, applied
    * row ids); an operator that left or reloaded meanwhile is skipped (its new load is newer). Never throws.
    */
   private async resyncOperators(ids: readonly string[]): Promise<void> {
-    const before = new Map<string, { session: Session; orgGen: number; nameGen: number }>();
+    const before = new Map<string, { session: Session; orgGen: number; nameGen: number; diskGen: number; world: World; pendingDisk: ReadonlySet<string> }>();
     const after = new Map<string, number>();
     for (const id of ids) {
       const session = this.sessions.get(id);
       if (!session) continue;
-      before.set(id, { session, orgGen: session.orgGen, nameGen: session.nameGen });
+      before.set(id, {
+        session, orgGen: session.orgGen, nameGen: session.nameGen, diskGen: session.diskGen, world: session.world,
+        pendingDisk: new Set(pendingDiskSlots(session.world, id).keys()),
+      });
       after.set(id, session.ledgerSeq);
     }
     if (after.size === 0) return;
@@ -399,7 +428,24 @@ export class Game {
         session.ledgerSeq = st.ledgerSeq;
         for (const [rowId, seq] of session.ledgerApplied) if (seq <= session.ledgerSeq) session.ledgerApplied.delete(rowId);
       }
+      this.resyncDisk(session, op, b, st.diskSlots);
     }
+  }
+
+  /**
+   * Disk occupancy from a resync read (Exchange sales move daemons between Disks behind the sim; a lost `disk` push
+   * heals here): the stored slots plus the slots reserved by store / capture-to-Disk intents still waiting for the
+   * store. Skipped when the read may be stale for this operator: a `disk` push arrived meanwhile, one of those intents
+   * completed meanwhile (the read may predate its commit), or the operator moved worlds. The next resync catches up.
+   */
+  private resyncDisk(session: Session, op: Operator, b: { diskGen: number; world: World; pendingDisk: ReadonlySet<string> }, stored: readonly number[]): void {
+    if (session.diskGen !== b.diskGen || session.world !== b.world) return;
+    const pending = pendingDiskSlots(session.world, op.id);
+    for (const id of b.pendingDisk) if (!pending.has(id)) return;
+    const next = [...new Set([...stored, ...pending.values()])].sort((x, y) => x - y);
+    if (next.length === op.diskSlots.size && next.every((s) => op.diskSlots.has(s))) return;
+    op.diskSlots.clear();
+    for (const s of next) op.diskSlots.add(s);
   }
 
   /** Sends an out-of-tick server message to every connection of an operator (controller and spectators). */
@@ -508,7 +554,7 @@ export class Game {
         session = {
           operatorId: rec.id, sub: claims.sub, world, controller: null, spectators: new Set(), resumeToken: randomHex(16), buffer: [], baseTick: world.tick,
           savedKnown: null, savedSelf: null, commandsThisTick: 0, violations: [], leaveAtTick: null, reloadRequired: false,
-          ledgerSeq: rec.ledgerSeq, loadSeq: rec.ledgerSeq, ledgerApplied: new Map(), orgGen: 0, nameGen: 0,
+          ledgerSeq: rec.ledgerSeq, loadSeq: rec.ledgerSeq, ledgerApplied: new Map(), orgGen: 0, nameGen: 0, diskGen: 0,
         };
         this.sessions.set(rec.id, session);
         this.claimParkedRewards(session, rec.ledgerSeq);
@@ -1150,6 +1196,8 @@ export class Game {
       if (intent.kind === 'completeTicket' && !result.ok) this.logRefusedPayout(world, intent, result.reason);
       const elsewhere = intent.kind === 'incidentReward' && world.isRewardElsewhere(intent.id);
       world.completeIntent(intent.id, result);
+      // a daemon arrived in that Disk slot behind the sim and its `disk` push is late or lost: re-read the Disk now
+      if ((intent.kind === 'store' || intent.kind === 'capture') && !result.ok && result.reason === DISK_SLOT_TAKEN) this.track(this.resyncOperators([intent.operatorId]));
       if (intent.kind === 'incidentReward') this.onIncidentReward(intent, result, elsewhere);
       if (intent.kind === 'evolve' && result.ok) this.shareDiscovery(world, intent, result.discovered === true);
       // the operator's name is set when the claim commits: members' cluster views show it
