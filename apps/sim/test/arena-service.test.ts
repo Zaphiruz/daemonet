@@ -1,5 +1,5 @@
 import { MemoryBus } from '@daemonet/bus';
-import { ARENA_LEVEL, ARENA_MAX_MATCHES, SANDBOX, msToTicks } from '@daemonet/rules';
+import { ARENA_LEVEL, ARENA_MAX_MATCHES, INCIDENT_MAX_OPERATORS, SANDBOX, getSubnet, msToTicks } from '@daemonet/rules';
 import type { GameEvent, ServerMessage } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
 import { World, type OperatorRecord } from '../src/core/index.js';
@@ -365,11 +365,12 @@ class FakeConn implements Conn {
 }
 
 describe('arena matches in the runtime', () => {
-  async function setup(opts: { leaveAfterTicks?: number; checkpointEveryTicks?: number } = {}) {
+  async function setup(opts: { leaveAfterTicks?: number; checkpointEveryTicks?: number; worlds?: World[] } = {}) {
     const store = new MemoryStore();
     const bus = new MemoryBus();
-    const world = new World({ subnet: TEST_SUBNET, seed: 'x', seedId: 'aaaa0001', spawner: false });
-    const game = new Game({ worlds: [world], store, verify: createDevVerifier('daemonet-users'), bus, ...opts });
+    const { worlds, ...rest } = opts;
+    const world = worlds?.[0] ?? new World({ subnet: TEST_SUBNET, seed: 'x', seedId: 'aaaa0001', spawner: false });
+    const game = new Game({ worlds: worlds ?? [world], store, verify: createDevVerifier('daemonet-users'), bus, ...rest });
     let seq = 0;
     const connect = async (name: string, role?: 'spectator') => {
       const conn = new FakeConn();
@@ -380,13 +381,14 @@ describe('arena matches in the runtime', () => {
     const join = async (name: string) => {
       const conn = await connect(name);
       const id = conn.of('authOk')[0]!.d.operatorId;
-      const op = world.operators.get(id)!;
+      const w = game.worldOf(id)!;
+      const op = w.operators.get(id)!;
       op.starterClaimed = true;
       op.name = name;
-      world.addOwned(op, { ...ownedRecord('pingling', 20, 0, `${name}-d0`), originalOperatorId: id });
-      world.addOwned(op, { ...ownedRecord('glitchmite', 20, 1, `${name}-d1`), originalOperatorId: id });
+      w.addOwned(op, { ...ownedRecord('pingling', 20, 0, `${name}-d0`), originalOperatorId: id });
+      w.addOwned(op, { ...ownedRecord('glitchmite', 20, 1, `${name}-d1`), originalOperatorId: id });
       // the store holds the same daemons (as if loaded)
-      for (const d of world.checkpoint(id).ram) store.daemons.set(d.id, { ...d, operatorId: id, location: 'RAM' });
+      for (const d of w.checkpoint(id).ram) store.daemons.set(d.id, { ...d, operatorId: id, location: 'RAM' });
       const cmd = (command: object, via = conn) => game.message(via, JSON.stringify({ t: 'cmd', seq: ++seq, d: { reqId: `q${seq}`, ...command } }));
       return { conn, id, cmd };
     };
@@ -573,6 +575,33 @@ describe('arena matches in the runtime', () => {
     expect(a.conn.of('arenaChallenge')).toEqual([]);
     expect(watcher.of('snapshot').at(-1)!.d).toMatchObject({ subnet: 'sandbox' });
     expect(arena.operators.size).toBe(2);
+    await game.shutdown();
+  });
+
+  it('an operator coming home to a kernelspace that filled up during its match lands at backbone’s spawn', async () => {
+    const backbone = new World({ subnet: getSubnet('backbone'), seed: 'b', seedId: 'bbbb0001', spawner: false });
+    const ks = new World({ subnet: getSubnet('kernelspace'), seed: 'k', seedId: 'kkkk0002', spawner: false });
+    const { game, store, join, ticks, duel } = await setup({ worlds: [backbone, ks] });
+    expect(game.startIncident()).toBe(true);
+    ticks(1);
+    for (const name of ['alice', 'bob']) {
+      store.operators.set(name, { id: name, sub: `dev-${name}`, name, starterClaimed: true, subnet: 'kernelspace', bits: 0, diskCapacity: 256, x: ks.subnet.spawn.x, y: ks.subnet.spawn.y, inventory: {} });
+    }
+    const a = await join('alice');
+    const b = await join('bob');
+    expect(game.worldOf(a.id)).toBe(ks);
+    await duel(a, b);
+    expect(ks.operators.size).toBe(0);
+    // while they fight, kernelspace fills to the cap
+    for (let i = 0; i < INCIDENT_MAX_OPERATORS; i++) ks.addOperator(operatorRecord(`k${i}`, { subnet: 'kernelspace', x: ks.subnet.spawn.x, y: ks.subnet.spawn.y }));
+    await a.cmd({ cmd: 'arenaForfeit', actor: 'self', args: {} });
+    ticks(RETURN + 2);
+    for (const id of [a.id, b.id]) {
+      expect(game.worldOf(id)).toBe(backbone);
+      expect(backbone.operators.get(id)).toMatchObject({ x: backbone.subnet.spawn.x, y: backbone.subnet.spawn.y });
+    }
+    expect(ks.operators.size).toBe(INCIDENT_MAX_OPERATORS);
+    expect(a.conn.of('snapshot').at(-1)!.d).toMatchObject({ subnet: 'backbone', self: { arena: null } });
     await game.shutdown();
   });
 

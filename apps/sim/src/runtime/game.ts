@@ -568,7 +568,7 @@ export class Game {
         let world = this.worlds.get(rec.subnet);
         // kernelspace is capped while an Incident runs (the gateway closes at 16): an operator whose record names it
         // returns to backbone's spawn instead when it is full (with no Incident running, eviction sends it there).
-        if (world?.subnet.id === INCIDENT_SUBNET && world.incident && !world.operators.has(rec.id) && !this.incidentRoom(INCIDENT_SUBNET)) {
+        if (world && this.kernelspaceFull(world, rec.id)) {
           world = this.worlds.get(EVICT_TO);
           if (world) {
             rec.subnet = world.subnet.id;
@@ -931,6 +931,14 @@ export class Game {
   // ---- Incidents (SP4 spec section 8) ----
 
   /**
+   * `world` is kernelspace while an Incident runs, the operator is not in it, and there is no room for one more: an
+   * operator loading into it or coming home from an arena match goes to backbone's spawn instead.
+   */
+  private kernelspaceFull(world: World, operatorId: string): boolean {
+    return world.subnet.id === INCIDENT_SUBNET && !!world.incident && !world.operators.has(operatorId) && !this.incidentRoom(INCIDENT_SUBNET);
+  }
+
+  /**
    * Whether an Incident gateway into `subnet` admits one more operator now: an Incident runs there and the operators in
    * it plus those already travelling in stay under the cap (so two travels in one tick cannot both take the last place).
    */
@@ -1180,14 +1188,22 @@ export class Game {
   /**
    * Arena hand-over (SP6), both ways: the operator leaves the world it is in and enters `to` with `record`. As with
    * travel (#25) nothing the client knew carries over: resume state is reset and every connection gets a snapshot (which
-   * restarts the sandbox script). Writes nothing: checkpoints of an operator in a match write its home record.
+   * restarts the sandbox script). Writes nothing: checkpoints of an operator in a match write its home record. Coming
+   * home to a kernelspace that filled up during the match lands at backbone's spawn, as a load would.
    */
-  private transfer(operatorId: string, to: World, record: OperatorRecord): boolean {
+  private transfer(operatorId: string, dest: World, record: OperatorRecord): boolean {
     const session = this.sessions.get(operatorId);
     if (!session || !session.world.operators.has(operatorId)) return false;
+    let to = dest;
+    let at = { x: record.x, y: record.y };
+    const evict = this.kernelspaceFull(dest, operatorId) ? this.worlds.get(EVICT_TO) : undefined;
+    if (evict) {
+      to = evict;
+      at = { x: evict.subnet.spawn.x, y: evict.subnet.spawn.y };
+    }
     const from = session.world;
     from.removeOperator(operatorId);
-    to.addOperator({ ...record, subnet: to.subnet.id });
+    to.addOperator({ ...record, ...at, subnet: to.subnet.id });
     session.world = to;
     this.clusters.reattach(operatorId);
     session.savedKnown = null;
