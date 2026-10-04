@@ -39,7 +39,8 @@ export function createChatStore() {
     const seen = new Set(cur.map((l) => l.id));
     const fresh = incoming.filter((l) => !seen.has(l.id));
     if (fresh.length === 0) return 0;
-    const merged = [...cur, ...fresh].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    // (at, id): the API's order, so lines of one millisecond keep their place across history pages
+    const merged = [...cur, ...fresh].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     lines = new Map(lines).set(channel, merged.slice(-LIMIT));
     return fresh.length;
   };

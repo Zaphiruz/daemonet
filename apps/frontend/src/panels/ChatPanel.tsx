@@ -71,6 +71,10 @@ export function ChatPanel({ client, isAdmin }: { client: GameClient; isAdmin: bo
   const listRef = useRef<HTMLDivElement>(null);
   const manual = client.role === 'controller';
   const lines = chat.lines.get(active) ?? [];
+  /** Channels whose history has been paged back to the start (an older page came back empty). */
+  const [exhausted, setExhausted] = useState<ReadonlySet<string>>(new Set());
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const pagesHistory = active.startsWith('subnet:') || active.startsWith('dm:');
 
   useEffect(() => {
     chatStore.setActive(active);
@@ -89,14 +93,32 @@ export function ChatPanel({ client, isAdmin }: { client: GameClient; isAdmin: bo
   }, [active, loadHistory]);
   // lines only count as unread while the panel is closed or on another channel
   useEffect(() => () => chatStore.setActive(''), []);
+  // follow the newest line (loading older lines must not jump to the bottom)
+  const newest = lines.at(-1)?.id;
   useEffect(() => {
     listRef.current?.scrollTo?.({ top: listRef.current.scrollHeight });
-  }, [lines.length, active]);
+  }, [newest, active]);
   useEffect(() => {
     if (cooldown <= 0) return;
     const t = setTimeout(() => setCooldown((c) => Math.max(0, c - 250)), 250);
     return () => clearTimeout(t);
   }, [cooldown]);
+
+  /** Fetches the page before the oldest line held, by the API's (at, id) cursor. */
+  const loadOlder = () => {
+    const oldest = lines[0];
+    if (!oldest || loadingOlder) return;
+    const channel = active;
+    setLoadingOlder(true);
+    loadHistory({ channel, before: oldest.at, beforeId: oldest.id })
+      .unwrap()
+      .then((rows) => {
+        if (rows.length === 0) setExhausted((s) => new Set(s).add(channel));
+        else chatStore.history(channel, rows as ChatLine[]);
+      })
+      .catch((err: unknown) => log.push('error', `older chat not loaded: ${describeApiError(err)}`))
+      .finally(() => setLoadingOlder(false));
+  };
 
   const send = () => {
     const t = text.trim();
@@ -131,6 +153,11 @@ export function ChatPanel({ client, isAdmin }: { client: GameClient; isAdmin: bo
       </div>
       <div ref={listRef} className="mono min-h-0 flex-1 overflow-auto p-2" data-testid="chat-lines">
         {lines.length === 0 && <p className="text-neutral-600">nothing yet</p>}
+        {pagesHistory && lines.length > 0 && !exhausted.has(active) && (
+          <button className="mb-1 text-[10px] text-neutral-500 hover:text-neutral-300 disabled:opacity-40" disabled={loadingOlder} onClick={loadOlder} data-testid="chat-older">
+            older lines
+          </button>
+        )}
         {lines.map((l) => (
           <div key={l.id} className="group break-words">
             <span className="text-neutral-600">{new Date(l.at).toLocaleTimeString()}</span>{' '}

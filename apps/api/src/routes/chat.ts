@@ -13,7 +13,17 @@ import { z } from 'zod';
 import { badRequest, forbidden, notFound } from '../errors.js';
 
 const Channel = z.string().regex(/^(subnet|cluster|org|dm):[A-Za-z0-9_-]{1,64}$/);
-const HistoryQuery = z.object({ before: z.iso.datetime({ offset: true }).optional(), limit: z.coerce.number().int().min(1).max(64).default(64) });
+/**
+ * History pages run newest first by `(at, id)`; the cursor is the oldest line held: `before` (its `at`) and `beforeId`
+ * (its id), so lines sharing a millisecond across a page boundary are neither skipped nor repeated.
+ */
+const HistoryQuery = z
+  .object({
+    before: z.iso.datetime({ offset: true }).optional(),
+    beforeId: z.string().min(1).max(64).optional(),
+    limit: z.coerce.number().int().min(1).max(64).default(64),
+  })
+  .refine((q) => q.beforeId === undefined || q.before !== undefined, { message: 'beforeId needs before' });
 const MuteBody = z.object({ operatorId: z.string().min(1).max(64), minutes: z.number().int().min(0).max(60 * 24 * 30) });
 const TermBody = z.object({ pattern: z.string().min(1).max(64), kind: z.enum(['WORD', 'REGEX']), action: z.enum(['BLOCK', 'MASK']) });
 const ReportBody = z.object({
@@ -71,12 +81,12 @@ export function registerChatRoutes(app: FastifyInstance, prisma: PrismaClient, b
     const q = parse(HistoryQuery, req.query);
     if (!mayRead(channel)) throw forbidden('not a member of that channel');
     const me = req.operator!.id;
-    const at = q.before ? { at: { lt: new Date(q.before) } } : {};
+    const before = q.before ? new Date(q.before) : null;
+    const cursor = !before ? [] : q.beforeId ? [{ OR: [{ at: { lt: before } }, { at: before, id: { lt: q.beforeId } }] }] : [{ at: { lt: before } }];
     // DM rows are stored in the sender's form (`dm:<recipient>`): the thread is my lines to them plus theirs to me.
     const dm = channel.startsWith('dm:');
-    const where = dm
-      ? { deletedAt: null, ...at, OR: [{ channel, operatorId: me }, { channel: `dm:${me}`, operatorId: channel.slice(3) }] }
-      : { channel, deletedAt: null, ...at };
+    const thread = dm ? [{ OR: [{ channel, operatorId: me }, { channel: `dm:${me}`, operatorId: channel.slice(3) }] }] : [{ channel }];
+    const where = { deletedAt: null, AND: [...thread, ...cursor] };
     const rows = await prisma.chatMessage.findMany({ where, orderBy: [{ at: 'desc' }, { id: 'desc' }], take: q.limit });
     const names = new Map(
       (await prisma.operator.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.operatorId))] } }, select: { id: true, name: true } })).map((o) => [o.id, o.name]),

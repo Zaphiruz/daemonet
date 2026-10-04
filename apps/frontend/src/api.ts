@@ -145,6 +145,22 @@ export interface TicketHistory {
 }
 
 /** All mutations carry the CSRF header the API requires. */
+/** A history page: the newest lines, or those before the `(at, id)` cursor of the oldest line held. */
+export interface ChatHistoryArgs {
+  channel: string;
+  before?: string;
+  beforeId?: string;
+}
+
+/** `before` and `beforeId` together form the API's composite cursor (lines of one millisecond are never skipped). */
+export function chatHistoryUrl({ channel, before, beforeId }: ChatHistoryArgs): string {
+  const q = new URLSearchParams();
+  if (before) q.set('before', before);
+  if (before && beforeId) q.set('beforeId', beforeId);
+  const qs = q.toString();
+  return `/chat/${encodeURIComponent(channel)}${qs ? `?${qs}` : ''}`;
+}
+
 export const api = createApi({
   reducerPath: 'api',
   baseQuery: fetchBaseQuery({
@@ -163,9 +179,7 @@ export const api = createApi({
     ledger: b.query<LedgerEntry[], void>({ query: () => '/ledger' }),
     board: b.query<{ day: string; subnet: string; tickets: BoardTicket[]; acceptedToday: number }, string>({ query: (subnet) => `/tickets/board?subnet=${encodeURIComponent(subnet)}`, providesTags: ['Tickets'] }),
     ticketHistory: b.query<TicketHistory[], void>({ query: () => '/tickets', providesTags: ['Tickets'] }),
-    chatHistory: b.query<ChatHistoryLine[], { channel: string; before?: string }>({
-      query: ({ channel, before }) => `/chat/${encodeURIComponent(channel)}${before ? `?before=${encodeURIComponent(before)}` : ''}`,
-    }),
+    chatHistory: b.query<ChatHistoryLine[], ChatHistoryArgs>({ query: chatHistoryUrl }),
     report: b.mutation<{ ok: boolean; id: string; duplicate?: boolean }, { targetId: string; messageId?: string; reason: string; note: string }>({
       query: (body) => ({ url: '/reports', method: 'POST', body }),
     }),

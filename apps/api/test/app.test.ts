@@ -449,6 +449,34 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(await pruneChat(prisma!, new Date('2026-09-30T12:00:00Z'))).toMatchObject({ messages: 1 });
   });
 
+  it('pages history with an (at, id) cursor: lines of the same millisecond across a page boundary are not skipped', async () => {
+    const a = await app.inject({ method: 'GET', url: '/api/auth/dev?name=ann' });
+    const ca = { [COOKIE_NAME]: a.cookies.find((c) => c.name === COOKIE_NAME)!.value };
+    const ann = await prisma!.operator.findFirstOrThrow({ where: { sub: 'dev-ann' } });
+    const t = new Date('2026-09-30T00:00:05.123Z');
+    await prisma!.chatMessage.createMany({
+      data: [
+        { id: 'e0', channel: 'subnet:lo', operatorId: ann.id, text: 'earlier', at: new Date('2026-09-30T00:00:04Z') },
+        { id: 'sa', channel: 'subnet:lo', operatorId: ann.id, text: 'a', at: t },
+        { id: 'sb', channel: 'subnet:lo', operatorId: ann.id, text: 'b', at: t },
+        { id: 'sc', channel: 'subnet:lo', operatorId: ann.id, text: 'c', at: t },
+      ],
+    });
+    const page = async (q: string) => {
+      const r = await app.inject({ method: 'GET', url: `/api/chat/subnet:lo?limit=2${q}`, cookies: ca });
+      expect(r.statusCode, r.body).toBe(200);
+      return r.json() as Array<{ id: string; at: string }>;
+    };
+    const first = await page('');
+    expect(first.map((m) => m.id)).toEqual(['sb', 'sc']);
+    const oldest = first[0]!;
+    const second = await page(`&before=${encodeURIComponent(oldest.at)}&beforeId=${oldest.id}`);
+    expect(second.map((m) => m.id)).toEqual(['e0', 'sa']);
+    const third = await page(`&before=${encodeURIComponent(second[0]!.at)}&beforeId=${second[0]!.id}`);
+    expect(third).toEqual([]);
+    expect((await app.inject({ method: 'GET', url: `/api/chat/subnet:lo?beforeId=sb`, cookies: ca })).statusCode).toBe(400);
+  });
+
   it('chat authorization: admin rights from the operator row on every request, DMs per pair under the viewer’s name, own blocks only', async () => {
     const session = async (name: string, admin = false) => {
       const r = await app.inject({ method: 'GET', url: `/api/auth/dev?name=${name}${admin ? '&admin=true' : ''}` });

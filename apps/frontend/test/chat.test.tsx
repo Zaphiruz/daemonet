@@ -35,6 +35,7 @@ vi.mock('../src/api.ts', async (importOriginal) => ({
 }));
 
 const { ChatPanel } = await import('../src/panels/ChatPanel.tsx');
+const apiModule = await import('../src/api.ts');
 const { AdminPanel } = await import('../src/panels/AdminPanel.tsx');
 
 const line = (over: Partial<ChatLine>): ChatLine => ({ id: 'm1', channel: 'subnet:lo', from: 'a', name: 'alice', tag: null, text: 'hi', at: '2026-09-30T00:00:00.000Z', ...over });
@@ -62,6 +63,13 @@ describe('chat store', () => {
     expect(s.get()).toBe(snap); // stable between changes (useSyncExternalStore requires it)
     s.setMuted('2026-10-01T00:00:00.000Z');
     expect(s.get().mutedUntil).toBe('2026-10-01T00:00:00.000Z');
+  });
+
+  it('orders lines of the same millisecond by id, like the API', () => {
+    const s = createChatStore();
+    s.history('subnet:lo', [line({ id: 'sc', text: 'c' }), line({ id: 'sa', text: 'a' })]);
+    s.push(line({ id: 'sb', text: 'b' }));
+    expect(s.get().lines.get('subnet:lo')!.map((l) => l.id)).toEqual(['sa', 'sb', 'sc']);
   });
 
   it('does not count your own lines or a replayed line as unread, and clear() forgets lines, unread and the mute', () => {
@@ -140,6 +148,26 @@ describe('ChatPanel', () => {
     render(<ChatPanel client={client} isAdmin={false} />);
     await waitFor(() => expect(screen.getByTestId('chat-lines').textContent).toContain('older'));
     expect(mocks.history).toHaveBeenCalledWith({ channel: 'subnet:lo' });
+  });
+
+  it('loads older lines with the (at, id) cursor of the oldest line held, until a page comes back empty', async () => {
+    chatStore.history('subnet:lo', [line({ id: 'sb', text: 'b' }), line({ id: 'sc', text: 'c' })]);
+    const { client } = fakeClient();
+    render(<ChatPanel client={client} isAdmin={false} />);
+    await waitFor(() => expect(mocks.history).toHaveBeenCalledTimes(1));
+    mocks.history.mockImplementation(() => ok([line({ id: 'sa', text: 'a' })]));
+    fireEvent.click(screen.getByTestId('chat-older'));
+    expect(mocks.history).toHaveBeenLastCalledWith({ channel: 'subnet:lo', before: '2026-09-30T00:00:00.000Z', beforeId: 'sb' });
+    await waitFor(() => expect(chatStore.get().lines.get('subnet:lo')!.map((l) => l.id)).toEqual(['sa', 'sb', 'sc']));
+    mocks.history.mockImplementation(() => ok([]));
+    fireEvent.click(screen.getByTestId('chat-older'));
+    expect(mocks.history).toHaveBeenLastCalledWith({ channel: 'subnet:lo', before: '2026-09-30T00:00:00.000Z', beforeId: 'sa' });
+    await waitFor(() => expect(screen.queryByTestId('chat-older')).toBeNull());
+  });
+
+  it('builds the history URL with the composite cursor', () => {
+    expect(apiModule.chatHistoryUrl({ channel: 'subnet:lo' })).toBe('/chat/subnet%3Alo');
+    expect(apiModule.chatHistoryUrl({ channel: 'dm:x', before: '2026-09-30T00:00:00.000Z', beforeId: 'm1' })).toBe('/chat/dm%3Ax?before=2026-09-30T00%3A00%3A00.000Z&beforeId=m1');
   });
 
   it('sends through the SDK, clears the input and disables send during the interval; spectators cannot type', () => {
