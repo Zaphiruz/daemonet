@@ -35,8 +35,9 @@ export interface SubnetDef {
 }
 
 /**
- * `lo` spawns every base form (SP3a): the 50 bases are split into four level bands by bestiary
- * line order so each band has 12-13 species; starters are always in the lobby.
+ * `lo` spawns every base form (SP3a): the non-starter bases are dealt to the four level bands
+ * round-robin by bestiary order (`i % 4`, so neighbouring lines land in different bands); the four starters
+ * are always in band 0, the lobby.
  */
 function loWeights(band: number): Record<string, number> {
   const bases = BESTIARY.filter((r) => r.stage === 0);

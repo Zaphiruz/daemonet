@@ -30,7 +30,7 @@ const single = { kind: 'single' } as const;
 const circle = { kind: 'circle', radius: 2 } as const;
 const cone = { kind: 'cone', length: 4, angleDeg: 60 } as const;
 
-/** Which status each type's area move inflicts (game design SP3a §3.3). */
+/** Which status each type's area move inflicts (game design SP3a §3.3); crypto is the exception: its status sits on the ranged `encrypt` (SP1). */
 export const TYPE_STATUS: Record<TypeId, StatusId> = deepFreeze({
   crypto: 'throttled', cache: 'throttled', proxy: 'throttled', cloud: 'throttled',
   glitch: 'stalled', thread: 'stalled', buffer: 'stalled', null: 'stalled',
@@ -103,13 +103,13 @@ const STATUS_DURATION: Record<StatusId, number> = { throttled: 4096, stalled: 20
 export const MOVES: readonly MoveDef[] = deepFreeze(TYPES.flatMap((type) =>
   (['filler', 'ranged', 'area', 'heavy'] as const).map((slot, i) => {
     const id = TYPE_MOVES[type][i]!;
+    // SP1's Crypto status lives on `encrypt` (ranged), not on the area move; every other type's is on its area move.
+    const statusSlot: MoveSlot = type === 'crypto' ? 'ranged' : 'area';
     const status: MoveDef['status'] | undefined =
-      slot === 'area' || (type === 'crypto' && id === 'encrypt')
+      slot === statusSlot
         ? { id: TYPE_STATUS[type], chance: 0.5, durationMs: STATUS_DURATION[TYPE_STATUS[type]] }
         : undefined;
-    // SP1's Crypto status lives on `encrypt` (ranged), not on the area move — keep that.
     const move: MoveDef = { id, name: NAMES[id] ?? id, type, ...SLOT_DEFAULTS[slot], ...(status ? { status } : {}), ...SP1_TUNING[id] };
-    if (type === 'crypto' && slot === 'area') delete (move as { status?: unknown }).status;
     return move;
   }),
 ));

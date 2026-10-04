@@ -34,7 +34,7 @@ export interface SpeciesDef {
 }
 
 /** Base-stat totals by tree depth; capstones are 600; starter lines run 5% under at every stage. */
-export const STAGE_BUDGETS: readonly number[] = deepFreeze([300, 420, 500, 540]);
+export const STAGE_BUDGETS = deepFreeze([300, 420, 500, 540] as const);
 export const CAPSTONE_BUDGET = 600;
 
 export const ROLE_WEIGHTS: Readonly<Record<Role, readonly number[]>> = deepFreeze({

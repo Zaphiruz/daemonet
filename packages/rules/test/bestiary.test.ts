@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { STAT_KEYS } from '../src/constants.js';
 import { BESTIARY } from '../src/content/bestiary.js';
-import { EVOLUTION_ITEMS, getItem } from '../src/content/items.js';
-import { MOVES, STATUS_IDS, TYPE_MOVES, getMove, moveSlot } from '../src/content/moves.js';
-import { SPECIES, budgetFor, dominantStat, evolutionsOf, getSpecies, movesAtLevel } from '../src/content/species.js';
+import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY, getItem, getTool, isHoldable, isToolId } from '../src/content/items.js';
+import { MOVES, STATUS_IDS, TYPE_MOVES, TYPE_STATUS, getMove, moveSlot } from '../src/content/moves.js';
+import { SPECIES, STAT_OVERRIDES, budgetFor, dominantStat, evolutionsOf, getSpecies, movesAtLevel } from '../src/content/species.js';
 import { LO } from '../src/content/subnets.js';
 import { ROLE_TRAITS, TRAITS, getTrait } from '../src/content/traits.js';
 import { BEATS, IMMUNE, RESISTED_BY, TYPES, singleMultiplier, typeMultiplier } from '../src/types.js';
@@ -49,6 +49,18 @@ describe('traits and items', () => {
     expect(new Set(EVOLUTION_ITEMS.map((i) => i.type)).size).toBe(16);
     expect(getItem('heatsink')).toMatchObject({ kind: 'held', effect: 'cooldown', multiplier: 0.875 });
   });
+
+  it('lists the tools and restore, and classifies tools and holdable items', () => {
+    const ids = ITEMS.map((i) => i.id);
+    expect(ids).toEqual(expect.arrayContaining(['sniff', 'tap', 'mirror', 'dump', 'restore']));
+    expect(isToolId('sniff')).toBe(true);
+    expect(isToolId('restore')).toBe(false);
+    expect(getTool('dump').sizeMultiplier).toBe(0.5);
+    expect(STARTING_INVENTORY).toEqual({ sniff: 8, restore: 2 });
+    expect(isHoldable('heatsink')).toBe(true);
+    expect(isHoldable('sigmask')).toBe(true);
+    expect(isHoldable('sniff')).toBe(false);
+  });
 });
 
 describe('type chart', () => {
@@ -72,6 +84,13 @@ describe('type chart', () => {
     expect(singleMultiplier('null', 'glitch')).toBe(1);
     expect(typeMultiplier('packet', ['glitch', 'crypto'])).toBe(1);
   });
+
+  it('fills the full 16x16 chart beyond the SP1 corner', () => {
+    expect(singleMultiplier('kernel', 'signal')).toBe(2);
+    expect(singleMultiplier('kernel', 'kernel')).toBe(0.5);
+    // Deliberate change from SP1, where null's row was unlisted (x1): SP3 fills the null row, so null resists itself.
+    expect(singleMultiplier('null', 'null')).toBe(0.5);
+  });
 });
 
 describe('generated species', () => {
@@ -87,10 +106,14 @@ describe('generated species', () => {
     expect(budgetFor(BESTIARY.find((r) => r.id === 'pingling')!)).toBe(285);
     expect(budgetFor(BESTIARY.find((r) => r.id === 'hopmaster')!)).toBe(513);
     expect(budgetFor(BESTIARY.find((r) => r.id === 'pidzero')!)).toBe(600);
+    expect(budgetFor(BESTIARY.find((r) => r.id === 'forkbomb')!)).toBe(600); // stage-3 capstone
+    expect(budgetFor(BESTIARY.find((r) => r.id === 'sysvern')!)).toBe(540); // stage-3 non-capstone, non-starter line
+    expect(budgetFor(BESTIARY.find((r) => r.id === 'pingodeth')!)).toBe(570); // starter-line capstone: 600 x 0.95 (bestiary §1)
   });
 
   it('keeps the SP1 hand-authored stats and follows role identities', () => {
     expect(getSpecies('pingling').base).toEqual({ hp: 34, attack: 36, defense: 28, focus: 34, resolve: 28, speed: 50, haste: 42, energy: 33 });
+    for (const [id, block] of Object.entries(STAT_OVERRIDES)) expect(getSpecies(id).base, id).toMatchObject(block);
     const wall = getSpecies('sysvern').base;
     expect(wall.resolve).toBeGreaterThan(wall.attack);
     const sweeper = getSpecies('hopmaster').base;
@@ -126,6 +149,10 @@ describe('moves', () => {
       expect(own).toHaveLength(4);
       expect(own.filter((m) => m.status)).toHaveLength(1);
       expect(TYPE_MOVES[t].map(moveSlot)).toEqual(['filler', 'ranged', 'area', 'heavy']);
+      // The status sits on the area slot, except crypto's (SP1), which sits on the ranged slot.
+      const statusMove = own.find((m) => m.status)!;
+      expect(statusMove.status!.id).toBe(TYPE_STATUS[t]);
+      expect(moveSlot(statusMove.id)).toBe(t === 'crypto' ? 'ranged' : 'area');
     }
     for (const m of MOVES) {
       expect([256, 512, 1024, 2048, 4096, 8192]).toContain(m.cooldownMs);
