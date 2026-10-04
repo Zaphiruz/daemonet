@@ -297,15 +297,20 @@ describe('TradesPanel: the table', () => {
     expect(btn('trade-cancel').disabled).toBe(false);
   });
 
-  it('refuses offers you cannot make and says why (bits above the balance, too many daemons or kinds)', () => {
+  it('refuses offers you cannot make and says why (too many daemons or kinds); bits above the balance are only a hint', async () => {
     q.disk.data = Array.from({ length: MAX_TRADE_DAEMONS + 1 }, (_, i) => ({ id: `d${i}`, species: 'pingling', level: 8, lockedBy: null })) as unknown as DiskDaemon[];
     q.trades.data = [trade()];
+    q.setOffer.mockReturnValue(ok(trade({ version: 2 })));
     render(<TradesPanel client={client(100)} />);
     setInput('trade-bits', '101');
-    expect(btn('trade-offer').disabled).toBe(true);
-    expect(screen.getByTestId('trade-offer-why').textContent).toContain('only have 100 bits');
-    setInput('trade-bits', '100');
+    // the client's balance can lag the api's (a credit not yet pushed): the api's 402 decides
     expect(btn('trade-offer').disabled).toBe(false);
+    expect(screen.getByTestId('trade-bits-hint').textContent).toContain('you have 100 bits');
+    fireEvent.click(btn('trade-offer'));
+    expect(q.setOffer).toHaveBeenCalledWith({ id: 'T1', offer: { bits: 101, items: {}, daemonIds: [] } });
+    await act(async () => {});
+    setInput('trade-bits', '100');
+    expect(screen.queryByTestId('trade-bits-hint')).toBeNull();
     for (let i = 0; i <= MAX_TRADE_DAEMONS; i++) fireEvent.click(screen.getByTestId(`trade-daemon-d${i}`));
     expect(btn('trade-offer').disabled).toBe(true);
     expect(screen.getByTestId('trade-offer-why').textContent).toContain(`at most ${MAX_TRADE_DAEMONS} daemons`);
@@ -470,11 +475,20 @@ describe('TradesPanel: confirming', () => {
     expect(screen.getByTestId('trade-error').textContent).toBe('trade is done');
   });
 
-  it('is disabled when you offer more bits than you have', () => {
+  it('offering more bits than the client thinks you have is a hint, never a block; it follows the balance', async () => {
     q.trades.data = [live()];
-    render(<TradesPanel client={client(10)} />);
-    expect(btn('trade-confirm').disabled).toBe(true);
-    expect(btn('trade-confirm').title).toContain('you offer 32 bits but have 10');
+    q.confirm.mockReturnValue(ok(live()));
+    const c = client(10);
+    const { rerender } = render(<TradesPanel client={c} />);
+    expect(btn('trade-confirm').disabled).toBe(false);
+    expect(screen.getByTestId('trade-bits-hint').textContent).toContain('you offer 32 bits but have 10');
+    fireEvent.click(btn('trade-confirm'));
+    expect(q.confirm).toHaveBeenCalledWith({ id: 'T1', version: 3 });
+    await act(async () => {});
+    // a bits push lands: the hint goes on the next render
+    (c.self as { bits: number }).bits = 500;
+    rerender(<TradesPanel client={c} />);
+    expect(screen.queryByTestId('trade-bits-hint')).toBeNull();
   });
 });
 

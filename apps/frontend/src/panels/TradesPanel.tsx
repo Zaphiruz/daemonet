@@ -14,6 +14,7 @@ import {
   useTradesQuery,
   useVaultQuery,
 } from '../api.ts';
+import { useConnection } from '../game/connection.ts';
 import { ivTotal, listingNet } from '../game/exchange.ts';
 import { log } from '../game/log.ts';
 
@@ -176,6 +177,8 @@ function TradeCard({ trade, client }: { trade: Trade; client?: GameClient | unde
   const mine = trade.me.offer;
   const draftKinds = Object.keys(items).length;
   const dirty = bits !== mine.bits || !sameItems(items, mine.items) || !sameIds(daemonIds, mine.daemons.map((d) => d.id));
+  // re-render on every connection update (ticks, bits pushes), so the balance hint below follows the live balance
+  useConnection();
   const balance = client?.self.bits;
 
   const setQty = (item: string, qty: number) =>
@@ -199,13 +202,21 @@ function TradeCard({ trade, client }: { trade: Trade; client?: GameClient | unde
         ? 'your offer is already set'
         : bits > MAX_TRADE_BITS
           ? `at most ${MAX_TRADE_BITS} bits`
-          : balance !== undefined && bits > balance
-            ? `you only have ${balance} bits`
-            : draftKinds > MAX_TRADE_ITEMS
-              ? `at most ${MAX_TRADE_ITEMS} kinds of item`
-              : daemonIds.length > MAX_TRADE_DAEMONS
-                ? `at most ${MAX_TRADE_DAEMONS} daemons`
-                : null;
+          : draftKinds > MAX_TRADE_ITEMS
+            ? `at most ${MAX_TRADE_ITEMS} kinds of item`
+            : daemonIds.length > MAX_TRADE_DAEMONS
+              ? `at most ${MAX_TRADE_DAEMONS} daemons`
+              : null;
+  // Advisory only: the client's balance can lag the api's (a credit or debit not yet pushed), so it never blocks a
+  // request; the api's 402 is authoritative.
+  const bitsHint: string | null =
+    balance === undefined
+      ? null
+      : dirty && bits > balance
+        ? `you have ${balance} bits by the latest update: the offer may be refused`
+        : !dirty && mine.bits > balance
+          ? `you offer ${mine.bits} bits but have ${balance} by the latest update: the trade may be refused`
+          : null;
   const unreviewed = reviewed !== trade.version;
   const confirmWhy: string | null =
     busy !== null
@@ -218,9 +229,7 @@ function TradeCard({ trade, client }: { trade: Trade; client?: GameClient | unde
             ? 'the offers changed: review them first'
             : nothing(trade.me) && nothing(trade.them)
               ? 'there is nothing on the table'
-              : balance !== undefined && mine.bits > balance
-                ? `you offer ${mine.bits} bits but have ${balance}`
-                : null;
+              : null;
 
   /** One request at a time per trade card; the ref covers the gap before the re-render. */
   const run = async (kind: 'offer' | 'confirm' | 'cancel', what: string, request: () => Promise<unknown>): Promise<boolean> => {
@@ -319,6 +328,11 @@ function TradeCard({ trade, client }: { trade: Trade; client?: GameClient | unde
             </label>
           ))}
         </div>
+        {bitsHint !== null && (
+          <p className="text-amber-500" data-testid="trade-bits-hint">
+            {bitsHint}
+          </p>
+        )}
         {offerWhy !== null && busy === null && dirty && (
           <p className="text-neutral-500" data-testid="trade-offer-why">
             {offerWhy}
