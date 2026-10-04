@@ -5,6 +5,7 @@ import { run } from '../components/WorldCanvas.tsx';
 import { setControls } from '../game/controls.ts';
 import { spriteCanvas } from '../render/draw.ts';
 import { useEffect, useRef } from 'react';
+import { EvolveSection, HeldSlot } from './EvolveSection.tsx';
 
 export function SpriteImg({ species, types, clean, signature, size = 32 }: { species: string; types: readonly string[]; clean: boolean; signature: number; size?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -42,20 +43,31 @@ export function RamPanel({ client }: { client: GameClient }) {
               <SpriteImg species={d.species} types={sp.types} clean={d.clean} signature={d.signature} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="font-medium">{sp.name}</span>
+                  <span className="font-medium" data-testid={`ram-${d.slot}-name`}>
+                    {sp.name}
+                  </span>
                   <span className="text-neutral-500">L{d.level}</span>
                   {d.clean && <span className="text-white">clean</span>}
                   {d.signature > 0 && <span className="text-fuchsia-300">T{d.signature}</span>}
+                  {d.patched && <span className="text-amber-300">patched</span>}
                   {d.crashed && <span className="text-red-400">crashed</span>}
                   {running && <span className="text-emerald-400">running</span>}
                 </div>
                 <div className="mono text-xs text-neutral-400">
-                  {Math.round(d.hp)}/{d.maxHp} hp · {Math.floor(d.energy)} en · xp {d.xp}
+                  {Math.round(d.hp)}/{d.maxHp} hp · {Math.floor(d.energy)} en · xp {d.xp} · {sp.traits[d.traitSlot]} · {d.crashes} crashes
                 </div>
                 <div className="mono text-xs text-neutral-500">
                   IV {STAT_KEYS.map((k, i) => `${k.slice(0, 2)}${d.ivs[i]}`).join(' ')}
                 </div>
                 <div className="mono text-xs text-neutral-500">moves {d.moves.join(', ')}</div>
+                <HeldSlot
+                  daemon={d}
+                  inventory={me.inventory}
+                  disabled={!manual}
+                  onHold={(item) => run(client.operator.hold(d.id, item), 'hold')}
+                  onUnhold={() => run(client.operator.unhold(d.id), 'unhold')}
+                />
+                <EvolveSection daemon={d} disabled={!manual || running} onEvolve={(form) => run(client.operator.evolve(d.id, form), 'evolve')} />
                 <div className="mt-1 flex gap-2 text-xs">
                   {running ? (
                     <button className="text-neutral-300 hover:text-white" disabled={!manual} onClick={() => run(client.operator.recall(d.id), 'recall')}>

@@ -160,6 +160,8 @@ export function createConnection(deps: ConnectionDeps) {
     on('captureResult', (e) => deps.log.push('event', e.ok ? `captured ${e.daemon?.species ?? 'to Disk'}` : `capture failed: ${e.reason}`));
     on('signatureSpawn', (e) => deps.log.push('event', `${e.clean ? 'clean' : ''}${e.signature ? ` T${e.signature}` : ''} ${e.species} spawned somewhere in the subnet`));
     on('crash', (e) => deps.log.push('event', `${e.daemon} crashed`));
+    on('evolved', (e) => deps.log.push('event', `${e.daemon} evolved: ${e.from} -> ${e.to}`));
+    on('discovery', (e) => deps.log.push('event', `${e.operatorName ?? 'someone'} discovered ${e.form}`));
 
     // The SDK's start() does not settle when closed while it is still fetching the ticket, so a
     // cancelled attempt is settled through this race instead.

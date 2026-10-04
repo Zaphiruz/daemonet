@@ -295,3 +295,17 @@ describe('fetchTicket', () => {
     expect(t.capture.get()).toBeNull();
   });
 });
+
+describe('evolution events', () => {
+  it('logs evolved and discovery events from the store, before any panel mounts', async () => {
+    const t = setup([{ kind: 'ready' }]);
+    await t.conn.open('controller');
+    const c = t.clients[0]!;
+    c.emit('evolved', { daemon: 'd1', from: 'echolet', to: 'tracerat', changes: [] });
+    c.emit('discovery', { form: 'tracerat', operator: 'o1', operatorName: 'ada' });
+    c.emit('discovery', { form: 'broadcaw', operator: 'o2', operatorName: null });
+    expect(t.texts()).toContain('event:d1 evolved: echolet -> tracerat');
+    expect(t.texts()).toContain('event:ada discovered tracerat');
+    expect(t.texts()).toContain('event:someone discovered broadcaw');
+  });
+});

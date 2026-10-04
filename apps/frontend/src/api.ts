@@ -1,5 +1,5 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
-import type { ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
+import type { BestiaryRow, ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
 
 export interface Me {
   operatorId: string;
@@ -28,6 +28,11 @@ export interface DiskDaemon {
   hp: number;
   moves: string[];
   ivs: number[];
+  heldItem: string | null;
+  patched: boolean;
+  moveTypeUses: number[];
+  crashes: number;
+  history: Array<{ at: string; kind: string; detail: string }>;
   log: { originalOperatorId: string; capturedAt: string; subnet: string; tool: string; spawnIndex: number | null };
 }
 export interface Codex {
@@ -38,6 +43,12 @@ export interface Codex {
   items: ItemDef[];
   natures: NatureDef[];
   traits: TraitDef[];
+  /** Bestiary rows with hidden, undiscovered requirements blanked (null). */
+  bestiary: BestiaryRow[];
+  discovered: string[];
+  discoveries: Array<{ formId: string; operatorName: string | null; discoveredAt: string }>;
+  /** Each type's capture challenge rules: plain text with line breaks; render as text, never HTML. */
+  challenges: Array<{ type: TypeId; rules: string }>;
 }
 
 /** All mutations carry the CSRF header the API requires. */
@@ -51,10 +62,10 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
-    codex: b.query<Codex, void>({ query: () => '/codex' }),
+    codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
     disk: b.query<DiskDaemon[], void>({ query: () => '/disk', providesTags: ['Disk'] }),
     script: b.query<ScriptDoc, void>({ query: () => '/scripts/main', providesTags: ['Script'] }),
     versions: b.query<ScriptVersion[], void>({ query: () => '/scripts/main/versions', providesTags: ['Script'] }),

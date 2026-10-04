@@ -27,6 +27,8 @@ export function DiskPanel({ client }: { client: GameClient }) {
                 <span className="font-medium">{sp.name}</span> <span className="text-neutral-500">L{d.level} · slot {d.slot}</span>
                 {d.clean && <span className="ml-1 text-white">clean</span>}
                 {d.signature > 0 && <span className="ml-1 text-fuchsia-300">T{d.signature}</span>}
+                {d.patched && <span className="ml-1 text-amber-300">patched</span>}
+                {d.heldItem && <span className="mono ml-1 text-xs text-neutral-400">holds {d.heldItem}</span>}
               </div>
               <div className="mono text-xs text-neutral-500">
                 captured {new Date(d.log.capturedAt).toLocaleString()} in {d.log.subnet} with {d.log.tool}

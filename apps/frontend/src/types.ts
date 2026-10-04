@@ -1,4 +1,4 @@
-import type { ItemDef, MoveDef, Nature, SpeciesDef, TraitDef, TypeId } from '@daemonet/rules';
+import type { BestiaryRow, ItemDef, MoveDef, Nature, SpeciesDef, TraitDef, TypeId } from '@daemonet/rules';
 
-export type { ItemDef, MoveDef, SpeciesDef, TraitDef, TypeId };
+export type { BestiaryRow, ItemDef, MoveDef, SpeciesDef, TraitDef, TypeId };
 export type NatureDef = Nature;
