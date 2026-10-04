@@ -109,3 +109,20 @@ Task F: minor (deferred): sandbox bridge.ts:168 compares UTF-16 raw.length again
 Task F: minor (deferred): proxy b64 spreads up to ~8 KB into String.fromCharCode(...) — chunk it; HeapParams.events duplicates payload length
 Task F: minor (deferred): spec §5 drift to record — thread events have no `t`; socket has a `connections` param; MAX_CHALLENGE_SIZE=1024 clamp and chain stages min(size,256) deviate from the design specs' sizing text
 Task F: parked: family doc comments vanish at runtime (rules is private) and SP3a plan 4 has no step surfacing them in the Codex — carry-forward #22 tells plan 4 to add ChallengeFamily.rules text
+
+## 2026-09-30-daemonet-sp3a-plan3-evolution-traits
+
+Fixed before merge: restoreAll skips pending daemons; crashed-evolve test; reloaded daemons stay locked while a store/evolve is pending; level-up during a pending evolve recomputes moves/HP; neutral busy messages; battery lookup throws
+
+- T2: replayed evolve returns {ok:true} without `discovered`, so the public discovery event is lost on commit-then-lost-reply (durable state correct)
+- T2: toSelf evolutions scan is O(operators) per RAM daemon per tick
+- T4: manual two-session browser check of evolve → discovery skipped (sim tests cover it)
+Task F: minor (deferred): leave after a level-up but before the evolve commits → reloaded row has old-level moves/HP (commit overwrites the leave checkpoint)
+Task F: minor (deferred): discovery.operatorName is null when the discoverer has left (plan 4 resolves names from DB)
+Task F: minor (deferred): moveTypeUses counts moves that hit nothing (retransmit makes empty area moves free → farmable 4096-use requirements)
+Task F: minor (deferred): hold/unhold allowed while running and in combat (swap amplifier/firewall per tick) — decide before SP3b sells held items
+Task F: minor (deferred): decay drains energy on a bitshield-blocked 0-damage hit — decide deliberately
+Task F: minor (deferred): wild AI ignores new cost/cooldown/reach modifiers (sonar/synburst/lazyeval/lowlatency never express for wilds)
+Task F: minor (deferred): useItem.stat optional on the wire but required for bitflipper — discriminated union would sharpen Monaco types
+Task F: minor (deferred): inventory outside the evolve transaction (hold is checkpoint-persisted; crash between hold and checkpoint returns the consumed item) — carry inventory on the evolve intent before SP3b
+Task F: minor (deferred): owned-daemon engagement resets on every activation, so swap A↔B↔A refreshes bitshield/nullsafe/lowlatency
