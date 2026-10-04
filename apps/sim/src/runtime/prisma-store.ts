@@ -7,6 +7,7 @@ import {
   intentLedgerReason,
   decompileProblem,
   decompileStoreGain,
+  DEPOSIT_NOT_SAVED,
   economyIntentProblem,
   INCIDENT_RECOVERY_MS,
   incidentOpenedAt,
@@ -435,7 +436,7 @@ export class PrismaStore implements Store {
             const { operatorId, item } = intent;
             if (intent.qty > 0) {
               // The world took a deposit out of its inventory at accept; the stored inventory must hold it too.
-              if (missingItem(op.inventory, { [item]: intent.qty })) throw new DomainFailure(`not enough ${item}`);
+              if (missingItem(op.inventory, { [item]: intent.qty })) throw new DomainFailure(DEPOSIT_NOT_SAVED);
               // ON CONFLICT: never an ExchangeVault_pkey P2002 against a concurrent first write of the row.
               await tx.$executeRaw`
                 INSERT INTO "ExchangeVault" ("operatorId", "item", "qty") VALUES (${operatorId}, ${item}, ${intent.qty})

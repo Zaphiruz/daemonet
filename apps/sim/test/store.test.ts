@@ -3,7 +3,7 @@ import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, ge
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { incidentParticipants, incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
-import { MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type LiveOperatorState, type Store } from '../src/runtime/store.js';
+import { DEPOSIT_NOT_SAVED, MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type LiveOperatorState, type Store } from '../src/runtime/store.js';
 import { ownedRecord } from './helpers.js';
 
 const SPAWN = { x: 18.5, y: 16.5 };
@@ -720,8 +720,8 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       const bad: Array<[string, number]> = [['sniff', 0], ['sniff', 2.5], ['sniff', 1025], ['sniff', -1025], ['nonsense', 1], ['__proto__', 1], ['diskExpansion', 1], ['sniff', Number.MAX_SAFE_INTEGER + 2]];
       for (const [i, [item, qty]] of bad.entries()) expect(await store.applyIntent(vault(`i-vb-${i}`, item, qty), ctx), `${item} ${qty}`).toEqual({ ok: false, reason: 'invalid vault move' });
       // more than the stored inventory holds: a forged or desynced deposit mints nothing
-      expect(await store.applyIntent(vault('i-vb-over', 'sniff', 9), ctx)).toEqual({ ok: false, reason: 'not enough sniff' });
-      expect(await store.applyIntent(vault('i-vb-none', 'tap', 1), ctx)).toEqual({ ok: false, reason: 'not enough tap' });
+      expect(await store.applyIntent(vault('i-vb-over', 'sniff', 9), ctx)).toEqual({ ok: false, reason: DEPOSIT_NOT_SAVED });
+      expect(await store.applyIntent(vault('i-vb-none', 'tap', 1), ctx)).toEqual({ ok: false, reason: DEPOSIT_NOT_SAVED });
       expect((await store.loadOrCreateOperator('sub-v2', 'lo', SPAWN)).inventory).toEqual({ sniff: 8, restore: 2 });
       // all of it, then the vault row is gone once emptied
       expect(await store.applyIntent(vault('i-vb-all', 'sniff', 8), ctx)).toEqual({ ok: true });

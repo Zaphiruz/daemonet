@@ -295,6 +295,18 @@ describe('HostPanel vault', () => {
     expect(dispatch).toHaveBeenCalledWith(api.util.invalidateTags(['Vault']));
   });
 
+  it('invalidates the Vault tag after a refused move too (it may have changed the vault)', async () => {
+    const dispatch = vi.spyOn(store, 'dispatch');
+    const { client, withdraw } = fakeClient({ inventory: {} });
+    withdraw.mockImplementation(() => Promise.reject(new Error('not enough in the vault')));
+    vault.data = { sniff: 1 };
+    renderHost(client, 'vault');
+    fireEvent.click(btn('withdraw-sniff'));
+    await flush();
+    expect(dispatch).toHaveBeenCalledWith(api.util.invalidateTags(['Vault']));
+    expect(screen.getByText(/withdraw failed: not enough in the vault/)).toBeTruthy();
+  });
+
   it('disables with a reason: short of qty, away from the host, spectators, in flight; shows empty and errors inline', async () => {
     vault.data = {};
     const { client, deposit } = fakeClient({ inventory: { sniff: 1 } });
@@ -431,6 +443,14 @@ describe('DiskPanel locks', () => {
     expect(loads[0]!.disabled).toBe(true);
     expect(loads[0]!.title).toContain('Exchange');
     expect(loads[1]!.disabled).toBe(false);
+  });
+
+  it('a row without the lock field (an older api) is loadable', () => {
+    const { lockedBy: _l, ...old } = row('c', null);
+    diskRows.data = [old];
+    render(<DiskPanel client={fakeClient().client} />);
+    expect(screen.queryByText('on the Exchange')).toBeNull();
+    expect((screen.getByRole('button', { name: 'load into RAM' }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

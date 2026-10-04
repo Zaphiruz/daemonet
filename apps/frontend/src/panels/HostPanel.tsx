@@ -51,8 +51,9 @@ export function HostPanel({ client }: { client: GameClient }) {
     void p.then(done, fail);
   };
 
-  // the vault list refreshes after the sim acks: invalidating the tag refetches the mounted query (and drops a stale cache)
-  const move = (dir: 'deposit' | 'withdraw', item: string) => submit(() => client.operator[dir](item, qty).then(() => store.dispatch(api.util.invalidateTags(['Vault']))), dir);
+  // the vault list refreshes once the sim answers, ok or not (a refused or unknown move may still have changed the
+  // vault): invalidating the tag refetches the mounted query (and drops a stale cache)
+  const move = (dir: 'deposit' | 'withdraw', item: string) => submit(() => client.operator[dir](item, qty).finally(() => store.dispatch(api.util.invalidateTags(['Vault']))), dir);
 
   return (
     <div className="space-y-3 p-3 text-sm">

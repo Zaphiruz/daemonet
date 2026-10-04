@@ -198,6 +198,13 @@ export interface LiveOperatorState {
   ledger: Array<{ id: string; seq: number; delta: number; reason: string }>;
 }
 
+/**
+ * A deposit the stored inventory cannot cover. The runtime saves the operator's inventory right before a deposit
+ * (`Game.saveBeforeDeposits`), so this happens only when it could not (another inventory intent was in flight, or the
+ * save failed): the world refunds the items and the player retries. A forged deposit gets the same answer.
+ */
+export const DEPOSIT_NOT_SAVED = 'inventory not saved yet — try again in a moment';
+
 /** Ledger reason of a bits-spending intent. */
 export function ledgerReason(intent: Extract<ShopIntent, { kind: 'buy' }>): SimLedgerReason<'buy'>;
 export function ledgerReason(intent: Extract<ShopIntent, { kind: 'craft' }>): SimLedgerReason<'craft'>;
@@ -798,7 +805,7 @@ export class MemoryStore implements Store {
         const have = this.vault.get(key) ?? 0;
         if (intent.qty < 0 && have < -intent.qty) return { ok: false, reason: 'not enough in the vault' };
         // The world took a deposit out of its inventory at accept; the stored inventory must hold it too.
-        if (intent.qty > 0 && missingItem(op.inventory, { [intent.item]: intent.qty })) return { ok: false, reason: `not enough ${intent.item}` };
+        if (intent.qty > 0 && missingItem(op.inventory, { [intent.item]: intent.qty })) return { ok: false, reason: DEPOSIT_NOT_SAVED };
         op.inventory = withItems(op.inventory, { [intent.item]: Math.abs(intent.qty) }, intent.qty > 0 ? -1 : 1);
         if (have + intent.qty === 0) this.vault.delete(key);
         else this.vault.set(key, have + intent.qty);

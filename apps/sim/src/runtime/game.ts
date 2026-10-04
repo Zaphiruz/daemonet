@@ -8,6 +8,7 @@ import {
   distance,
   entitiesNear,
   isEconomyIntent,
+  isInventoryIntent,
   toSelf,
   type Input,
   type Intent,
@@ -22,7 +23,7 @@ import { ChatService } from './chat.js';
 import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
 import { diffEntities } from './interest.js';
 import { BitsPush, IncidentStartPush, OrgMembershipPush, RenamePush } from './pushes.js';
-import { randomHex, type IncidentRow, type Store } from './store.js';
+import { randomHex, withItems, type IncidentRow, type Store } from './store.js';
 
 /** Transport-independent connection. */
 export interface Conn {
@@ -759,6 +760,7 @@ export class Game {
       if (r.ok) this.send(st, { t: 'ack', seq: 0, d: r.result === undefined ? { reqId } : { reqId, result: r.result } });
       else this.error(st, r.code, r.message, reqId);
     }
+    this.saveBeforeDeposits(world, result.intents);
     for (const intent of result.intents) this.persist(world, intent);
 
     for (const session of this.sessions.values()) {
@@ -1005,6 +1007,33 @@ export class Game {
     }
     if (records.length === 0) return;
     this.track(this.writeCheckpoint(records, (err) => this.log.error({ err: err.message }, 'checkpoint failed')));
+  }
+
+  /**
+   * The store checks a deposit against the inventory it holds, which lags the world's by up to a checkpoint period:
+   * an item unheld (or otherwise gained world-side) since then would be refused. So before this tick's deposits reach
+   * the store, each depositing operator's inventory (and RAM daemons' held items, as a checkpoint writes them) is saved
+   * on the write chain, as it was before the deposits: the live inventory plus everything they took at accept.
+   *
+   * Only when the deposits are the operator's only inventory intents in flight: another one (a buy, a craft, an
+   * earlier deposit already on its way) means the store's inventory is about to change in a way the world has only
+   * half applied, so writing the live one could rewind or double it; those deposits may be refused with
+   * DEPOSIT_NOT_SAVED (refunded; the player retries). Written once, here, never by the intent's retries: a save
+   * replayed after the deposit committed would hand the items back.
+   */
+  private saveBeforeDeposits(world: World, intents: readonly Intent[]): void {
+    const deposits = new Map<string, Array<Extract<Intent, { kind: 'vault' }>>>();
+    for (const i of intents) if (i.kind === 'vault' && i.qty > 0) deposits.set(i.operatorId, [...(deposits.get(i.operatorId) ?? []), i]);
+    for (const [operatorId, mine] of deposits) {
+      const op = world.operators.get(operatorId);
+      if (!op || op.travelling || this.sessions.get(operatorId)?.reloadRequired) continue;
+      const ids = new Set(mine.map((d) => d.id));
+      if (world.pendingIntents(operatorId).some((i) => isInventoryIntent(i) && !ids.has(i.id))) continue;
+      const { inventoryInFlight: _f, ...rec } = world.checkpoint(operatorId);
+      let inventory = rec.inventory;
+      for (const d of mine) inventory = withItems(inventory, { [d.item]: d.qty }, 1);
+      this.track(this.writeCheckpoint([{ ...rec, inventory }], (err) => this.log.error({ operator: operatorId, err: err.message }, 'save before deposit failed')));
+    }
   }
 
   /** The operator's checkpoint record; a session that must reload never writes its inventory (the store is the truth). */
