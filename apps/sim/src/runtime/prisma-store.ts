@@ -2,6 +2,7 @@ import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient 
 import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
 import { DISK_EXPANSION_ITEM, DISK_STEP } from '@daemonet/rules';
 import {
+  decompileProblem,
   economyIntentProblem,
   ledgerReason,
   missingItem,
@@ -79,13 +80,14 @@ class DomainFailure extends Error {}
 type Tx = Prisma.TransactionClient;
 
 /**
- * Locks the operator row for the rest of the transaction and returns its economy columns. Every economy intent takes
+ * Locks the operator row (FOR NO KEY UPDATE: it never changes the key, so foreign-key checks are not blocked) for the
+ * rest of the transaction and returns its economy columns. Every economy intent takes
  * this lock first, so two of them for one operator (or one racing a checkpoint's update of the row) run one after the
  * other: the balance check, the decrement and the inventory rewrite see each other's committed result.
  */
 async function lockOperator(tx: Tx, id: string): Promise<{ bits: bigint; diskCapacity: number; inventory: Record<string, number> }> {
   const rows = await tx.$queryRaw<Array<{ bits: bigint; diskCapacity: number; inventory: unknown }>>`
-    SELECT "bits", "diskCapacity", "inventory" FROM "Operator" WHERE "id" = ${id} FOR UPDATE`;
+    SELECT "bits", "diskCapacity", "inventory" FROM "Operator" WHERE "id" = ${id} FOR NO KEY UPDATE`;
   const row = rows[0];
   if (!row) throw new Error(`unknown operator ${id}`);
   const inventory = row.inventory && typeof row.inventory === 'object' && !Array.isArray(row.inventory) ? (row.inventory as Record<string, number>) : {};
@@ -261,15 +263,20 @@ export class PrismaStore implements Store {
           }
           case 'decompile': {
             const op = await lockOperator(tx, intent.operatorId);
-            const problem = economyIntentProblem(intent, op.diskCapacity);
-            if (problem) throw new DomainFailure(problem);
             // Lock the daemon row too (operator first, then daemon: the same order as a checkpoint), so a concurrent
             // store / evolve of it either committed before this read or waits and then finds nothing to move.
             await tx.$queryRaw`SELECT 1 FROM "Daemon" WHERE "id" = ${intent.daemonId} FOR UPDATE`;
             const row = await tx.daemon.findUnique({ where: { id: intent.daemonId } });
             if (!row || row.operatorId !== intent.operatorId || row.location !== 'RAM' || row.species !== intent.species) throw new DomainFailure('daemon not found');
+            const problem = decompileProblem(intent, row, ctx.storedDaemon);
+            if (problem) throw new DomainFailure(problem);
             const { location: _l, slot: _s, hp: _h, energy: _e, crashed: _c, history: _hi, ...rest } = row;
-            await tx.daemonArchive.create({ data: { ...rest, history: json([...historyOf(row), intent.history]), reason: 'decompiled' } });
+            const latest = ctx.storedDaemon ? memStateFields(ctx.storedDaemon) : null;
+            const state = latest
+              ? { level: latest.level, xp: latest.xp, moves: latest.moves, ivs: latest.ivs, patched: latest.patched, heldItem: latest.heldItem, moveTypeUses: latest.moveTypeUses, crashes: latest.crashes }
+              : {};
+            const history = latest ? latest.history : historyOf(row);
+            await tx.daemonArchive.create({ data: { ...rest, ...state, history: json([...history, intent.history]), reason: 'decompiled' } });
             await tx.daemon.delete({ where: { id: intent.daemonId } });
             await tx.operator.update({ where: { id: intent.operatorId }, data: { inventory: withItems(op.inventory, intent.fragments, 1) } });
             return { ok: true } as const;
@@ -286,6 +293,12 @@ export class PrismaStore implements Store {
           if (replay) return replay;
         }
         if (intent.kind === 'claimStarter' && violated.includes('Operator_name_key')) return { ok: false, reason: 'name taken' };
+        // The slot is occupied (the runtime retries unknown outcomes of these kinds until the store answers, so a
+        // deterministic conflict must be a domain answer, not an error).
+        if (violated.includes('Daemon_operatorId_location_slot_key') || /\(`operatorId`,`location`,`slot`\)|operatorId,location,slot/.test(violated)) {
+          if (intent.kind === 'capture') return { ok: false, reason: 'slot taken' };
+          if (intent.kind === 'claimStarter') return { ok: false, reason: 'starter already claimed' };
+        }
       }
       throw err;
     }
@@ -340,7 +353,7 @@ export class PrismaStore implements Store {
   }
 
   async ledgerFor(operatorId: string, limit = 64): Promise<LedgerRow[]> {
-    const rows = await this.prisma.bitsLedger.findMany({ where: { operatorId }, orderBy: [{ at: 'desc' }, { seq: 'desc' }], take: limit });
+    const rows = await this.prisma.bitsLedger.findMany({ where: { operatorId }, orderBy: { seq: 'desc' }, take: limit });
     return rows.reverse().map((r) => ({ operatorId: r.operatorId, delta: Number(r.delta), reason: r.reason, ref: r.ref, at: r.at.toISOString() }));
   }
 

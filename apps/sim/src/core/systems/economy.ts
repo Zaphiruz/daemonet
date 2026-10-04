@@ -95,7 +95,10 @@ export function craft(world: World, op: Operator, args: { recipeId: string; qty:
   op.bits -= bits;
   addItems(op, fragments, -1);
   const output = { item: recipe.output.item, qty: recipe.output.qty * qty };
-  world.trackIntent({ id: world.newId('i'), kind: 'craft', operatorId: op.id, reqId: input.reqId, recipeId: recipe.id, qty, bits, fragments, output }, out);
+  world.trackIntent(
+    { id: world.newId('i'), kind: 'craft', operatorId: op.id, reqId: input.reqId, recipeId: recipe.id, qty, ...(args.using ? { using: args.using } : {}), bits, fragments, output },
+    out,
+  );
 }
 
 export function decompile(world: World, op: Operator, d: Daemon, confirm: boolean, input: Input, out: Out): void {

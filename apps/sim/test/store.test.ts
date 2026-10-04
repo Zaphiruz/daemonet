@@ -1,4 +1,5 @@
 import { createPrisma, type PrismaClient } from '@daemonet/db';
+import { decompileYield, fragmentId, getSpecies } from '@daemonet/rules';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Intent, OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
@@ -10,6 +11,15 @@ const log = { originalOperatorId: 'x', capturedAtTick: 1, subnet: 'lo', tool: 's
 
 function claim(operatorId: string, name: string, daemon: OwnedDaemonRecord, id = `i-claim-${name}`): Intent {
   return { id, kind: 'claimStarter', operatorId, reqId: 'r', name, daemon, inventory: { sniff: 8, restore: 2 }, log: { ...log, originalOperatorId: operatorId } };
+}
+
+/** The rules' decompile yield for a daemon (plus its held item). */
+function yieldOf(species: string, level: number, heldItem: string | null = null): Record<string, number> {
+  const sp = getSpecies(species);
+  const out: Record<string, number> = {};
+  for (const t of sp.types) out[fragmentId(t)] = decompileYield(sp.stage, level);
+  if (heldItem) out[heldItem] = 1;
+  return out;
 }
 
 const EVOLVED_HISTORY = [{ at: '2026-09-30T00:00:00.000Z', kind: 'evolved' as const, detail: 'echolet -> tracerat at level 16' }];
@@ -161,7 +171,7 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       let rec = await store.loadOrCreateOperator('sub-e1', 'lo', SPAWN);
       expect(rec).toMatchObject({ bits: 10_000 - 96 - 8192, diskCapacity: 288, inventory: { sniff: 11, restore: 2 } });
       const craft: Intent = {
-        id: 'i-craft-1', kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'restore', qty: 1, bits: 16, fragments: { 'frag:packet': 2 }, output: { item: 'restore', qty: 1 },
+        id: 'i-craft-1', kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'restore', qty: 1, using: 'packet', bits: 16, fragments: { 'frag:packet': 2 }, output: { item: 'restore', qty: 1 },
       };
       expect(await store.applyIntent(craft, { seedId: 'abcd1234' })).toEqual({ ok: false, reason: 'not enough frag:packet' });
       const decompile: Intent = {
@@ -230,7 +240,7 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(await store.applyIntent(buy('i-x6', 'constructor', 1, 0), ctx)).toEqual({ ok: false, reason: 'not for sale' });
       expect(await store.applyIntent(buy('i-x7', 'diskExpansion', 2, 8192), ctx)).toEqual({ ok: false, reason: 'price changed' });
       const craft = (id: string, over: Partial<Extract<Intent, { kind: 'craft' }>>): Intent => ({
-        id, kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'restore', qty: 1, bits: 16, fragments: { 'frag:packet': 2 }, output: { item: 'restore', qty: 1 }, ...over,
+        id, kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'restore', qty: 1, using: 'packet', bits: 16, fragments: { 'frag:packet': 2 }, output: { item: 'restore', qty: 1 }, ...over,
       });
       expect(await store.applyIntent(craft('i-x8', { output: { item: 'restore', qty: 64 } }), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
       expect(await store.applyIntent(craft('i-x9', { bits: 0 }), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
@@ -275,7 +285,7 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       const b = await store.loadOrCreateOperator('sub-l7', 'lo', SPAWN);
       await store.applyIntent(claim(a.id, 'lena', ownedRecord('echolet', 16, 0, 'abcd1234-f1')), { seedId: 'abcd1234' });
       const dec = (id: string, operatorId: string, species = 'echolet'): Intent => ({
-        id, kind: 'decompile', operatorId, reqId: 'r', daemonId: 'abcd1234-f1', species, fragments: { 'frag:packet': 3 },
+        id, kind: 'decompile', operatorId, reqId: 'r', daemonId: 'abcd1234-f1', species, fragments: yieldOf('echolet', 16),
         history: { at: '2026-09-30T00:00:00.000Z', kind: 'decompiled', detail: 'test' },
       });
       const ctx = { seedId: 'abcd1234' };
@@ -287,10 +297,62 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(await store.applyIntent(dec('i-g6', a.id), ctx)).toEqual({ ok: true });
       expect(await store.applyIntent({ id: 'i-g7', kind: 'load', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-f1', ramSlot: 0 }, ctx)).toEqual({ ok: false, reason: 'not on Disk' });
       const rec = await store.loadOrCreateOperator('sub-l6', 'lo', SPAWN);
-      expect(rec).toMatchObject({ ram: [], diskSlots: [], inventory: { sniff: 8, restore: 2, 'frag:packet': 3 } });
+      expect(rec).toMatchObject({ ram: [], diskSlots: [], inventory: { sniff: 8, restore: 2, ...yieldOf('echolet', 16) } });
       // a stale checkpoint naming the decompiled daemon cannot bring it back
       await store.checkpoint([{ ...rec, ram: [ownedRecord('echolet', 16, 0, 'abcd1234-f1')] }]);
       expect((await store.loadOrCreateOperator('sub-l6', 'lo', SPAWN)).ram).toEqual([]);
+    });
+
+    it('validates decompile and craft fragments against the rules, archiving the latest daemon state', async () => {
+      const a = await store.loadOrCreateOperator('sub-l8', 'lo', SPAWN);
+      await store.applyIntent(claim(a.id, 'vera', ownedRecord('tracerat', 20, 0, 'abcd1234-f2')), { seedId: 'abcd1234' });
+      await store.grantBits(a.id, 1000, 'admin');
+      const ctx = { seedId: 'abcd1234' };
+      const dec = (id: string, fragments: Record<string, number>): Intent => ({
+        id, kind: 'decompile', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-f2', species: 'tracerat', fragments,
+        history: { at: '2026-09-30T00:00:00.000Z', kind: 'decompiled', detail: 'test' },
+      });
+      // inflated, a wrong type, a held item the daemon does not hold
+      expect(await store.applyIntent(dec('i-v1', { 'frag:packet': 99, 'frag:signal': 9 }), ctx)).toEqual({ ok: false, reason: 'invalid decompile' });
+      expect(await store.applyIntent(dec('i-v2', { 'frag:glitch': 9, 'frag:signal': 9 }), ctx)).toEqual({ ok: false, reason: 'invalid decompile' });
+      expect(await store.applyIntent(dec('i-v3', { ...yieldOf('tracerat', 20), jumboframe: 1 }), ctx)).toEqual({ ok: false, reason: 'invalid decompile' });
+      // the world's latest state (a level and a held item since the last checkpoint) decides the yield
+      const latest = { ...ownedRecord('tracerat', 40, 0, 'abcd1234-f2'), heldItem: 'jumboframe', history: [{ at: '2026-09-30T00:00:00.000Z', kind: 'patched' as const, detail: 'x' }] };
+      expect(await store.applyIntent(dec('i-v4', yieldOf('tracerat', 20)), { ...ctx, storedDaemon: latest })).toEqual({ ok: false, reason: 'invalid decompile' });
+      expect(await store.applyIntent(dec('i-v5', yieldOf('tracerat', 40, 'jumboframe')), { ...ctx, storedDaemon: { ...latest, level: 19 } })).toEqual({
+        ok: false,
+        reason: 'invalid decompile',
+      });
+      expect(await store.applyIntent(dec('i-v6', yieldOf('tracerat', 40, 'jumboframe')), { ...ctx, storedDaemon: latest })).toEqual({ ok: true });
+      const rec = await store.loadOrCreateOperator('sub-l8', 'lo', SPAWN);
+      expect(rec.inventory).toEqual({ sniff: 8, restore: 2, ...yieldOf('tracerat', 40, 'jumboframe') });
+      if (store instanceof MemoryStore) {
+        expect(store.archive.get('abcd1234-f2')).toMatchObject({ level: 40, heldItem: 'jumboframe' });
+        expect(store.archive.get('abcd1234-f2')!.history.map((h) => h.kind)).toEqual(['patched', 'decompiled']);
+      }
+      // craft: fragments must be the recipe's for the chosen type
+      const craft = (id: string, fragments: Record<string, number>, using?: 'packet' | 'signal'): Intent => ({
+        id, kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'restore', qty: 1, ...(using ? { using } : {}), bits: 16, fragments, output: { item: 'restore', qty: 1 },
+      });
+      expect(await store.applyIntent(craft('i-c1', { 'frag:packet': 1 }, 'packet'), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
+      expect(await store.applyIntent(craft('i-c2', { 'frag:packet': 2 }, 'signal'), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
+      expect(await store.applyIntent(craft('i-c3', { 'frag:packet': 2 }), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
+      expect(await store.applyIntent(craft('i-c4', { 'frag:signal': 2 }, 'signal'), ctx)).toEqual({ ok: true });
+    });
+
+    it('a capture or a second starter into an occupied slot is a domain failure, not an error', async () => {
+      const a = await store.loadOrCreateOperator('sub-s1', 'lo', SPAWN);
+      await store.applyIntent(claim(a.id, 'sly', ownedRecord('pingling', 5, 0, 'abcd1234-h1')), { seedId: 'abcd1234' });
+      const capture: Intent = {
+        id: 'i-s-cap', kind: 'capture', operatorId: a.id, captureId: 'c1', daemon: ownedRecord('bitrot', 6, 0, 'abcd1234-h2'), location: 'RAM', tool: 'sniff',
+        log: { ...log, tool: 'sniff', spawnIndex: 1 },
+      };
+      expect(await store.applyIntent(capture, { seedId: 'abcd1234' })).toEqual({ ok: false, reason: 'slot taken' });
+      expect(await store.applyIntent(claim(a.id, 'sly', ownedRecord('pingling', 5, 0, 'abcd1234-h3'), 'i-s-claim2'), { seedId: 'abcd1234' })).toEqual({
+        ok: false,
+        reason: 'starter already claimed',
+      });
+      expect((await store.loadOrCreateOperator('sub-s1', 'lo', SPAWN)).ram.map((d) => d.id)).toEqual(['abcd1234-h1']);
     });
 
     it('applies evolve intents idempotently and records the first discovery of each form', async () => {

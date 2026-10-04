@@ -1,10 +1,10 @@
-import { DISK_BASE, DISK_EXPANSION_ITEM, DISK_STEP, diskExpansionPrice, getRecipe } from '@daemonet/rules';
+import { DISK_BASE, DISK_EXPANSION_ITEM, DISK_STEP, decompileYield, diskExpansionPrice, fragmentId, getRecipe, getSpecies, recipeFragments } from '@daemonet/rules';
 import type { EconomyIntent, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
 import { shopPrice } from '../core/systems/economy.js';
 
 export interface IntentContext {
   seedId: string;
-  /** For `store`: the daemon's current state, written along with the move to Disk. */
+  /** For `store` / `decompile`: the daemon's current state, written along with the move to Disk (or the archive). */
   storedDaemon?: OwnedDaemonRecord;
 }
 
@@ -72,15 +72,48 @@ export function economyIntentProblem(intent: EconomyIntent, diskCapacity: number
       try {
         const r = getRecipe(intent.recipeId);
         ok &&= intent.bits === r.bits * intent.qty && intent.output.item === r.output.item && intent.output.qty === r.output.qty * intent.qty;
+        ok &&= sameCounts(intent.fragments, recipeFragments(r, intent.qty, intent.using) as Record<string, number>);
       } catch {
         ok = false;
       }
-      ok &&= Object.values(intent.fragments).every((n) => count(n, 1));
       return ok ? null : 'invalid recipe';
     }
     case 'decompile':
-      return Object.values(intent.fragments).every((n) => count(n, 1)) ? null : 'invalid decompile';
+      // Checked against the daemon row by `decompileProblem` once the store has it.
+      return null;
   }
+}
+
+/** True when both maps hold exactly the same item counts. */
+export function sameCounts(a: Readonly<Record<string, number>>, b: Readonly<Record<string, number>>): boolean {
+  const ka = Object.keys(a);
+  return ka.length === Object.keys(b).length && ka.every((k) => Object.hasOwn(b, k) && a[k] === b[k]);
+}
+
+/**
+ * The state a decompile archives and the check of its fragments. `row` is the stored daemon (already matched on id,
+ * owner, location and species); `latest` is the world's current record of it (`IntentContext.storedDaemon`), which
+ * may be ahead of the last checkpoint (levels, a held item). The fragments must be exactly the rules' yield for the
+ * species at that level, plus the held item.
+ */
+export function decompileProblem(
+  intent: Extract<EconomyIntent, { kind: 'decompile' }>,
+  row: Pick<OwnedDaemonRecord, 'species' | 'level' | 'heldItem'>,
+  latest: OwnedDaemonRecord | undefined,
+): string | null {
+  if (latest && (latest.id !== intent.daemonId || latest.species !== row.species || latest.level < row.level)) return 'invalid decompile';
+  const level = latest?.level ?? row.level;
+  const heldItem = latest ? latest.heldItem : row.heldItem;
+  let sp;
+  try {
+    sp = getSpecies(row.species);
+  } catch {
+    return 'invalid decompile';
+  }
+  const expected: Record<string, number> = {};
+  for (const t of sp.types) expected[fragmentId(t)] = decompileYield(sp.stage, level);
+  if (heldItem) expected[heldItem] = (expected[heldItem] ?? 0) + 1;
+  return sameCounts(intent.fragments, expected) ? null : 'invalid decompile';
 }
 
 /** Copy of `inv` with `items` added (sign 1) or removed (sign -1); counts that reach 0 are dropped. */
@@ -190,6 +223,7 @@ export class MemoryStore implements Store {
     switch (intent.kind) {
       case 'claimStarter': {
         if ([...this.operators.values()].some((o) => o.name === intent.name && o.id !== op.id)) return { ok: false, reason: 'name taken' };
+        if (this.slotTaken(op.id, 'RAM', intent.daemon.slot)) return { ok: false, reason: 'starter already claimed' };
         op.name = intent.name;
         op.starterClaimed = true;
         op.inventory = { ...intent.inventory };
@@ -197,6 +231,8 @@ export class MemoryStore implements Store {
         break;
       }
       case 'capture':
+        // Mirrors the Daemon (operatorId, location, slot) unique constraint.
+        if (this.slotTaken(op.id, intent.location, intent.daemon.slot)) return { ok: false, reason: 'slot taken' };
         this.daemons.set(intent.daemon.id, { ...intent.daemon, originalOperatorId: intent.log.originalOperatorId, operatorId: op.id, location: intent.location });
         break;
       case 'store': {
@@ -261,18 +297,24 @@ export class MemoryStore implements Store {
         break;
       }
       case 'decompile': {
-        const problem = economyIntentProblem(intent, op.diskCapacity);
-        if (problem) return { ok: false, reason: problem };
         const d = this.daemons.get(intent.daemonId);
         if (!d || d.operatorId !== op.id || d.location !== 'RAM' || d.species !== intent.species) return { ok: false, reason: 'daemon not found' };
+        const problem = decompileProblem(intent, d, ctx.storedDaemon);
+        if (problem) return { ok: false, reason: problem };
+        const state = ctx.storedDaemon ? stateFields(ctx.storedDaemon) : stateFields(d);
         this.daemons.delete(d.id);
-        this.archive.set(d.id, { ...d, history: [...d.history, intent.history], reason: 'decompiled', archivedAt: new Date().toISOString() });
+        this.archive.set(d.id, { ...d, ...state, history: [...state.history, intent.history], reason: 'decompiled', archivedAt: new Date().toISOString() });
         op.inventory = withItems(op.inventory, intent.fragments, 1);
         break;
       }
     }
     this.applied.add(intent.id);
     return { ok: true };
+  }
+
+  private slotTaken(operatorId: string, location: 'RAM' | 'DISK', slot: number): boolean {
+    for (const d of this.daemons.values()) if (d.operatorId === operatorId && d.location === location && d.slot === slot) return true;
+    return false;
   }
 
   async checkpoint(records: readonly OperatorRecord[]): Promise<void> {

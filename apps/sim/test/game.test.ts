@@ -168,12 +168,30 @@ describe('Game connections', () => {
     expect(conn.of('ack').at(-1)!.d.result).toMatchObject({ daemonId: expect.any(String) });
   });
 
-  it('reports persist failure after all retries', async () => {
+  it('keeps retrying a claim whose outcome is unknown until the store answers (no synthesized failure)', async () => {
     const { game, store } = setup();
     const conn = await join(game, 'alice');
     store.failNext = 10;
     await claim(game, conn, 'alice');
-    expect(conn.last('err')!.d).toMatchObject({ code: 'E_STATE', message: 'persist failed' });
+    expect(store.failNext).toBe(0);
+    expect(conn.of('err')).toEqual([]);
+    expect(conn.of('ack').at(-1)!.d.result).toMatchObject({ daemonId: expect.any(String) });
+    expect([...store.operators.values()][0]).toMatchObject({ starterClaimed: true, inventory: { sniff: 8 } });
+  });
+
+  it('still reports persist failure after the retries for an intent with nothing to refund (load)', async () => {
+    const { game, store, world } = setup();
+    const conn = await join(game, 'alice');
+    await claim(game, conn, 'alice');
+    const op = [...world.operators.values()][0]!;
+    op.x = world.subnet.host.x;
+    op.y = world.subnet.host.y;
+    store.failNext = 10;
+    await game.message(conn, JSON.stringify({ t: 'cmd', seq: 1, d: { reqId: 'L1', cmd: 'load', actor: 'self', args: { daemonId: 'nope' } } }));
+    game.tick();
+    await game.flush();
+    game.tick();
+    expect(conn.last('err')!.d).toMatchObject({ reqId: 'L1', code: 'E_STATE', message: 'persist failed' });
   });
 });
 

@@ -216,6 +216,8 @@ export type Intent =
       reqId: string;
       recipeId: string;
       qty: number;
+      /** The fragment type chosen for an `any` slot. */
+      using?: TypeId;
       bits: number;
       fragments: Record<string, number>;
       output: { item: string; qty: number };

@@ -586,22 +586,100 @@ describe('economy in the runtime', () => {
     await g.shutdown();
   });
 
-  it('a purchase the store cannot persist is refunded in the world and absent from the store', async () => {
+  it('an unknown outcome is retried until the store answers: never refunded, never rewound by a checkpoint', async () => {
     const store = new MemoryStore();
+    const apply = store.applyIntent.bind(store);
+    let healthy = false;
+    let lost = 0;
+    // Commits, then the acknowledgement is lost, for as long as the store is unhealthy (far beyond the retry schedule).
+    store.applyIntent = async (intent, ctx) => {
+      const result = await apply(intent, ctx);
+      if (intent.kind === 'buy' && !healthy) {
+        lost++;
+        throw new Error('connection reset after commit');
+      }
+      return result;
+    };
     const { a, game: g } = game(store, { checkpointEveryTicks: 1 });
     const id = await shopper(store, 'vic', 1000, { restore: 1 });
     const conn = await join(g, 'vic');
-    store.failNext = 4;
+    const checkpoints: OperatorRecord[] = [];
+    const write = store.checkpoint.bind(store);
+    store.checkpoint = async (records) => {
+      checkpoints.push(...records.filter((r) => r.id === id).map((r) => ({ ...r })));
+      return write(records);
+    };
     await g.message(conn, cmd(buyCmd('mirror')));
-    tick(g);
+    for (let i = 0; i < 12; i++) {
+      tick(g);
+      await settle();
+    }
+    expect(lost).toBeGreaterThan(4); // past the bounded retries
+    expect(a.hasEconomyPending(id)).toBe(true);
+    expect(conn.of('err')).toEqual([]);
+    expect(a.operators.get(id)).toMatchObject({ bits: 488, inventory: { restore: 1 } });
+    expect(checkpoints.length).toBeGreaterThan(4);
+    expect(checkpoints.every((r) => r.inventoryInFlight)).toBe(true);
+    expect(store.operators.get(id)).toMatchObject({ bits: 488, inventory: { restore: 1, mirror: 1 } });
+    healthy = true;
     await g.flush();
     tick(g);
     await g.flush();
-    expect(conn.of('err').at(-1)!.d).toMatchObject({ code: 'E_STATE', message: 'persist failed' });
-    expect(a.operators.get(id)).toMatchObject({ bits: 1000, inventory: { restore: 1 } });
-    expect(store.operators.get(id)).toMatchObject({ bits: 1000, inventory: { restore: 1 } });
-    expect(store.ledger.filter((l) => l.operatorId === id)).toHaveLength(1);
+    expect(conn.of('ack').at(-1)!.d).toMatchObject({ result: { bits: 488 } });
+    expect(a.operators.get(id)).toMatchObject({ bits: 488, inventory: { restore: 1, mirror: 1 } });
+    expect(store.operators.get(id)).toMatchObject({ bits: 488, inventory: { restore: 1, mirror: 1 } });
+    expect(store.ledger.filter((l) => l.operatorId === id && l.reason === 'shop')).toHaveLength(1);
+    expect(checkpoints.at(-1)!.inventoryInFlight).toBeUndefined();
     await g.shutdown();
+    expect(store.operators.get(id)).toMatchObject({ bits: 488, inventory: { restore: 1, mirror: 1 } });
+  });
+
+  it('a store that keeps failing before committing: the intent waits, then commits exactly once', async () => {
+    const store = new MemoryStore();
+    const { a, game: g } = game(store);
+    const id = await shopper(store, 'xan', 1000, { 'frag:packet': 4, 'frag:socket': 4 });
+    const conn = await join(g, 'xan');
+    store.failNext = 9;
+    await g.message(conn, cmd(craftCmd('tap')));
+    tick(g);
+    await g.flush();
+    tick(g);
+    expect(store.failNext).toBe(0);
+    expect(conn.of('ack').at(-1)!.d).toMatchObject({ result: { bits: 936, output: { item: 'tap', qty: 1 } } });
+    expect(a.operators.get(id)).toMatchObject({ bits: 936, inventory: { tap: 1 } });
+    expect(store.operators.get(id)).toMatchObject({ bits: 936, inventory: { tap: 1 } });
+    expect(store.ledger.filter((l) => l.operatorId === id && l.reason === 'craft')).toHaveLength(1);
+    await g.shutdown();
+  });
+
+  it('shutdown with an outcome still unknown abandons the intent pending: the final checkpoint writes neither inventory nor bits', async () => {
+    const store = new MemoryStore();
+    const apply = store.applyIntent.bind(store);
+    store.applyIntent = async (intent, ctx) => {
+      const result = await apply(intent, ctx);
+      if (intent.kind === 'decompile') throw new Error('connection reset after commit');
+      return result;
+    };
+    const { a, game: g } = game(store);
+    const id = await shopper(store, 'yul', 0, { restore: 1 });
+    const conn = await join(g, 'yul');
+    const checkpoints: OperatorRecord[] = [];
+    const write = store.checkpoint.bind(store);
+    store.checkpoint = async (records) => {
+      checkpoints.push(...records.filter((r) => r.id === id).map((r) => ({ ...r })));
+      return write(records);
+    };
+    await g.message(conn, cmd(decompileCmd('yul-d0')));
+    tick(g);
+    await settle();
+    await g.shutdown();
+    expect(a.hasEconomyPending(id)).toBe(true);
+    expect(conn.of('err').filter((m) => m.d.message === 'persist failed')).toEqual([]);
+    expect(checkpoints.at(-1)).toMatchObject({ inventoryInFlight: true, inventory: { restore: 1 } });
+    // the store's committed decompile stands: fragments in the inventory, the daemon archived
+    expect(store.operators.get(id)!.inventory).toEqual({ restore: 1, 'frag:packet': 9, 'frag:signal': 9 });
+    expect(store.daemons.has('yul-d0')).toBe(false);
+    expect(store.archive.has('yul-d0')).toBe(true);
   });
 
   it('bits granted while connected are seen on the next connection, never overwritten by a checkpoint', async () => {

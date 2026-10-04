@@ -91,6 +91,9 @@ const MAX_VIOLATIONS = 256;
 const SLOW_TICK_MS = 50;
 const RECOVERED_TICK_MS = 25;
 
+/** Longest wait between attempts while an intent's outcome is unknown (see `persist`). */
+const MAX_RETRY_MS = 2048;
+
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Constant-time string comparison; different lengths never match. */
@@ -134,6 +137,8 @@ export class Game {
   private readonly tickMs: number[] = [];
   /** Game ticks so far (every world advances once per game tick). */
   private ticks = 0;
+  /** Set by `shutdown`: intents whose outcome is still unknown stop retrying (they are left pending, never failed). */
+  private stopping = false;
 
   constructor(opts: GameOptions) {
     const worlds = opts.worlds ?? (opts.world ? [opts.world] : []);
@@ -567,23 +572,36 @@ export class Game {
   }
 
   private persist(world: World, intent: Intent): void {
-    const stored = intent.kind === 'store' ? world.daemons.get(intent.daemonId) : undefined;
+    // store / decompile write (archive) the daemon's current state along with the move.
+    const stored = intent.kind === 'store' || intent.kind === 'decompile' ? world.daemons.get(intent.daemonId) : undefined;
     const ctx = { seedId: world.seedId, ...(stored ? { storedDaemon: world.toRecord(stored) } : {}) };
     // A travel rewrites the operator's subnet and position, and an economy intent its inventory: each must commit
     // after every checkpoint taken before it (a checkpoint taken while it is pending leaves the inventory alone).
     const ordered = intent.kind === 'travel' || isEconomyIntent(intent);
     const apply = () => (ordered ? this.serialized(() => this.store.applyIntent(intent, ctx)) : this.store.applyIntent(intent, ctx));
+    // A thrown error leaves the outcome unknown (the commit may have landed). For an intent whose refund would be
+    // written over a committed result by the next checkpoint (economy: bits / items; capture: the consumed tool;
+    // claimStarter: the starting inventory), a
+    // failure is never synthesized: the same intent is retried (idempotent by id) until the store answers. Shutdown
+    // abandons it still pending, so the final checkpoint leaves the inventory to the store.
+    const untilKnown = isEconomyIntent(intent) || intent.kind === 'capture' || intent.kind === 'claimStarter';
     const run = async () => {
       let result: IntentResult = { ok: false, reason: 'persist failed' };
-      for (let attempt = 0; attempt <= this.retryDelays.length; attempt++) {
+      for (let attempt = 0; ; attempt++) {
         try {
           result = await apply();
           break;
         } catch (err) {
           this.log.warn({ intent: intent.id, attempt, err: (err as Error).message }, 'intent persist failed');
           const delay = this.retryDelays[attempt];
-          if (delay === undefined) break;
-          await sleep(delay);
+          if (delay !== undefined) {
+            await sleep(delay);
+            continue;
+          }
+          if (!untilKnown) break;
+          if (this.stopping) return this.abandon(intent);
+          await sleep(Math.min(MAX_RETRY_MS, this.retryDelays.at(-1) ?? MAX_RETRY_MS));
+          if (this.stopping) return this.abandon(intent);
         }
       }
       world.completeIntent(intent.id, result);
@@ -591,6 +609,10 @@ export class Game {
       if (intent.kind === 'travel' && result.ok) this.moveOperator(world, intent);
     };
     this.track(run());
+  }
+
+  private abandon(intent: Intent): void {
+    this.log.error({ intent: intent.id, kind: intent.kind, operator: intent.operatorId }, 'shutdown with an intent outcome unknown: left to the store');
   }
 
   /** A committed evolution is known in every hosted world; a first discovery is announced in all of them. */
@@ -617,9 +639,13 @@ export class Game {
     while (this.inflight.size > 0) await Promise.all([...this.inflight]);
   }
 
-  /** Kick everyone, let in-flight intents complete, then checkpoint everyone and wait for persistence. */
+  /**
+   * Kick everyone, let in-flight intents complete (an intent whose outcome is still unknown after its retries is
+   * abandoned pending), then checkpoint everyone and wait for persistence.
+   */
   async shutdown(): Promise<void> {
     for (const st of [...this.conns.values()]) this.kick(st, 'server shutting down', 1001);
+    this.stopping = true;
     await this.flush();
     this.checkpointAll();
     await this.flush();
