@@ -1,7 +1,7 @@
 import { createPrisma, type PrismaClient } from '@daemonet/db';
-import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, incidentPayouts, ticketBoard } from '@daemonet/rules';
+import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, ticketBoard } from '@daemonet/rules';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
+import { incidentParticipants, incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
 import { MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type LiveOperatorState, type Store } from '../src/runtime/store.js';
 import { ownedRecord } from './helpers.js';
@@ -39,10 +39,10 @@ function acceptLo(operatorId: string, index: number, id = `i-acc-${index}`, tick
 
 type RewardIntent = Extract<Intent, { kind: 'incidentReward' }>;
 
-/** The payout intents of a cleared Incident with this damage per operator, as the world raises them. */
+/** The payout intents of a cleared Incident with this damage per operator, as the world raises them (rewarded only). */
 function incidentRewards(incidentId: string, damage: Record<string, number>): RewardIntent[] {
-  const participants = incidentPayouts(new Map(Object.entries(damage))).map((p) => ({ operatorId: p.operatorId, name: null, damage: p.damage, share: p.share, reward: p.reward }));
-  return participants.map((p) => ({
+  const participants = incidentParticipants(new Map(Object.entries(damage))).map((p) => ({ ...p, name: null }));
+  return participants.filter((p) => p.reward > 0).map((p) => ({
     id: incidentRewardId(incidentId, p.operatorId), kind: 'incidentReward', operatorId: p.operatorId, incidentId, n: 7, species: KERNEL_DAEMONS[0]!,
     endsAt: '2026-10-01T04:20:00.000Z', reward: p.reward, damage: p.damage, share: p.share, participants: participants.map((x) => ({ ...x })),
   }));
@@ -331,6 +331,33 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await store.recordIncident({ id: 'abcd1234-inc2', n: 8, species: KERNEL_DAEMONS[1]!, endsAt: '2026-10-01T08:20:00.000Z', outcome: 'EXPIRED', participants: [] });
       expect(await store.applyIntent(incidentRewards('abcd1234-inc2', { [c.id]: 10 })[0]!, ctx)).toEqual({ ok: false, reason: 'the Incident expired' });
       expect((await store.loadOrCreateOperator('sub-inc-c', 'lo', SPAWN)).bits).toBe(0);
+    });
+
+    it('a contributor under 1% is recorded but not paid; everyone else is paid from the full list', async () => {
+      const a = await store.loadOrCreateOperator('sub-min-a', 'lo', SPAWN);
+      const b = await store.loadOrCreateOperator('sub-min-b', 'lo', SPAWN);
+      const ctx = { seedId: 'abcd1234' };
+      const rewards = incidentRewards('abcd1234-incM', { [a.id]: 9950, [b.id]: 50 });
+      expect(rewards.map((r) => [r.operatorId, r.reward])).toEqual([[a.id, 8151]]);
+      expect(rewards[0]!.participants.map((p) => [p.operatorId, p.reward])).toEqual([[a.id, 8151], [b.id, 0]]);
+      expect(await store.applyIntent(rewards[0]!, ctx)).toMatchObject({ ok: true });
+      // a forged payout of the sub-1% entry is refused
+      const forged = { ...rewards[0]!, id: incidentRewardId('abcd1234-incM', b.id), operatorId: b.id, reward: 64, damage: 50 };
+      expect(await store.applyIntent(forged, ctx)).toEqual({ ok: false, reason: 'payouts do not match the rules' });
+      expect((await store.loadOrCreateOperator('sub-min-a', 'lo', SPAWN)).bits).toBe(8151);
+      expect((await store.loadOrCreateOperator('sub-min-b', 'lo', SPAWN)).bits).toBe(0);
+      // nothing is owed to the sub-1% contributor at boot
+      expect(await store.recoverIncidents()).toEqual([]);
+    });
+
+    it('a payout marked refused is not raised again by boot recovery', async () => {
+      const a = await store.loadOrCreateOperator('sub-ref-a', 'lo', SPAWN);
+      const [ra] = incidentRewards('abcd1234-incR', { [a.id]: 10 });
+      await store.recordIncident({ id: 'abcd1234-incR', n: ra!.n, species: ra!.species, endsAt: ra!.endsAt, outcome: 'CLEARED', participants: ra!.participants });
+      expect(await store.recoverIncidents()).toEqual([ra]);
+      await store.markIncidentPayoutRefused('abcd1234-incR', a.id);
+      await store.markIncidentPayoutRefused('abcd1234-nope', a.id);
+      expect(await store.recoverIncidents()).toEqual([]);
     });
 
     it('boot recovery closes Incidents left OPEN and returns only the payouts a restart interrupted', async () => {

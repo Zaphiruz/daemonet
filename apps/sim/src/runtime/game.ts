@@ -144,6 +144,8 @@ const UNKNOWN_RETRY_LIMIT = 32;
 const UNKNOWN_RETRY_MS = 10 * 60_000;
 /** Past the bounded retry schedule, only every WARN_EVERY-th failed attempt is logged. */
 const WARN_EVERY = 8;
+/** How long a committed Incident payout waits for its operator's session (it was mid-load when the payout landed). */
+const PARKED_REWARD_MS = 10 * 60_000;
 /** Kick reason when an operator must reconnect to reload its state from the store (transient in the SDK). */
 export const RELOAD_KICK = 'reload required';
 
@@ -182,6 +184,11 @@ export class Game {
   private readonly conns = new Map<string, ConnState>();
   private readonly sessions = new Map<string, Session>();
   private readonly leaving = new Map<string, Promise<void>>();
+  /**
+   * Committed Incident payouts of an operator that had no session when they landed (e.g. it was loading): the session
+   * created next applies each one whose ledger row is above its load's watermark (the load did not contain it).
+   */
+  private readonly parkedRewards = new Map<string, Array<{ seq: number; intent: Extract<Intent, { kind: 'incidentReward' }>; at: number }>>();
   /** Operator loads in flight per sub; a leave marks them stale so they reload after its checkpoint. */
   private readonly loads = new Map<string, Set<{ stale: boolean }>>();
   private readonly inflight = new Set<Promise<void>>();
@@ -489,6 +496,7 @@ export class Game {
           ledgerSeq: rec.ledgerSeq, loadSeq: rec.ledgerSeq, ledgerApplied: new Map(), orgGen: 0, nameGen: 0,
         };
         this.sessions.set(rec.id, session);
+        this.claimParkedRewards(session, rec.ledgerSeq);
         this.chat.loadMute(rec.id, rec.mutedUntil);
         // Pushes for this operator that landed while the load was in flight had no session and were dropped: re-read
         // org, name and the ledger rows above the load's watermark now rather than at the next periodic resync.
@@ -836,7 +844,7 @@ export class Game {
         outcome: event.phase === 'open' ? 'OPEN' : event.phase === 'cleared' ? 'CLEARED' : 'EXPIRED',
         participants: (event.participants ?? []).map((p) => ({ ...p })),
       };
-      this.track(this.store.recordIncident(row).catch((err: Error) => this.log.warn({ incident: row.id, outcome: row.outcome, err: err.message }, 'incident record failed')));
+      this.recordIncident(row);
     }
   }
 
@@ -869,7 +877,10 @@ export class Game {
       try {
         const result = await this.serialized(() => this.store.applyIntent(intent, { seedId: this.defaultWorld.seedId }));
         if (result.ok) this.log.info({ intent: intent.id, operator: intent.operatorId, reward: intent.reward }, 'resumed an interrupted incident payout');
-        else this.log.warn({ intent: intent.id, operator: intent.operatorId, reason: result.reason }, 'incident payout refused');
+        else {
+          this.log.warn({ intent: intent.id, operator: intent.operatorId, reason: result.reason }, 'incident payout refused');
+          await this.store.markIncidentPayoutRefused(intent.incidentId, intent.operatorId);
+        }
       } catch (err) {
         this.log.error({ intent: intent.id, operator: intent.operatorId, err: (err as Error).message }, 'resuming an incident payout failed');
       }
@@ -884,13 +895,76 @@ export class Game {
   private onIncidentReward(intent: Extract<Intent, { kind: 'incidentReward' }>, result: IntentResult, elsewhere: boolean): void {
     if (!result.ok) {
       this.log.warn({ intent: intent.id, operator: intent.operatorId, incident: intent.incidentId, reason: result.reason }, 'incident payout refused');
+      // definitive: boot recovery must not raise it again
+      this.track(
+        this.store
+          .markIncidentPayoutRefused(intent.incidentId, intent.operatorId)
+          .catch((err: Error) => this.log.warn({ intent: intent.id, err: err.message }, 'marking a refused incident payout failed')),
+      );
       return;
     }
     if (!elsewhere) return;
     const live = this.live(intent.operatorId);
-    if (!live) return;
+    if (!live) {
+      // No session (gone, or still loading): a session created soon applies it if its load predates the row.
+      if (result.ledgerSeq !== undefined) this.parkReward(intent, result.ledgerSeq);
+      return;
+    }
     if (result.ledgerSeq !== undefined && result.ledgerSeq <= live.session.loadSeq) return;
     live.session.world.creditIncidentReward(live.op, intent);
+  }
+
+  private parkReward(intent: Extract<Intent, { kind: 'incidentReward' }>, seq: number): void {
+    const now = Date.now();
+    for (const [id, list] of this.parkedRewards) {
+      const fresh = list.filter((r) => now - r.at < PARKED_REWARD_MS);
+      if (fresh.length === 0) this.parkedRewards.delete(id);
+      else this.parkedRewards.set(id, fresh);
+    }
+    const list = this.parkedRewards.get(intent.operatorId) ?? [];
+    list.push({ seq, intent, at: now });
+    this.parkedRewards.set(intent.operatorId, list);
+  }
+
+  /** A new session takes the parked payouts its load did not contain (row above the load's watermark), once. */
+  private claimParkedRewards(session: Session, loadSeq: number): void {
+    const list = this.parkedRewards.get(session.operatorId);
+    if (!list) return;
+    this.parkedRewards.delete(session.operatorId);
+    const op = session.world.operators.get(session.operatorId);
+    if (!op) return;
+    for (const r of list) if (r.seq > loadSeq && Date.now() - r.at < PARKED_REWARD_MS) session.world.creditIncidentReward(op, r.intent);
+  }
+
+  /**
+   * Writes an Incident record. A CLEARED record is retried until the store answers (capped like an unknown intent), so
+   * the participants are on the row as early as possible; the others get the bounded retries only. Failures are logged:
+   * the payout intents also write the CLEARED row, and boot recovery closes rows left OPEN.
+   */
+  private recordIncident(row: IncidentRow): void {
+    const untilKnown = row.outcome === 'CLEARED';
+    const run = async () => {
+      const started = Date.now();
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await this.store.recordIncident(row);
+          return;
+        } catch (err) {
+          if (attempt < this.retryDelays.length || attempt % WARN_EVERY === 0) {
+            this.log.warn({ incident: row.id, outcome: row.outcome, attempt, err: (err as Error).message }, 'incident record failed');
+          }
+          const delay = this.retryDelays[attempt];
+          const giveUp =
+            this.stopping || (delay === undefined && !untilKnown) || attempt + 1 >= this.unknownRetryLimit || Date.now() - started >= this.unknownRetryMs;
+          if (giveUp) {
+            this.log.error({ incident: row.id, outcome: row.outcome, attempts: attempt + 1 }, 'incident record abandoned');
+            return;
+          }
+          await sleep(delay ?? Math.min(MAX_RETRY_MS, this.retryDelays.at(-1) ?? MAX_RETRY_MS));
+        }
+      }
+    };
+    this.track(run());
   }
 
   private leave(session: Session): void {

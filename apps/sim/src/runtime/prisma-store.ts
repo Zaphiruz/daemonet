@@ -17,6 +17,7 @@ import {
   randomHex,
   samePayouts,
   SIM_LEDGER_REASONS,
+  unpaidParticipants,
   stateFields as memStateFields,
   ticketAcceptProblem,
   ticketCapProblem,
@@ -528,6 +529,18 @@ export class PrismaStore implements Store {
     });
   }
 
+  async markIncidentPayoutRefused(incidentId: string, operatorId: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ participants: unknown }>>`SELECT "participants" FROM "Incident" WHERE "id" = ${incidentId} FOR UPDATE`;
+      if (!rows[0]) return;
+      const participants = participantsOf(rows[0].participants);
+      const p = participants.find((x) => x.operatorId === operatorId);
+      if (!p || p.refused) return;
+      p.refused = true;
+      await tx.incident.update({ where: { id: incidentId }, data: { participants: jsonParticipants(participants) } });
+    });
+  }
+
   async recoverIncidents(): Promise<IncidentRewardIntent[]> {
     const now = new Date();
     await this.prisma.incident.updateMany({ where: { outcome: 'OPEN' }, data: { outcome: 'EXPIRED', closedAt: now } });
@@ -538,7 +551,7 @@ export class PrismaStore implements Store {
     const out: IncidentRewardIntent[] = [];
     for (const r of cleared) {
       const row: IncidentRow = { id: r.id, n: r.n, species: r.species, endsAt: r.endsAt.toISOString(), outcome: 'CLEARED', participants: participantsOf(r.participants) };
-      for (const p of row.participants) if (!done.has(`${row.id}:${p.operatorId}`)) out.push(incidentRewardIntent(row, p));
+      for (const p of unpaidParticipants(row, (id) => done.has(`${row.id}:${id}`))) out.push(incidentRewardIntent(row, p));
     }
     return out;
   }

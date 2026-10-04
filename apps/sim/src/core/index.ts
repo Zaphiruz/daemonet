@@ -5,4 +5,4 @@ export { INTEREST_RADIUS, entitiesNear, toDaemonEntity, toOperatorEntity, toRamD
 export { HOST_RADIUS, LEASH_TILES, RESTORE_CHANNEL_MS, STARTER_LEVEL } from './systems/commands.js';
 export { OPERATOR_SPEED, daemonSpeed } from './systems/movement.js';
 export { PARTY_RADIUS } from './systems/progress.js';
-export { EVICT_TO } from './systems/incident.js';
+export { EVICT_TO, incidentParticipants } from './systems/incident.js';

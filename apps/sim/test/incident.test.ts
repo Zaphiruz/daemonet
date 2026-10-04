@@ -465,3 +465,124 @@ describe('Incidents through the Game: payouts, gateways, admin', () => {
     await g.shutdown();
   });
 });
+
+describe('Incident fix round 1', () => {
+  it('a contributor under 1% is listed with no reward, raises no payout and gets no copy', () => {
+    const { world, incidentEvents, hitBoss } = setup(['alice', 'bob']);
+    const inc = world.incident!;
+    const boss = world.daemons.get(inc.bossId)!;
+    hitBoss('alice', boss);
+    inc.damage.set('alice', 9950);
+    inc.damage.set('bob', 50);
+    inc.nextPhase = 3;
+    boss.hp = 0;
+    const r = world.step([]);
+    expect(incidentEvents(r)).toMatchObject([{ phase: 'cleared', participants: [{ operatorId: 'alice', reward: 8151 }, { operatorId: 'bob', reward: 0, damage: 50 }] }]);
+    expect(r.intents.filter((i) => i.kind === 'incidentReward').map((i) => i.operatorId)).toEqual(['alice']);
+    expect([...world.daemons.values()].filter((d) => d.wild?.personal).map((d) => d.wild!.personal)).toEqual(['alice']);
+  });
+
+  it('operators caught in a blast get a hit event too', () => {
+    const { world, events, hitBoss } = setup(['alice']);
+    const boss = world.daemons.get(world.incident!.bossId)!;
+    boss.statuses.stalled = 1_000_000;
+    boss.moves = [];
+    hitBoss('alice', boss);
+    let warn: Extract<GameEvent, { e: 'telegraph' }> | undefined;
+    for (let i = 0; i < 300 && !warn; i++) warn = events(world.step([])).find((e): e is Extract<GameEvent, { e: 'telegraph' }> => e.e === 'telegraph');
+    Object.assign(world.operators.get('alice')!, { x: warn!.x, y: warn!.y, path: [] });
+    let blast: StepResult | undefined;
+    while (world.tick < warn!.atTick) blast = world.step([]);
+    expect(events(blast!)).toContainEqual({ e: 'hit', source: boss.id, target: 'alice', move: 'telegraph', amount: 0, multiplier: 1 });
+  });
+
+  function game() {
+    const now = Date.parse('2026-10-01T05:00:00.000Z');
+    const clock = () => new Date(now).toISOString();
+    const store = new MemoryStore();
+    const bus = new MemoryBus();
+    const backbone = new World({ subnet: getSubnet('backbone'), seed: 'b', seedId: 'bbbb0001', spawner: false, clock });
+    const ks = new World({ subnet: KS, seed: 'k', seedId: 'kkkk0002', spawner: false, clock });
+    const g = new Game({ worlds: [backbone, ks], store, verify: createDevVerifier('daemonet-users'), bus });
+    return { g, store, backbone, ks };
+  }
+
+  it('through the Game: every contributor of 1% or more is paid exactly once; the sub-1% one gets nothing', async () => {
+    const { g, store, backbone, ks } = game();
+    const ids: string[] = [];
+    for (const name of ['alice', 'bob']) {
+      const conn = new FakeConn();
+      g.connect(conn);
+      await g.message(conn, JSON.stringify({ t: 'auth', seq: 1, d: { token: `dev:${name}` } }));
+      ids.push(conn.of('authOk')[0]!.d.operatorId);
+    }
+    const [alice, bob] = ids as [string, string];
+    g.startIncident();
+    g.tick();
+    const inc = ks.incident!;
+    inc.damage.set(alice, 9950);
+    inc.damage.set(bob, 50);
+    ks.daemons.get(inc.bossId)!.hp = 0;
+    g.tick();
+    await g.flush();
+    g.tick();
+    await g.flush();
+    expect(backbone.operators.get(alice)!.bits).toBe(8151);
+    expect(backbone.operators.get(bob)!.bits).toBe(0);
+    expect(store.ledger.filter((l) => l.reason === 'incident').map((l) => [l.operatorId, l.delta])).toEqual([[alice, 8151]]);
+    expect(store.incidents.get(inc.id)).toMatchObject({ outcome: 'CLEARED', participants: [{ operatorId: alice, reward: 8151 }, { operatorId: bob, reward: 0 }] });
+    expect(await store.recoverIncidents()).toEqual([]);
+    await g.shutdown();
+  });
+
+  it('a payout that commits while its operator is still loading is applied to the new session once', async () => {
+    const { g, store, backbone, ks } = game();
+    store.operators.set('ally', { id: 'ally', sub: 'dev-ally', name: 'ally', starterClaimed: true, subnet: 'backbone', bits: 0, diskCapacity: 256, x: 20.5, y: 20.5, inventory: {} });
+    const load = store.loadOrCreateOperator.bind(store);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    store.loadOrCreateOperator = async (...args) => {
+      const rec = await load(...args);
+      await gate; // the read is done (balance 0, watermark 0); the session is created only after the payout lands
+      return rec;
+    };
+    const conn = new FakeConn();
+    g.connect(conn);
+    const authed = g.message(conn, JSON.stringify({ t: 'auth', seq: 1, d: { token: 'dev:ally' } }));
+    g.startIncident();
+    g.tick();
+    const inc = ks.incident!;
+    inc.damage.set('ally', 100);
+    ks.daemons.get(inc.bossId)!.hp = 0;
+    g.tick();
+    await g.flush();
+    expect(store.operators.get('ally')!.bits).toBe(8192);
+    expect(g.worldOf('ally')).toBeUndefined();
+    release();
+    await authed;
+    expect(backbone.operators.get('ally')!.bits).toBe(8192);
+    g.tick();
+    g.tick();
+    expect(backbone.operators.get('ally')!.bits).toBe(8192);
+    expect(conn.of('delta').flatMap((d) => d.d.events).filter((e) => e.e === 'incidentReward')).toHaveLength(1);
+    await g.shutdown();
+  });
+
+  it('a session whose load already contains the payout is not credited again', async () => {
+    const { g, store, backbone, ks } = game();
+    store.operators.set('bea', { id: 'bea', sub: 'dev-bea', name: 'bea', starterClaimed: true, subnet: 'backbone', bits: 0, diskCapacity: 256, x: 20.5, y: 20.5, inventory: {} });
+    g.startIncident();
+    g.tick();
+    const inc = ks.incident!;
+    inc.damage.set('bea', 100);
+    ks.daemons.get(inc.bossId)!.hp = 0;
+    g.tick();
+    await g.flush();
+    const conn = new FakeConn();
+    g.connect(conn);
+    await g.message(conn, JSON.stringify({ t: 'auth', seq: 1, d: { token: 'dev:bea' } }));
+    g.tick();
+    expect(backbone.operators.get('bea')!.bits).toBe(8192);
+    await g.shutdown();
+  });
+});

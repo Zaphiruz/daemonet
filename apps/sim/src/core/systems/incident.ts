@@ -45,11 +45,27 @@ function inside(world: World, p: Point): Point {
   return world.grid.isWalkablePoint({ x, y }) ? { x, y } : { ...world.subnet.spawn };
 }
 
+/**
+ * Every contributor of an Incident (damage > 0), ordered by damage descending then operator id, with its share of the
+ * total and its reward (`incidentPayouts`; 0 for a contributor under the minimum share). The full list is what the
+ * Incident row records and every payout intent carries, so a store can re-derive each reward from the rules: the
+ * payout list alone would drop the sub-1% contributors and change the total.
+ */
+export function incidentParticipants(damage: ReadonlyMap<string, number>): Array<Omit<IncidentParticipant, 'name'>> {
+  const entries = [...damage].filter(([, d]) => Number.isFinite(d) && d > 0);
+  const total = entries.reduce((a, [, d]) => a + d, 0);
+  const paid = new Map(incidentPayouts(damage).map((p) => [p.operatorId, p.reward]));
+  return entries
+    .map(([operatorId, d]) => ({ operatorId, damage: d, share: d / total, reward: paid.get(operatorId) ?? 0 }))
+    .sort((a, b) => b.damage - a.damage || (a.operatorId < b.operatorId ? -1 : a.operatorId > b.operatorId ? 1 : 0));
+}
+
 function open(world: World, now: number, out: Out): void {
   const arena = world.subnet.arena ?? { x: world.subnet.width / 2, y: world.subnet.height / 2, radius: 16 };
   const scheduled = !world.incidentRequested && now >= world.nextIncidentAt;
   // A scheduled Incident is numbered by its slot (the boss the api announces for it); an admin start does not move the
-  // schedule and draws its boss from the current slot plus the Incidents run since boot.
+  // schedule and draws its boss from the current slot plus the Incidents run since boot. (An admin-started Incident that
+  // is still running at a scheduled slot delays that scheduled one until it ends: it then opens at once.)
   const n = scheduled ? incidentNumber(world.nextIncidentAt) : incidentNumber(now) + world.incidentCount;
   const species = bossSpecies(n);
   const boss = world.spawnWild(species, BOSS_LEVEL, inside(world, arena), -1, rollSpawn(world.rng, { clean: 0, signatureStep: 0 }));
@@ -115,17 +131,11 @@ function removeAdds(world: World, inc: IncidentState): void {
 }
 
 function clear(world: World, inc: IncidentState, out: Out): void {
-  const payouts = incidentPayouts(inc.damage);
   removeAdds(world, inc);
-  const participants: IncidentParticipant[] = payouts.map((p) => ({
-    operatorId: p.operatorId,
-    name: world.operators.get(p.operatorId)?.name ?? null,
-    damage: Math.round(p.damage),
-    share: p.share,
-    reward: p.reward,
-  }));
+  const participants: IncidentParticipant[] = incidentParticipants(inc.damage).map((p) => ({ ...p, name: world.operators.get(p.operatorId)?.name ?? null }));
   const endsAt = new Date(inc.endsAtMs).toISOString();
-  for (const p of participants) {
+  // only contributors with a reward (>= the minimum share) are paid and get a copy
+  for (const p of participants.filter((x) => x.reward > 0)) {
     // One intent per contributor, with an id derived from the Incident: exactly one payout even across retries.
     world.trackIntent(
       {
@@ -185,8 +195,12 @@ function telegraph(world: World, inc: IncidentState, boss: Daemon, out: Out): vo
       d.lastCombatTick = tick;
       out.emit({ e: 'hit', source: boss.id, target: d.id, move: 'telegraph', amount, multiplier: 1 }, { at: d });
     }
-    // an operator caught in the blast loses its capture (packet loss) and its restore channel, as when hit
-    for (const op of world.operators.values()) if (distance(op, t) <= t.radius) op.hitTick = tick;
+    // an operator caught in the blast is hit (as by a wild daemon): it loses its capture (packet loss) and its restore
+    for (const op of world.operators.values()) {
+      if (op.travelling || distance(op, t) > t.radius) continue;
+      op.hitTick = tick;
+      out.emit({ e: 'hit', source: boss.id, target: op.id, move: 'telegraph', amount: 0, multiplier: 1 }, { at: op });
+    }
     return;
   }
   if (tick < inc.nextTelegraphTick) return;

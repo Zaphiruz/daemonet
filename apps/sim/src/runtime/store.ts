@@ -10,14 +10,13 @@ import {
   fragmentId,
   getRecipe,
   getSpecies,
-  incidentPayouts,
   recipeFragments,
   ticketKey,
   type FilterTerm,
   type TicketKind,
   type TicketParams,
 } from '@daemonet/rules';
-import { incidentRewardId, type IncidentParticipant, type Intent, type IntentResult, type OpenTicket, type OperatorRecord, type OrgView, type OwnedDaemonRecord, type Point, type ShopIntent } from '../core/index.js';
+import { incidentParticipants, incidentRewardId, type IncidentParticipant, type Intent, type IntentResult, type OpenTicket, type OperatorRecord, type OrgView, type OwnedDaemonRecord, type Point, type ShopIntent } from '../core/index.js';
 import { shopPrice } from '../core/systems/economy.js';
 import { boardTicket } from '../core/systems/tickets.js';
 
@@ -104,6 +103,11 @@ export interface Store extends ChatStore {
    * the ids and the ledger check make a second payment impossible).
    */
   recoverIncidents(): Promise<IncidentRewardIntent[]>;
+  /**
+   * Marks a participant's payout on the Incident row as definitively refused, so boot recovery does not raise it again.
+   * No-op for a missing row or participant.
+   */
+  markIncidentPayoutRefused(incidentId: string, operatorId: string): Promise<void>;
   /** The operator's most recent `limit` ledger rows, oldest first. */
   ledgerFor(operatorId: string, limit?: number): Promise<LedgerRow[]>;
   ping(): Promise<void>;
@@ -325,7 +329,14 @@ export function participantsOf(raw: unknown): IncidentParticipant[] {
   const out: IncidentParticipant[] = [];
   for (const p of raw as Array<Record<string, unknown>>) {
     if (!p || typeof p.operatorId !== 'string' || typeof p.damage !== 'number' || typeof p.reward !== 'number') continue;
-    out.push({ operatorId: p.operatorId, name: typeof p.name === 'string' ? p.name : null, damage: p.damage, share: typeof p.share === 'number' ? p.share : 0, reward: p.reward });
+    out.push({
+      operatorId: p.operatorId,
+      name: typeof p.name === 'string' ? p.name : null,
+      damage: p.damage,
+      share: typeof p.share === 'number' ? p.share : 0,
+      reward: p.reward,
+      ...(p.refused === true ? { refused: true } : {}),
+    });
   }
   return out;
 }
@@ -336,18 +347,19 @@ export function samePayouts(a: readonly Pick<IncidentParticipant, 'operatorId' |
 }
 
 /**
- * Domain check of an Incident payout shared by both stores: the payout list must be exactly what the rules derive from
- * its damage (`incidentPayouts`), the intent must pay its own operator's entry, and its id must be the one id of that
- * (Incident, operator) pair. Returns the failure reason, or null.
+ * Domain check of an Incident payout shared by both stores: the participant list (every contributor, sub-minimum ones
+ * with reward 0) must be exactly what the rules derive from its damage (`incidentParticipants` over `incidentPayouts`),
+ * the intent must pay its own operator's non-zero entry, and its id must be the one id of that (Incident, operator)
+ * pair. Returns the failure reason, or null.
  */
 export function incidentRewardProblem(intent: IncidentRewardIntent): string | null {
   const ps = intent.participants;
   if (!Array.isArray(ps) || ps.length === 0 || new Set(ps.map((p) => p.operatorId)).size !== ps.length) return 'invalid payout';
-  if (!ps.every((p) => Number.isSafeInteger(p.damage) && p.damage > 0 && Number.isSafeInteger(p.reward))) return 'invalid payout';
+  if (!ps.every((p) => Number.isSafeInteger(p.damage) && p.damage > 0 && Number.isSafeInteger(p.reward) && p.reward >= 0)) return 'invalid payout';
   if (intent.id !== incidentRewardId(intent.incidentId, intent.operatorId) || Number.isNaN(Date.parse(intent.endsAt))) return 'invalid payout';
-  if (!samePayouts(incidentPayouts(new Map(ps.map((p) => [p.operatorId, p.damage]))), ps)) return 'payouts do not match the rules';
+  if (!samePayouts(incidentParticipants(new Map(ps.map((p) => [p.operatorId, p.damage]))), ps)) return 'payouts do not match the rules';
   const mine = ps.find((p) => p.operatorId === intent.operatorId);
-  if (!mine || mine.reward !== intent.reward || mine.damage !== intent.damage) return 'payouts do not match the rules';
+  if (!mine || mine.reward <= 0 || mine.reward !== intent.reward || mine.damage !== intent.damage) return 'payouts do not match the rules';
   return null;
 }
 
@@ -364,8 +376,13 @@ export function incidentRewardIntent(row: IncidentRow, p: IncidentParticipant): 
     reward: p.reward,
     damage: p.damage,
     share: p.share,
-    participants: row.participants.map((x) => ({ ...x })),
+    participants: row.participants.map(({ refused: _r, ...x }) => ({ ...x })),
   };
+}
+
+/** The participants of a row still owed a payout by boot recovery: a reward, not refused, no ledger row (`paid`). */
+export function unpaidParticipants(row: IncidentRow, paid: (operatorId: string) => boolean): IncidentParticipant[] {
+  return row.participants.filter((p) => p.reward > 0 && p.refused !== true && !paid(p.operatorId));
 }
 
 /** One UTC day earlier (`YYYY-MM-DD`). */
@@ -819,13 +836,18 @@ export class MemoryStore implements Store {
     else if (cur.outcome === 'OPEN') Object.assign(cur, fields);
   }
 
+  async markIncidentPayoutRefused(incidentId: string, operatorId: string): Promise<void> {
+    const p = this.incidents.get(incidentId)?.participants.find((x) => x.operatorId === operatorId);
+    if (p) p.refused = true;
+  }
+
   async recoverIncidents(): Promise<IncidentRewardIntent[]> {
     const since = Date.parse(this.now()) - INCIDENT_RECOVERY_MS;
     const out: IncidentRewardIntent[] = [];
     for (const row of this.incidents.values()) {
       if (row.outcome === 'OPEN') Object.assign(row, { outcome: 'EXPIRED', closedAt: this.now() });
       else if (row.outcome === 'CLEARED' && row.closedAt !== null && Date.parse(row.closedAt) >= since) {
-        for (const p of row.participants) if (this.incidentLedgerSeq(p.operatorId, row.id) === null) out.push(incidentRewardIntent(row, p));
+        for (const p of unpaidParticipants(row, (id) => this.incidentLedgerSeq(id, row.id) !== null)) out.push(incidentRewardIntent(row, p));
       }
     }
     return out;

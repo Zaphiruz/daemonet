@@ -149,7 +149,10 @@ export interface IncidentParticipant {
   /** Damage dealt to the boss (whole HP). */
   damage: number;
   share: number;
+  /** 0 for a contributor under the minimum share (recorded, never paid). */
   reward: number;
+  /** Store-side marker on the Incident row: the payout was refused definitively (boot recovery skips it). */
+  refused?: boolean;
 }
 
 /** A running Incident (kernelspace world only). */
