@@ -740,11 +740,12 @@ export class MemoryStore implements Store {
         const d = this.daemons.get(intent.daemonId);
         if (!d || d.operatorId !== op.id || d.location !== 'DISK') return { ok: false, reason: 'not on Disk' };
         if (d.lockedBy) return { ok: false, reason: 'locked on the Exchange' };
+        const diskSlot = d.slot;
         d.location = 'RAM';
         d.slot = intent.ramSlot;
         this.applied.add(intent.id);
         const { operatorId: _o, location: _l, lockedBy: _k, ...rec } = d;
-        return { ok: true, daemon: { ...rec } };
+        return { ok: true, daemon: { ...rec }, diskSlot };
       }
       case 'evolve': {
         const d = this.daemons.get(intent.daemonId);

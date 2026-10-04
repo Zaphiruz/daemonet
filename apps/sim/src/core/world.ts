@@ -563,6 +563,8 @@ export class World {
       case 'load': {
         op.reservedSlots.delete(intent.ramSlot);
         if (!result.ok || !result.daemon) return out.fail(intent, 'E_STATE', result.ok ? 'missing daemon' : result.reason);
+        // the Disk slot it left is free again (a replay does not know it: the next Disk resync frees it)
+        if (result.diskSlot !== undefined) op.diskSlots.delete(result.diskSlot);
         const rec = { ...result.daemon, slot: intent.ramSlot };
         if (!this.ownsDaemon(op, rec.id)) this.addOwned(op, rec);
         return out.ok(intent, { daemon: toRamDaemon(this, this.daemons.get(rec.id)!) });

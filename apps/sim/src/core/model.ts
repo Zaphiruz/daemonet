@@ -440,6 +440,11 @@ export type IntentResult =
        * loaded already contains it.
        */
       ledgerSeq?: number;
+      /**
+       * load: the Disk slot the daemon left (the world frees it). Absent on a replay, which no longer knows it: the
+       * slot then stays marked until the next Disk resync.
+       */
+      diskSlot?: number;
     }
   | { ok: false; reason: string };
 

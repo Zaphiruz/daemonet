@@ -340,7 +340,10 @@ export class PrismaStore implements Store {
           }
           case 'load': {
             // Conditional on the lock too: the api locks a Disk daemon while it is on the Exchange (listing / trade), and
-            // either that update or this one sees the other's commit.
+            // either that update or this one sees the other's commit. The row is locked first so the Disk slot it leaves
+            // (returned for the world to free) is the one the update moves it from.
+            const from = await tx.$queryRaw<Array<{ slot: number }>>`
+              SELECT "slot" FROM "Daemon" WHERE "id" = ${intent.daemonId} AND "operatorId" = ${intent.operatorId} AND "location" = 'DISK' AND "lockedBy" IS NULL FOR UPDATE`;
             const res = await tx.daemon.updateMany({
               where: { id: intent.daemonId, operatorId: intent.operatorId, location: 'DISK', lockedBy: null },
               data: { location: 'RAM', slot: intent.ramSlot },
@@ -351,7 +354,8 @@ export class PrismaStore implements Store {
               throw new DomainFailure(row?.operatorId === intent.operatorId && row.location === 'DISK' && row.lockedBy ? 'locked on the Exchange' : 'not on Disk');
             }
             const row = await tx.daemon.findUniqueOrThrow({ where: { id: intent.daemonId } });
-            return { ok: true, daemon: toRecord(row) } as const;
+            const diskSlot = from[0]?.slot;
+            return { ok: true, daemon: toRecord(row), ...(diskSlot === undefined ? {} : { diskSlot }) } as const;
           }
           case 'evolve': {
             const row = await tx.daemon.findUnique({ where: { id: intent.daemonId } });

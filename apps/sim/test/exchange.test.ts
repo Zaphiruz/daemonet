@@ -293,6 +293,42 @@ describe('Exchange notifications', () => {
     await game.shutdown();
   });
 
+  it('a load frees its Disk slot: with a full Disk, a store right after it takes that slot', async () => {
+    const bus = new MemoryBus();
+    const store = new MemoryStore();
+    const world = new World({ subnet: TEST_SUBNET, seed: 'x', seedId: 'aaaa0001', spawner: false });
+    const rec = await store.loadOrCreateOperator('dev-ida', TEST_SUBNET.id, TEST_SUBNET.spawn);
+    store.operators.get(rec.id)!.starterClaimed = true;
+    store.operators.get(rec.id)!.diskCapacity = 2;
+    const inRam = ownedRecord('pingling', 5, 0, 'ida-ram');
+    store.daemons.set(inRam.id, { ...inRam, operatorId: rec.id, location: 'RAM', lockedBy: null });
+    store.daemons.set('ida-disk0', { ...ownedRecord('bitrot', 6, 0, 'ida-disk0'), operatorId: rec.id, location: 'DISK', lockedBy: null });
+    store.daemons.set('ida-disk1', { ...ownedRecord('bitrot', 6, 1, 'ida-disk1'), operatorId: rec.id, location: 'DISK', lockedBy: null });
+    const game = new Game({ worlds: [world], store, verify: createDevVerifier('daemonet-users'), bus });
+    const conn = new FakeConn();
+    game.connect(conn);
+    await game.message(conn, JSON.stringify({ t: 'auth', seq: 1, d: { token: 'dev:ida' } }));
+    await game.flush();
+    const op = world.operators.get(rec.id)!;
+    op.x = TEST_SUBNET.host.x;
+    op.y = TEST_SUBNET.host.y;
+    expect([...op.diskSlots].sort()).toEqual([0, 1]);
+    await game.message(conn, JSON.stringify({ t: 'cmd', seq: 2, d: { reqId: 'ld', cmd: 'load', actor: 'self', args: { daemonId: 'ida-disk1' } } }));
+    game.tick();
+    await game.flush();
+    game.tick();
+    expect(conn.of('ack').at(-1)!.d).toMatchObject({ reqId: 'ld' });
+    expect([...op.diskSlots]).toEqual([0]);
+    await game.message(conn, JSON.stringify({ t: 'cmd', seq: 3, d: { reqId: 'st', cmd: 'store', actor: 'self', args: { daemonId: 'ida-ram' } } }));
+    game.tick();
+    await game.flush();
+    game.tick();
+    expect(conn.of('ack').at(-1)!.d).toMatchObject({ reqId: 'st' });
+    expect(store.daemons.get('ida-ram')).toMatchObject({ location: 'DISK', slot: 1 });
+    expect([...op.diskSlots].sort()).toEqual([0, 1]);
+    await game.shutdown();
+  });
+
   it('a store refused because its Disk slot was taken re-reads Disk occupancy from the store, and the retry succeeds', async () => {
     const bus = new MemoryBus();
     const store = new MemoryStore();

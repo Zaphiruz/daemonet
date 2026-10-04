@@ -123,9 +123,12 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(stored).toEqual({ ok: true });
       expect((await store.loadOrCreateOperator('sub-d', 'lo', SPAWN)).diskSlots).toEqual([3]);
       const loaded = await store.applyIntent({ id: 'i-load', kind: 'load', operatorId: a.id, reqId: 'r', daemonId: d.id, ramSlot: 2 }, { seedId: 'abcd1234' });
-      expect(loaded).toMatchObject({ ok: true, daemon: { id: d.id, level: 9, slot: 2 } });
+      // the Disk slot it left, so the world can free it
+      expect(loaded).toMatchObject({ ok: true, daemon: { id: d.id, level: 9, slot: 2 }, diskSlot: 3 });
       const again = await store.applyIntent({ id: 'i-load', kind: 'load', operatorId: a.id, reqId: 'r', daemonId: d.id, ramSlot: 2 }, { seedId: 'abcd1234' });
       expect(again).toMatchObject({ ok: true, daemon: { id: d.id } });
+      // a replay no longer knows the slot it left (the next Disk resync frees it)
+      expect(again).not.toHaveProperty('diskSlot');
       const missing = await store.applyIntent({ id: 'i-load-2', kind: 'load', operatorId: a.id, reqId: 'r', daemonId: 'nope', ramSlot: 3 }, { seedId: 'abcd1234' });
       expect(missing).toEqual({ ok: false, reason: 'not on Disk' });
     });
