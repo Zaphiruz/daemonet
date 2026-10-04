@@ -1,4 +1,5 @@
 import { deepFreeze } from '../freeze.js';
+import type { TypeId } from '../types.js';
 import { BESTIARY } from './bestiary.js';
 
 export interface Rect {
@@ -21,8 +22,20 @@ export interface RegionDef {
   respawnMs: number;
 }
 
+/** A tile an operator can travel from: `travel { gatewayId }` within GATEWAY_RADIUS of `at` lands at `arrive` in `to`. */
+export interface GatewayDef {
+  id: string;
+  at: { x: number; y: number };
+  to: string;
+  arrive: { x: number; y: number };
+  /** The highest level in RAM must reach this. */
+  requires: { level: number };
+}
+
 export interface SubnetDef {
   id: string;
+  /** 0 (lo) .. 4; drives ticket payouts and shop text (SP3b). */
+  tier: number;
   width: number;
   height: number;
   /** Blocked rectangles (tile units). The outer border is always blocked. */
@@ -32,7 +45,10 @@ export interface SubnetDef {
   /** Where new operators appear. */
   spawn: { x: number; y: number };
   regions: readonly RegionDef[];
+  gateways: readonly GatewayDef[];
 }
+
+export const GATEWAY_RADIUS = 2;
 
 /**
  * `lo` spawns every base form (SP3a): the non-starter bases are dealt to the four level bands
@@ -52,32 +68,125 @@ function loWeights(band: number): Record<string, number> {
   return out;
 }
 
+/**
+ * Species -> weight for every non-capstone form whose primary type is in `types` and whose tree depth
+ * is in `stages` (SP3b spec 4.1). Evolved forms spawn wild as themselves; capstones never do (`capstone`, not
+ * a stage number: capstones are stage 3 or 4). The deepest listed stage weighs 1, the others 2.
+ */
+export function spawnTable(types: readonly TypeId[], stages: readonly number[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  const deepest = Math.max(...stages);
+  for (const r of BESTIARY) {
+    if (r.capstone || !stages.includes(r.stage) || !types.includes(r.types[0]!)) continue;
+    out[r.id] = r.stage === deepest ? 1 : 2;
+  }
+  return out;
+}
+
+/** The layout shared by every subnet: two horizontal bars with a central gap and a vertical bar with two gaps. */
+const BARS: readonly Rect[] = [
+  { x: 1, y: 56, w: 51, h: 2 },
+  { x: 76, y: 56, w: 51, h: 2 },
+  { x: 64, y: 1, w: 2, h: 28 },
+  { x: 64, y: 44, w: 2, h: 41 },
+  { x: 64, y: 100, w: 2, h: 27 },
+];
+
+/** Four quadrant regions (the same footprint in every subnet) at the given species and level bands. */
+function quadrants(species: readonly Record<string, number>[], levels: readonly (readonly [number, number])[]): RegionDef[] {
+  const rects: Rect[] = [
+    { x: 24, y: 8, w: 32, h: 36 },
+    { x: 72, y: 8, w: 48, h: 40 },
+    { x: 8, y: 64, w: 48, h: 56 },
+    { x: 72, y: 64, w: 48, h: 56 },
+  ];
+  const names = ['lobby', 'uplink', 'cache', 'core'];
+  return rects.map((rect, i) => ({ name: names[i]!, rect, levels: levels[i]!, species: species[i]!, cap: 16, respawnMs: 4096 }));
+}
+
+const CORNER_SE = { x: 122.5, y: 122.5 };
+const CORNER_NE = { x: 122.5, y: 5.5 };
+const CORNER_NW = { x: 3.5, y: 3.5 };
+const ARRIVE_NW = { x: 5.5, y: 5.5 };
+const ARRIVE_SE = { x: 120.5, y: 120.5 };
+const ARRIVE_NE = { x: 120.5, y: 7.5 };
+
+const gate = (id: string, at: { x: number; y: number }, to: string, arrive: { x: number; y: number }, level: number): GatewayDef => ({
+  id,
+  at,
+  to,
+  arrive,
+  requires: { level },
+});
+
 /** 128 x 128, one host, four spawn regions of rising level. */
 export const LO: SubnetDef = deepFreeze<SubnetDef>({
   id: 'lo',
+  tier: 0,
   width: 128,
   height: 128,
-  walls: [
-    { x: 1, y: 56, w: 51, h: 2 },
-    { x: 76, y: 56, w: 51, h: 2 },
-    { x: 64, y: 1, w: 2, h: 28 },
-    { x: 64, y: 44, w: 2, h: 41 },
-    { x: 64, y: 100, w: 2, h: 27 },
-  ],
+  walls: BARS,
   host: { x: 16.5, y: 16.5 },
   spawn: { x: 18.5, y: 16.5 },
-  regions: [
-    { name: 'lobby', rect: { x: 24, y: 8, w: 32, h: 36 }, levels: [2, 6], species: loWeights(0), cap: 16, respawnMs: 4096 },
-    { name: 'uplink', rect: { x: 72, y: 8, w: 48, h: 40 }, levels: [5, 10], species: loWeights(1), cap: 16, respawnMs: 4096 },
-    { name: 'cache', rect: { x: 8, y: 64, w: 48, h: 56 }, levels: [9, 16], species: loWeights(2), cap: 16, respawnMs: 4096 },
-    { name: 'core', rect: { x: 72, y: 64, w: 48, h: 56 }, levels: [14, 24], species: loWeights(3), cap: 16, respawnMs: 4096 },
-  ],
+  regions: quadrants([loWeights(0), loWeights(1), loWeights(2), loWeights(3)], [
+    [2, 6],
+    [5, 10],
+    [9, 16],
+    [14, 24],
+  ]),
+  gateways: [gate('lo-lan', CORNER_SE, 'lan', ARRIVE_NW, 8)],
 });
 
-export const SUBNETS: readonly SubnetDef[] = deepFreeze([LO]);
+const bands = (start: number): [number, number][] => [
+  [start, start + 6],
+  [start + 4, start + 10],
+  [start + 8, start + 14],
+  [start + 10, start + 16],
+];
+
+function subnet(id: string, tier: number, types: readonly TypeId[], stages: readonly number[], start: number, gateways: GatewayDef[]): SubnetDef {
+  const lower = stages.length > 1 ? stages.slice(0, -1) : stages;
+  return deepFreeze<SubnetDef>({
+    id,
+    tier,
+    width: 128,
+    height: 128,
+    walls: BARS,
+    host: { x: 16.5, y: 16.5 },
+    spawn: { x: 18.5, y: 16.5 },
+    regions: quadrants([spawnTable(types, lower), spawnTable(types, stages), spawnTable(types, stages), spawnTable(types, stages)], bands(start)),
+    gateways,
+  });
+}
+
+export const LAN = subnet('lan', 1, ['kernel', 'packet', 'socket', 'thread'], [0, 1], 8, [
+  gate('lan-lo', CORNER_NW, 'lo', ARRIVE_SE, 0),
+  gate('lan-dmz', CORNER_SE, 'dmz', ARRIVE_NW, 16),
+]);
+export const DMZ = subnet('dmz', 2, ['crypto', 'root', 'shell', 'proxy'], [1, 2], 16, [
+  gate('dmz-lan', CORNER_NW, 'lan', ARRIVE_SE, 0),
+  gate('dmz-backbone', CORNER_SE, 'backbone', ARRIVE_NW, 24),
+]);
+export const BACKBONE = subnet('backbone', 3, ['packet', 'socket', 'cloud', 'buffer'], [1, 2], 24, [
+  gate('backbone-dmz', CORNER_NW, 'dmz', ARRIVE_SE, 0),
+  gate('backbone-darknet', CORNER_NE, 'darknet', ARRIVE_NW, 32),
+  gate('backbone-cloudnet', CORNER_SE, 'cloudnet', ARRIVE_NW, 40),
+]);
+export const DARKNET = subnet('darknet', 4, ['null', 'glitch', 'proxy', 'crypto'], [2, 3], 32, [gate('darknet-backbone', CORNER_NW, 'backbone', ARRIVE_NE, 0)]);
+export const CLOUDNET = subnet('cloudnet', 4, ['cloud', 'cache', 'heap', 'stack'], [2, 3], 40, [gate('cloudnet-backbone', CORNER_NW, 'backbone', ARRIVE_SE, 0)]);
+
+export const SUBNETS: readonly SubnetDef[] = deepFreeze([LO, LAN, DMZ, BACKBONE, DARKNET, CLOUDNET]);
+/** The subnets one sim process hosts by default (sandbox and kernelspace come with SP6 / SP4). */
+export const OPEN_SUBNET_IDS: readonly string[] = deepFreeze(SUBNETS.map((s) => s.id));
+/** Every subnet id that exists in the rules (an evolution `subnet` requirement must name one of these or a reserved later id). */
+export const SUBNET_IDS: readonly string[] = OPEN_SUBNET_IDS;
 
 export function getSubnet(id: string): SubnetDef {
   const s = SUBNETS.find((x) => x.id === id);
   if (!s) throw new RangeError(`unknown subnet ${id}`);
   return s;
+}
+
+export function getGateway(subnetId: string, gatewayId: string): GatewayDef | undefined {
+  return getSubnet(subnetId).gateways.find((g) => g.id === gatewayId);
 }
