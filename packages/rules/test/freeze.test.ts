@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { WORDS } from '../src/capture/crypto.js';
 import { GROUPS, USERS } from '../src/capture/root.js';
 import { FLAGS, TRANSITIONS } from '../src/capture/socket.js';
+import { FRAGMENT_IDS, RECIPES, SHOP } from '../src/content/economy.js';
 import { BESTIARY } from '../src/content/bestiary.js';
 import { BESTIARY_WITH_RULES, EVOLUTION_RULES } from '../src/evolution/rules.js';
 import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
@@ -35,6 +36,9 @@ describe('content tables are deep-frozen', () => {
     ['SUBNETS', SUBNETS],
     ['ITEMS', ITEMS],
     ['STARTING_INVENTORY', STARTING_INVENTORY],
+    ['SHOP', SHOP],
+    ['RECIPES', RECIPES],
+    ['FRAGMENT_IDS', FRAGMENT_IDS],
     ['NATURES', NATURES],
     ['TYPES', TYPES],
     ['BEATS', BEATS],
@@ -84,6 +88,9 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(BESTIARY_WITH_RULES.find((r) => r.requirement)!.requirement)).toBe(true);
     expect(Object.isFrozen(ROLE_TRAITS.tank)).toBe(true);
     expect(Object.isFrozen(EVOLUTION_ITEMS[0])).toBe(true);
+    expect(Object.isFrozen(RECIPES[0]!.fragments)).toBe(true);
+    expect(Object.isFrozen(RECIPES[0]!.output)).toBe(true);
+    expect(Object.isFrozen(ITEMS.find((i) => i.kind === 'fragment'))).toBe(true);
     expect(Object.isFrozen(BEATS.kernel)).toBe(true);
     expect(Object.isFrozen(RESISTED_BY.kernel)).toBe(true);
     expect(Object.isFrozen(TRANSITIONS.SYN_RCVD)).toBe(true);

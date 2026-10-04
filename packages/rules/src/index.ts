@@ -13,6 +13,7 @@ export * from './content/traits.js';
 export * from './content/species.js';
 export * from './content/items.js';
 export * from './content/subnets.js';
+export * from './content/economy.js';
 export * from './capture/size.js';
 export * from './capture/index.js';
 export type { PacketParams, PacketPayload, PacketAnswer, PacketFragment } from './capture/packet.js';

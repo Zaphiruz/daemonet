@@ -1,5 +1,5 @@
 import { deepFreeze } from '../freeze.js';
-import type { TypeId } from '../types.js';
+import { TYPES, type TypeId } from '../types.js';
 
 export type ToolId = 'sniff' | 'tap' | 'mirror' | 'dump';
 export type Noise = 0 | 1 | 2;
@@ -48,7 +48,17 @@ export interface BitFlipperDef {
   name: string;
 }
 
-export type ItemDef = ToolDef | RestoreDef | HeldDef | EvolutionItemDef | BitFlipperDef;
+export type FragmentId = `frag:${TypeId}`;
+
+/** Decompile output; 16 fungible materials, one per type (`frag:<type>`). */
+export interface FragmentDef {
+  id: FragmentId;
+  kind: 'fragment';
+  name: string;
+  type: TypeId;
+}
+
+export type ItemDef = ToolDef | RestoreDef | HeldDef | EvolutionItemDef | BitFlipperDef | FragmentDef;
 export type ItemId = ItemDef['id'];
 
 const EVOLUTION_ROWS = [
@@ -88,6 +98,7 @@ export const ITEMS: readonly ItemDef[] = deepFreeze([
   { id: 'firewall', kind: 'held', name: 'Firewall', effect: 'damageTaken', multiplier: 0.875 },
   { id: 'bitflipper', kind: 'bitflipper', name: 'Bit Flipper' },
   ...EVOLUTION_ITEMS,
+  ...TYPES.map((type): FragmentDef => ({ id: `frag:${type}`, kind: 'fragment', name: `${type} fragment`, type })),
 ]);
 
 export const STARTING_INVENTORY: Readonly<Partial<Record<ItemId, number>>> = deepFreeze({ sniff: 8, restore: 2 });
