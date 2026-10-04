@@ -24,7 +24,8 @@ declare module '@daemonet/sdk' {
     all(): T[]; filter(pred: (item: T) => boolean): Query<T>; within(radius: number): Query<T>;
     nearest(pred?: (item: T) => boolean): T | undefined; lowestHp(pred?: (item: T) => boolean): T | undefined;
   }
-  export class WorldView { readonly daemons: Query<DaemonView>; readonly wild: Query<DaemonView>; readonly operators: Query<OperatorEntity>; get(id: string): unknown }
+  export interface GatewayDef { id: string; at: Positioned; to: string; arrive: Positioned; requires: { level: number } }
+  export class WorldView { readonly daemons: Query<DaemonView>; readonly wild: Query<DaemonView>; readonly operators: Query<OperatorEntity>; readonly gateways: GatewayDef[]; get(id: string): unknown }
   export class DaemonHandle {
     readonly id: string; readonly ram: RamDaemon | undefined; readonly entity: DaemonView | undefined; readonly x: number; readonly y: number; readonly hpPct: number; readonly energy: number;
     distanceTo(target: Positioned): number; canUse(moveId: string): boolean; bestMoveAgainst(foe: DaemonView): string | null;
@@ -37,7 +38,7 @@ declare module '@daemonet/sdk' {
     swap(outId: string, inId: string): Promise<unknown>; capture(target: { id: string } | string, tool: 'sniff' | 'tap' | 'mirror' | 'dump'): Promise<unknown>;
     submitCapture(captureId: string, answer: unknown): Promise<unknown>; useRestore(daemonId: string): Promise<unknown>; restoreAll(): Promise<unknown>;
     claimStarter(species: string, operatorName: string): Promise<unknown>; store(daemonId: string): Promise<unknown>; load(daemonId: string): Promise<unknown>;
-    evolve(daemonId: string, formId: string): Promise<unknown>; hold(daemonId: string, itemId: string): Promise<unknown>; unhold(daemonId: string): Promise<unknown>;
+    travel(gatewayId: string): Promise<unknown>; evolve(daemonId: string, formId: string): Promise<unknown>; hold(daemonId: string, itemId: string): Promise<unknown>; unhold(daemonId: string): Promise<unknown>;
     useBitFlipper(daemonId: string, stat: 'hp' | 'attack' | 'defense' | 'focus' | 'resolve' | 'speed' | 'haste' | 'energy'): Promise<unknown>;
     script(fn: (ctx: OperatorScriptContext) => void): () => void;
   }
@@ -50,6 +51,7 @@ declare module '@daemonet/sdk' {
     on(name: 'tick', handler: (tick: number) => void): () => void;
     on(name: 'evolved', handler: (ev: { daemon: string; from: string; to: string; changes: unknown[] }) => void): () => void;
     on(name: 'discovery', handler: (ev: { form: string; operator: string; operatorName: string | null }) => void): () => void;
+    on(name: 'travelled', handler: (ev: { from: string; to: string }) => void): () => void;
     on(name: string, handler: (value: any) => void): () => void;
   }
 }

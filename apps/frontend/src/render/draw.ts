@@ -66,6 +66,7 @@ const COLORS = {
   target: '#f472b6',
   path: 'rgba(125, 211, 252, 0.6)',
   link: '#a78bfa',
+  gateway: '#38bdf8',
 };
 
 export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): void {
@@ -96,6 +97,16 @@ export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): voi
   ctx.fillStyle = COLORS.host;
   ctx.font = `${Math.max(10, s * 0.6)}px ui-monospace`;
   ctx.fillText('host', host.sx - s, host.sy - s - 4);
+  for (const g of def.gateways) {
+    const p = worldToScreen(cam, g.at.x, g.at.y);
+    ctx.strokeStyle = COLORS.gateway;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.sx, p.sy, s, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = COLORS.gateway;
+    ctx.fillText(`→ ${g.to}${g.requires.level ? ` L${g.requires.level}` : ''}`, p.sx + s + 2, p.sy + 4);
+  }
 
   const me = client.self;
   const capture = me.capture;

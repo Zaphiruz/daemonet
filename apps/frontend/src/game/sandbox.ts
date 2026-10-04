@@ -360,7 +360,16 @@ export function createSandboxRunner(env: SandboxEnv) {
         env.log.push('system', 'connection lost: the script will restart from main(game) when it is back');
       }),
       // after a reconnect the server sends a snapshot (`ready`) or replays deltas (`tick`)
-      client.on('ready', () => restore(s)),
+      client.on('ready', () => {
+        if (s.awaitingState) return restore(s);
+        // a snapshot with no reconnect is travel: the new world only reaches the host, the bridge never relays
+        // snapshots, so the script is restarted from main(game) against it (same as after a reconnect)
+        if (session !== s || !run || !hasSnapshot(s.client)) return;
+        teardownRun();
+        buildRun(s);
+        set('starting');
+        env.log.push('system', `script restarted: travelled to ${s.client.subnet}`);
+      }),
       client.on('tick', () => restore(s)),
     );
     set('starting');

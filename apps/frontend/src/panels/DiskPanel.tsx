@@ -1,14 +1,13 @@
-import { DISK_SLOTS, RAM_SLOTS, getSpecies, getSubnet } from '@daemonet/rules';
+import { DISK_SLOTS, RAM_SLOTS, getSpecies } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useDiskQuery } from '../api.ts';
 import { run } from '../components/WorldCanvas.tsx';
-import { SpriteImg } from './RamPanel.tsx';
+import { nearHost, SpriteImg } from './RamPanel.tsx';
 
 export function DiskPanel({ client }: { client: GameClient }) {
   const disk = useDiskQuery();
   const me = client.self;
-  const host = getSubnet(client.subnet).host;
-  const atHost = Math.hypot(me.x - host.x, me.y - host.y) <= 2;
+  const atHost = nearHost(client.subnet, me);
   const manual = client.role === 'controller';
   const rows = disk.data ?? [];
   return (

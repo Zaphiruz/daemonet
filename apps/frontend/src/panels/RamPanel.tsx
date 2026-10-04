@@ -21,11 +21,20 @@ export function SpriteImg({ species, types, clean, signature, size = 32 }: { spe
   return <canvas ref={ref} width={size} height={size} className="shrink-0" />;
 }
 
+/** Within 2 tiles of the subnet's host (unknown subnet ids, as in tests, count as never at the host). */
+export function nearHost(subnet: string, me: { x: number; y: number }): boolean {
+  try {
+    const host = getSubnet(subnet).host;
+    return Math.hypot(me.x - host.x, me.y - host.y) <= 2;
+  } catch {
+    return false;
+  }
+}
+
 export function RamPanel({ client }: { client: GameClient }) {
   const me = client.self;
   const manual = client.role === 'controller';
-  const host = getSubnet(client.subnet).host;
-  const atHost = Math.hypot(me.x - host.x, me.y - host.y) <= 2;
+  const atHost = nearHost(client.subnet, me);
   const disk = useDiskQuery();
   return (
     <div className="space-y-2 p-3 text-sm">

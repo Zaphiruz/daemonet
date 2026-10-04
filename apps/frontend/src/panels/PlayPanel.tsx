@@ -1,4 +1,4 @@
-import { getMove, getSpecies, TICK_HZ, type ToolId } from '@daemonet/rules';
+import { GATEWAY_RADIUS, getMove, getSpecies, TICK_HZ, type ToolId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useState } from 'react';
 import { run } from '../components/WorldCanvas.tsx';
@@ -115,6 +115,8 @@ export function PlayPanel({ client }: { client: GameClient }) {
 
       {me.capture && <CapturePanel client={client} />}
 
+      <GatewaySection client={client} me={me} manual={manual} />
+
       <section className="flex flex-wrap gap-2">
         <button className="rounded bg-neutral-800 px-2 py-0.5 hover:bg-neutral-700 disabled:opacity-40" disabled={!manual} onClick={() => run(client.operator.restoreAll(), 'restoreAll')}>
           restore all (at host)
@@ -124,6 +126,32 @@ export function PlayPanel({ client }: { client: GameClient }) {
         </button>
       </section>
     </div>
+  );
+}
+
+/** One card per gateway of the current subnet within reach; travel resets the connection's world (a new snapshot). */
+export function GatewaySection({ client, me, manual }: { client: GameClient; me: GameClient['self']; manual: boolean }) {
+  return (
+    <>
+      {client.world.gateways
+        .filter((g) => Math.hypot(g.at.x - me.x, g.at.y - me.y) <= GATEWAY_RADIUS)
+        .map((g) => (
+          <section key={g.id} className="rounded border border-sky-700 p-2" data-testid={`gateway-${g.id}`}>
+            <div>
+              gateway to <span className="font-medium">{g.to}</span>
+              {g.requires.level > 0 && <span className="text-neutral-500"> · needs a level {g.requires.level} daemon</span>}
+            </div>
+            <button
+              className="mt-1 rounded bg-sky-700 px-2 py-0.5 hover:bg-sky-600 disabled:opacity-40"
+              disabled={!manual || me.running.length > 0 || !!me.capture}
+              onClick={() => run(client.operator.travel(g.id), 'travel')}
+              data-testid={`travel-${g.id}`}
+            >
+              travel {me.running.length > 0 ? '(recall first)' : ''}
+            </button>
+          </section>
+        ))}
+    </>
   );
 }
 

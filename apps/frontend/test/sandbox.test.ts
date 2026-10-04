@@ -350,6 +350,48 @@ describe('sandbox runner', () => {
     expect(t.frames).toHaveLength(2);
   });
 
+  it('treats a mid-session snapshot (travel) like a reconnect: new channel, bridge and frame, init re-posted, player told', async () => {
+    const t = (current = setup());
+    await t.runner.start(t.asClient, 'x');
+    const first = t.frames[0]!;
+    first.load();
+    const sb = listen(first.port());
+    t.fromFrame(first.contentWindow, { type: 'started' });
+    expect(t.runner.getStatus()).toBe('running');
+    t.client.subnet = 'lan';
+    t.client.emit('ready');
+    expect(first.removed).toBe(true);
+    await until(() => sb.got.some((g) => (g as { type?: string }).type === 'close'));
+    expect(t.frames).toHaveLength(2);
+    const second = t.frames[1]!;
+    second.load();
+    expect(second.posts[0]!.message).toEqual(createSandboxInit('x'));
+    expect(second.port()).not.toBe(first.port());
+    expect(t.texts()).toContain('system:script restarted: travelled to lan');
+    // the old frame is dead to the host, the new one answers
+    t.fromFrame(first.contentWindow, { type: 'log', level: 'log', args: ['ghost'] });
+    expect(t.texts().some((x) => x.includes('ghost'))).toBe(false);
+    t.fromFrame(second.contentWindow, { type: 'started' });
+    expect(t.runner.getStatus()).toBe('running');
+    // the new run's local auth hands out the destination world
+    const sb2 = listen(second.port());
+    second.port().postMessage(auth);
+    await until(() => sb2.frames().length >= 2);
+    expect((sb2.frames()[1]!.d as { subnet?: string }).subnet).toBe('lan');
+  });
+
+  it('does not restart on the first snapshot of a start that was waiting for state', async () => {
+    const t = (current = setup());
+    t.client.self = undefined;
+    await t.runner.start(t.asClient, 'x');
+    t.client.self = self;
+    t.client.emit('ready');
+    expect(t.frames).toHaveLength(1);
+    expect(t.texts().some((x) => x.includes('travelled'))).toBe(false);
+    t.client.emit('tick', 41);
+    expect(t.frames).toHaveLength(1);
+  });
+
   it("stops and removes the frame on the bridge's flood violation", async () => {
     const t = (current = setup());
     await t.runner.start(t.asClient, 'x');

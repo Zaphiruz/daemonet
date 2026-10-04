@@ -164,6 +164,9 @@ export function createConnection(deps: ConnectionDeps) {
     on('signatureSpawn', (e) => deps.log.push('event', `${e.clean ? 'clean' : ''}${e.signature ? ` T${e.signature}` : ''} ${e.species} spawned somewhere in the subnet`));
     on('crash', (e) => deps.log.push('event', `${e.daemon} crashed`));
     on('evolved', (e) => deps.log.push('event', `${e.daemon} evolved: ${e.from} -> ${e.to}`));
+    on('travelled', (e) => deps.log.push('event', `travelled ${e.from} -> ${e.to}`));
+    // a snapshot after the first one (travel) swaps the whole world: re-render without waiting for the next tick
+    on('ready', () => set({ version: state.version + 1 }));
     on('discovery', (e) => {
       deps.log.push('event', `${e.operatorName ?? 'someone'} discovered ${e.form}`);
       deps.invalidateCodex();

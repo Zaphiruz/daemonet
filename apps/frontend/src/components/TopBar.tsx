@@ -1,9 +1,15 @@
+import type { GameClient } from '@daemonet/sdk';
 import { useLogoutMutation, type Me } from '../api.ts';
 import { open, useConnection, type Role } from '../game/connection.ts';
 import { setControls, useControls } from '../game/controls.ts';
 import { log } from '../game/log.ts';
 
 const reconnect = (role: Role) => void open(role).catch(() => {});
+
+/** The subnet of the latest snapshot (it changes on travel). */
+export function SubnetStat({ client }: { client: GameClient | null }) {
+  return <span data-testid="subnet">{client?.subnet || '—'}</span>;
+}
 
 export function TopBar({ me }: { me: Me }) {
   const conn = useConnection();
@@ -17,7 +23,7 @@ export function TopBar({ me }: { me: Me }) {
         {client?.self?.name ?? me.name ?? 'unnamed operator'}
       </span>
       <span className="mono text-neutral-500">
-        tick <span data-testid="tick">{client?.tick ?? 0}</span> · bits {client?.self?.bits ?? me.bits}
+        <SubnetStat client={client} /> · tick <span data-testid="tick">{client?.tick ?? 0}</span> · bits {client?.self?.bits ?? me.bits}
       </span>
       <span className={`mono ${conn.status === 'online' ? 'text-emerald-400' : 'text-amber-400'}`} data-testid="status">
         {conn.status}

@@ -320,3 +320,16 @@ describe('evolution events', () => {
     expect(t.texts()).toContain('event:someone discovered broadcaw');
   });
 });
+
+describe('travel', () => {
+  it('logs the arrival from the store and re-renders subscribers on a mid-session snapshot', async () => {
+    const t = setup([{ kind: 'ready' }]);
+    await t.conn.open('controller');
+    const c = t.clients[0]!;
+    const before = t.conn.get().version;
+    c.emit('travelled', { from: 'lo', to: 'lan' });
+    expect(t.texts()).toContain('event:travelled lo -> lan');
+    c.emit('ready');
+    expect(t.conn.get().version).toBe(before + 1);
+  });
+});
