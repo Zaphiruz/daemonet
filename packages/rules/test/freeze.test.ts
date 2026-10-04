@@ -3,6 +3,7 @@ import { WORDS } from '../src/capture/crypto.js';
 import { GROUPS, USERS } from '../src/capture/root.js';
 import { FLAGS, TRANSITIONS } from '../src/capture/socket.js';
 import { BESTIARY } from '../src/content/bestiary.js';
+import { BESTIARY_WITH_RULES, EVOLUTION_RULES } from '../src/evolution/rules.js';
 import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY } from '../src/content/items.js';
 import { MOVES, STATUS_IDS, TYPE_MOVES, TYPE_STATUS, getMove, type MoveDef } from '../src/content/moves.js';
 import { ROLE_WEIGHTS, SPECIES, STAGE_BUDGETS, STAT_OVERRIDES, getSpecies } from '../src/content/species.js';
@@ -17,6 +18,8 @@ describe('content tables are deep-frozen', () => {
     ['TRAITS', TRAITS],
     ['ROLE_TRAITS', ROLE_TRAITS],
     ['BESTIARY', BESTIARY],
+    ['EVOLUTION_RULES', EVOLUTION_RULES],
+    ['BESTIARY_WITH_RULES', BESTIARY_WITH_RULES],
     ['EVOLUTION_ITEMS', EVOLUTION_ITEMS],
     ['SPECIES', SPECIES],
     ['STAGE_BUDGETS', STAGE_BUDGETS],
@@ -64,8 +67,11 @@ describe('content tables are deep-frozen', () => {
     expect(Object.isFrozen(TRAITS[0])).toBe(true);
     expect(Object.isFrozen(BESTIARY[0])).toBe(true);
     expect(Object.isFrozen(BESTIARY[0]!.types)).toBe(true);
-    expect(Object.isFrozen(BESTIARY.find((r) => r.requirement)!.requirement)).toBe(true);
-    expect(Object.isFrozen(SPECIES.find((s) => s.requirement)!.requirement)).toBe(true);
+    expect(Object.isFrozen(EVOLUTION_RULES.anycastrel)).toBe(true);
+    expect(Object.isFrozen(EVOLUTION_RULES.anycastrel!.requirement)).toBe(true);
+    expect(Object.isFrozen(EVOLUTION_RULES.anycastrel!.requirement![0])).toBe(true);
+    expect(Object.isFrozen(BESTIARY_WITH_RULES[0])).toBe(true);
+    expect(Object.isFrozen(BESTIARY_WITH_RULES.find((r) => r.requirement)!.requirement)).toBe(true);
     expect(Object.isFrozen(ROLE_TRAITS.tank)).toBe(true);
     expect(Object.isFrozen(EVOLUTION_ITEMS[0])).toBe(true);
     expect(Object.isFrozen(BEATS.kernel)).toBe(true);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { STAT_KEYS } from '../src/constants.js';
 import { BESTIARY } from '../src/content/bestiary.js';
+import { BESTIARY_WITH_RULES, EVOLUTION_RULES } from '../src/evolution/rules.js';
 import { EVOLUTION_ITEMS, ITEMS, STARTING_INVENTORY, getItem, getTool, isHoldable, isToolId } from '../src/content/items.js';
 import { MOVES, STATUS_IDS, TYPE_MOVES, TYPE_STATUS, getMove, moveSlot } from '../src/content/moves.js';
 import { SPECIES, STAT_OVERRIDES, budgetFor, dominantStat, evolutionsOf, getSpecies, movesAtLevel } from '../src/content/species.js';
@@ -20,7 +21,7 @@ describe('bestiary data', () => {
 
   it('links every evolution to an existing parent at a power-of-2 level with valid requirements', () => {
     const ids = new Set(BESTIARY.map((r) => r.id));
-    for (const r of BESTIARY) {
+    for (const r of BESTIARY_WITH_RULES) {
       expect(r.types.length).toBeGreaterThanOrEqual(1);
       expect(r.types.length).toBeLessThanOrEqual(2);
       if (r.stage === 0) {
@@ -38,6 +39,16 @@ describe('bestiary data', () => {
       }
       if (r.hidden) expect(r.requirement).not.toBeNull();
     }
+  });
+
+  it('keys the server-only rule table by evolved forms only (60 requirements, 18 hidden)', () => {
+    const byId = new Map(BESTIARY.map((r) => [r.id, r]));
+    for (const [id, rule] of Object.entries(EVOLUTION_RULES)) {
+      expect(byId.get(id)?.evolvesFrom, id).not.toBeNull();
+      expect(rule.requirement, id).not.toBeNull();
+    }
+    expect(Object.keys(EVOLUTION_RULES)).toHaveLength(60);
+    expect(Object.values(EVOLUTION_RULES).filter((r) => r.hidden)).toHaveLength(18);
   });
 });
 

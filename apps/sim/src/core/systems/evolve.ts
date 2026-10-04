@@ -1,4 +1,5 @@
-import { applyEvolution, computeStats, evolutionOptions, getSpecies, movesAtLevel, statBlockFromArray, statBlockToArray, type EvolutionContext } from '@daemonet/rules';
+import { computeStats, getSpecies, movesAtLevel, statBlockFromArray, statBlockToArray, type EvolutionContext } from '@daemonet/rules';
+import { applyEvolution, evolutionOptions } from '@daemonet/rules/evolution';
 import { distance } from '../grid.js';
 import { Rejection, type Daemon, type HistoryEntry, type Input, type Intent, type IntentResult, type Operator } from '../model.js';
 import type { Out } from '../out.js';

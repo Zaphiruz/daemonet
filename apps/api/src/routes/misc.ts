@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@daemonet/db';
-import { BESTIARY, ITEMS, MOVES, NATURES, SPECIES, TRAITS, TYPES, getFamily, typeMultiplier } from '@daemonet/rules';
+import { ITEMS, MOVES, NATURES, SPECIES, TRAITS, TYPES, getFamily, typeMultiplier } from '@daemonet/rules';
+import { BESTIARY_WITH_RULES } from '@daemonet/rules/evolution';
 import type { FastifyInstance } from 'fastify';
 import { hashToken, randomToken } from '../auth/session.js';
 
@@ -16,7 +17,8 @@ export interface DiscoveryRow {
 
 /**
  * Static content the client renders (Codex) — served from the same package the sim enforces.
- * Hidden evolution requirements are blanked until someone has discovered the form (SP3a spec §4.3);
+ * Evolution requirements ride only on `bestiary` (from the server-only rules subpath); hidden ones are
+ * blanked until someone has discovered the form (SP3a spec §4.3). `species` carries no requirements;
  * `discovered` lists every form that has been evolved into at least once. `challenges` carries each
  * capture family's player-facing rule text (the package is private, so the client cannot read the source).
  */
@@ -27,8 +29,8 @@ export function codexPayload(discoveries: readonly DiscoveryRow[]) {
   return {
     types: TYPES,
     chart: Object.fromEntries(TYPES.map((a) => [a, Object.fromEntries(TYPES.map((d) => [d, typeMultiplier(a, [d])]))])),
-    species: SPECIES.map(mask),
-    bestiary: BESTIARY.map(mask),
+    species: SPECIES,
+    bestiary: BESTIARY_WITH_RULES.map(mask),
     moves: MOVES,
     items: ITEMS,
     natures: NATURES,

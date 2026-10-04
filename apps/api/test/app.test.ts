@@ -1,4 +1,5 @@
 import { createPrisma } from '@daemonet/db';
+import { EVOLUTION_RULES } from '@daemonet/rules/evolution';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { COOKIE_NAME, buildApp } from '../src/app.js';
@@ -224,7 +225,9 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     const before = (await app.inject({ method: 'GET', url: '/api/codex', cookies })).json();
     const hidden = before.bestiary.find((r: { id: string }) => r.id === 'anycastrel');
     expect(hidden).toMatchObject({ hidden: true, requirement: null });
-    expect(before.species.find((r: { id: string }) => r.id === 'anycastrel').requirement).toBeNull();
+    expect(before.species.find((r: { id: string }) => r.id === 'anycastrel')).not.toHaveProperty('requirement');
+    const raw = JSON.stringify(before);
+    for (const rule of Object.values(EVOLUTION_RULES).filter((r) => r.hidden)) expect(raw).not.toContain(JSON.stringify(rule.requirement));
     expect(before.bestiary.find((r: { id: string }) => r.id === 'broadcaw').requirement).toEqual([{ kind: 'heldItem', item: 'jumboframe' }]);
     expect(before.discovered).toEqual([]);
     const op = await prisma!.operator.findFirstOrThrow();

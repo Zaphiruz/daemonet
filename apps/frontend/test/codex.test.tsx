@@ -15,7 +15,8 @@ afterEach(() => {
   codexState.data = undefined;
 });
 
-const rows = BESTIARY.filter((r) => r.line === 1).map((r) => ({ ...r }));
+// the public bestiary carries no requirements; the codex payload adds them (masked) per row
+const rows = BESTIARY.filter((r) => r.line === 1).map((r) => ({ ...r, requirement: null, hidden: false }));
 const child = rows.find((r) => r.evolvesFrom !== null)!;
 
 function codex(over: Partial<Codex> = {}): Codex {

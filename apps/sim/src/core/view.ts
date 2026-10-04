@@ -1,4 +1,5 @@
-import { evolutionOptions, statBlockToArray, type StatusId } from '@daemonet/rules';
+import { statBlockToArray, type StatusId } from '@daemonet/rules';
+import { evolutionOptions } from '@daemonet/rules/evolution';
 import type { Entity, OperatorSelf, RamDaemon } from '@daemonet/shared';
 import { distance } from './grid.js';
 import type { Daemon, Operator } from './model.js';

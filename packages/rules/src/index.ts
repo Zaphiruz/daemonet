@@ -6,7 +6,7 @@ export * from './stats.js';
 export * from './combat.js';
 export * from './xp.js';
 export * from './spawn.js';
-export * from './evolution.js';
+export * from './evolvable.js';
 export * from './content/bestiary.js';
 export * from './content/moves.js';
 export * from './content/traits.js';

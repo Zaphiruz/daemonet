@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { SIGNATURE_MAX, STAT_KEYS, statBlock } from '../src/constants.js';
 import { getSpecies } from '../src/content/species.js';
-import { applyEvolution, emptyMoveTypeUses, evolutionOptions, requirementMet, typeIndex, type EvolvableDaemon, type EvolutionContext } from '../src/evolution.js';
+import { applyEvolution, evolutionOptions, requirementMet } from '../src/evolution/index.js';
+import { emptyMoveTypeUses, typeIndex, type EvolvableDaemon, type EvolutionContext } from '../src/evolvable.js';
 import { createRng } from '../src/rng.js';
 
 const base = (over: Partial<EvolvableDaemon> = {}): EvolvableDaemon => ({

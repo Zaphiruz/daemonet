@@ -1,7 +1,8 @@
-import { STAT_KEYS, type BestiaryRow } from '@daemonet/rules';
+import { STAT_KEYS } from '@daemonet/rules';
 import { useState } from 'react';
 import { useCodexQuery, type Codex } from '../api.ts';
 import { describeBranch } from '../game/requirements.ts';
+import type { CodexBestiaryRow } from '../types.ts';
 import { SpriteImg } from './RamPanel.tsx';
 
 export function ItemsPanel({ inventory }: { inventory: Record<string, number> }) {
@@ -25,7 +26,7 @@ const VIEWS = ['trees', 'species', 'moves', 'chart', 'traits', 'items', 'challen
 type View = (typeof VIEWS)[number];
 
 /** One evolution tree node: the form, its branch text, and a mark once anyone has evolved into it. */
-function TreeNode({ row, rows, codex }: { row: BestiaryRow; rows: BestiaryRow[]; codex: Codex }) {
+function TreeNode({ row, rows, codex }: { row: CodexBestiaryRow; rows: CodexBestiaryRow[]; codex: Codex }) {
   const children = rows.filter((r) => r.evolvesFrom === row.id);
   const found = codex.discoveries.find((d) => d.formId === row.id);
   const discovered = row.evolvesFrom === null || found !== undefined;

@@ -1,5 +1,5 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
-import type { BestiaryRow, ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
+import type { CodexBestiaryRow, ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
 
 export interface Me {
   operatorId: string;
@@ -44,7 +44,7 @@ export interface Codex {
   natures: NatureDef[];
   traits: TraitDef[];
   /** Bestiary rows with hidden, undiscovered requirements blanked (null). */
-  bestiary: BestiaryRow[];
+  bestiary: CodexBestiaryRow[];
   discovered: string[];
   discoveries: Array<{ formId: string; operatorName: string | null; discoveredAt: string }>;
   /** Each type's capture challenge rules: plain text with line breaks; render as text, never HTML. */
