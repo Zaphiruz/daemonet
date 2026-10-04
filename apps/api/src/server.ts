@@ -6,6 +6,7 @@ import { createOidcClient } from './auth/oidc.js';
 import { loadConfig } from './config.js';
 import { expireListings } from './exchange/listings.js';
 import { expireOrders } from './exchange/orders.js';
+import { expireTrades } from './exchange/trades.js';
 import { loggerOptions } from './log.js';
 import { pruneChat } from './routes/chat.js';
 
@@ -56,15 +57,15 @@ const prune = () =>
 void prune();
 const pruneTimer = setInterval(() => void prune(), 6 * 3_600_000);
 
-// Exchange orders and daemon listings past their 7 days: escrow back to their owners, daemons unlocked (at boot, then
-// every five minutes; one run at a time).
+// Exchange orders and daemon listings past their 7 days (escrow back to their owners, daemons unlocked) and direct
+// trades idle for an hour (daemons unlocked): at boot, then every five minutes; one run at a time.
 let expiring = false;
 const expire = () => {
   if (expiring) return;
   expiring = true;
-  Promise.all([expireOrders(prisma, bus, new Date(), app.log), expireListings(prisma, new Date(), app.log)])
-    .then(([orders, listings]) => {
-      if (orders + listings > 0) app.log.info({ orders, listings }, 'expired exchange orders and listings');
+  Promise.all([expireOrders(prisma, bus, new Date(), app.log), expireListings(prisma, new Date(), app.log), expireTrades(prisma, bus, new Date(), app.log)])
+    .then(([orders, listings, trades]) => {
+      if (orders + listings + trades > 0) app.log.info({ orders, listings, trades }, 'expired exchange orders, listings and trades');
     })
     .catch((err: unknown) => app.log.error({ err: { name: (err as Error)?.name, code: (err as { code?: unknown })?.code } }, 'exchange expiry failed'))
     .finally(() => {

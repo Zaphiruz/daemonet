@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { badRequest, notFound, rateLimited } from '../errors.js';
 import { browseListings, buyListing, cancelListing, createListing, daemonView } from '../exchange/listings.js';
 import { MAX_PRICE, MAX_QTY, bookFor, cancelOrder, placeOrder } from '../exchange/orders.js';
+import { MAX_TRADE_BITS, MAX_TRADE_DAEMONS, cancelTrade, confirmTrade, listTrades, openTrade, setOffer, tradeViews } from '../exchange/trades.js';
 
 /** Exchange request budget per operator (SP5 spec: 120 / minute), shared by every Exchange route. */
 export const EXCHANGE_RATE = { max: 120, timeWindow: '1 minute' } as const;
@@ -43,13 +44,23 @@ const BrowseQuery = z.object({
   page: z.coerce.number().int().min(0).max(1000).optional(),
 });
 
+const OpenTradeBody = z
+  .object({ withId: z.string().min(1).max(64).optional(), withName: z.string().min(1).max(32).optional() })
+  .refine((b) => !!b.withId !== !!b.withName, 'give withId or withName');
+const OfferBody = z.object({
+  bits: z.number().int().min(0).max(MAX_TRADE_BITS),
+  items: z.record(z.string().min(1).max(64), z.number().int().min(1).max(MAX_QTY)),
+  daemonIds: z.array(z.string().min(1).max(64)).max(MAX_TRADE_DAEMONS),
+});
+const ConfirmBody = z.object({ version: z.number().int().min(0) });
+
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const r = schema.safeParse(value);
   if (!r.success) throw badRequest(r.error.issues[0]?.message ?? 'invalid request');
   return r.data;
 }
 
-/** Exchange (SP5): the vault view, the order book and daemon listings; trades are added by plan 4. */
+/** Exchange (SP5): the vault view, the order book, daemon listings and direct trades. */
 export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClient, bus: Bus): void {
   // Two budgets, each shared by every Exchange route: per client IP in onRequest, before authentication, so refused
   // tokens count too (it throttles guessing); per operator after requireAuth, so one operator cannot exceed the budget
@@ -176,4 +187,30 @@ export function registerExchangeRoutes(app: FastifyInstance, prisma: PrismaClien
     if (req.params.id.length > 64) throw notFound('no such listing');
     return buyListing(prisma, bus, req.operator!.id, req.params.id, undefined, log);
   });
+
+  // ---- direct trades (each mutation answers with the caller's view of the trade)
+  const view = async (operatorId: string, trade: Parameters<typeof tradeViews>[1][number]) => (await tradeViews(prisma, [trade], operatorId))[0]!;
+  const tradeId = (id: string) => {
+    if (id.length > 64) throw notFound('no such trade');
+    return id;
+  };
+
+  app.get('/api/exchange/trades', auth, async (req) => listTrades(prisma, req.operator!.id));
+
+  app.post('/api/exchange/trades', auth, async (req) => {
+    const body = parse(OpenTradeBody, req.body);
+    return view(req.operator!.id, await openTrade(prisma, bus, req.operator!.id, { id: body.withId, name: body.withName }, log));
+  });
+
+  app.put<{ Params: { id: string } }>('/api/exchange/trades/:id/offer', auth, async (req) => {
+    const id = tradeId(req.params.id);
+    return view(req.operator!.id, await setOffer(prisma, bus, req.operator!.id, id, parse(OfferBody, req.body), undefined, log));
+  });
+
+  app.post<{ Params: { id: string } }>('/api/exchange/trades/:id/confirm', auth, async (req) => {
+    const id = tradeId(req.params.id);
+    return view(req.operator!.id, await confirmTrade(prisma, bus, req.operator!.id, id, parse(ConfirmBody, req.body).version, undefined, log));
+  });
+
+  app.post<{ Params: { id: string } }>('/api/exchange/trades/:id/cancel', auth, async (req) => view(req.operator!.id, await cancelTrade(prisma, bus, req.operator!.id, tradeId(req.params.id), undefined, log)));
 }

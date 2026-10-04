@@ -146,7 +146,7 @@ model BitsLedger {
   delta      BigInt
   /// shop | disk | craft | ticket (the sim's store intents, SIM_LEDGER_REASONS) | admin (admin and dev grants) | org
   /// (org creation and tag change) | rename (operator rename) | exchange:escrow / exchange:refund / exchange:sale (the
-  /// api's order book; exchange:buy / exchange:sale for daemon listings)
+  /// api's order book; exchange:buy / exchange:sale for daemon listings; exchange:trade for direct trades)
   reason     String
   ref        String?
   at         DateTime @default(now())
@@ -163,6 +163,32 @@ model ExchangeVault {
   qty        Int
 
   @@id([operatorId, item])
+}
+
+enum TradeStatus {
+  OPEN
+  DONE
+  CANCELLED
+}
+
+/// Direct trade between two operators (SP5 spec §7). Offers are `{ bits, items: { item: qty }, daemonIds: [] }`.
+model Trade {
+  id         String      @id
+  aId        String
+  bId        String
+  status     TradeStatus @default(OPEN)
+  aOffer     Json
+  bOffer     Json
+  aConfirmed Boolean     @default(false)
+  bConfirmed Boolean     @default(false)
+  /// bumped by every offer change; a confirmation must quote it
+  version    Int         @default(0)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @default(now())
+
+  @@index([aId, status])
+  @@index([bId, status])
+  @@index([status, updatedAt])
 }
 
 enum ListingStatus {
