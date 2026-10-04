@@ -252,3 +252,33 @@ describe('chat', () => {
     client.close();
   });
 });
+
+describe('clusters', () => {
+  it('sends the six cluster commands, resolves with the result, and emits clusterInvite', async () => {
+    FakeWs.instances = [];
+    const p = connect({ url: 'ws://x', auth, WebSocket: Ws });
+    await tick();
+    const ws = last();
+    snapshot(ws);
+    const client = await p;
+    const invites: unknown[] = [];
+    client.on('clusterInvite', (d) => invites.push(d));
+    const inv = { clusterId: 'c1', from: 'op2', name: 'bob', expiresAt: '2026-10-04T00:01:00.000Z' };
+    ws.serverSend({ t: 'clusterInvite', seq: 3, d: inv });
+    expect(invites).toEqual([inv]);
+    const calls = [client.cluster.create(), client.cluster.invite('op2'), client.cluster.accept('c1'), client.cluster.join('abc234'), client.cluster.leave(), client.cluster.kick('op2')];
+    for (const c of calls) c.catch(() => {});
+    const sent = ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'cmd');
+    expect(sent.map((m) => [m.d.cmd, m.d.args])).toEqual([
+      ['clusterCreate', {}],
+      ['clusterInvite', { operatorId: 'op2' }],
+      ['clusterAccept', { clusterId: 'c1' }],
+      ['clusterJoin', { code: 'abc234' }],
+      ['clusterLeave', {}],
+      ['clusterKick', { operatorId: 'op2' }],
+    ]);
+    ws.serverSend({ t: 'ack', seq: 4, d: { reqId: sent[0].d.reqId, result: { clusterId: 'c1', code: 'ABC234' } } });
+    await expect(calls[0]).resolves.toEqual({ clusterId: 'c1', code: 'ABC234' });
+    client.close();
+  });
+});

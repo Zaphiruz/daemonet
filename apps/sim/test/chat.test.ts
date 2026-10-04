@@ -49,6 +49,16 @@ function harness(opts: { bus?: Bus } = {}) {
 }
 
 describe('ChatService', () => {
+  it('cluster chat reaches the live members only (a member without a session gets nothing)', async () => {
+    const h = harness();
+    const cluster = { id: 'c9', members: ['a', 'b', 'gone'] };
+    h.roster.set('a', { name: 'alice', subnet: 'lo', cluster });
+    h.roster.set('b', { name: 'bob', subnet: 'lan', cluster });
+    expect(h.chat.recipients('a', 'cluster:c9')).toEqual(['a', 'b']);
+    expect(await h.chat.post('a', 'cluster:c9', 'hi')).toBeNull();
+    expect(h.sent.map((s) => s.to)).toEqual(['a', 'b']);
+  });
+
   it('delivers subnet chat to everyone in that subnet, stores it, publishes it, and acks', async () => {
     const h = harness();
     h.roster.set('a', { name: 'alice', subnet: 'lo' });

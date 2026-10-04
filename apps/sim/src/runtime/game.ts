@@ -1,10 +1,11 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomInt, timingSafeEqual } from 'node:crypto';
 import type { Bus } from '@daemonet/bus';
 import { ticketKey } from '@daemonet/rules';
-import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
+import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Command, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
 import { INTEREST_RADIUS, distance, entitiesNear, isEconomyIntent, toSelf, type Input, type Intent, type IntentResult, type OperatorRecord, type World } from '../core/index.js';
 import type { TokenVerifier } from './auth.js';
 import { ChatService } from './chat.js';
+import { ClusterService, isClusterError, type ClusterError } from './clusters.js';
 import { diffEntities } from './interest.js';
 import { randomHex, type Store } from './store.js';
 
@@ -165,6 +166,8 @@ export class Game {
   private stopping = false;
   /** Chat over the game socket (SP4): outside the tick, its own per-operator limit. */
   readonly chat: ChatService;
+  /** Clusters (SP4): membership across worlds, outside the tick, never persisted. */
+  readonly clusters: ClusterService;
 
   constructor(opts: GameOptions) {
     const worlds = opts.worlds ?? (opts.world ? [opts.world] : []);
@@ -185,19 +188,28 @@ export class Game {
     this.authTimeout = opts.authTimeoutTicks ?? 80;
     this.idleTimeout = opts.idleTimeoutTicks ?? 768;
     this.maxSpectators = opts.maxSpectators ?? 4;
+    const operator = (id: string) => {
+      const s = this.sessions.get(id);
+      const op = s?.world.operators.get(id);
+      return s && op ? { op, subnet: s.world.subnet.id } : undefined;
+    };
+    this.clusters = new ClusterService({
+      operator,
+      send: (operatorId, msg) => this.sendTo(operatorId, msg),
+      // a party key that lost holders must not keep wild daemons locked in any world where nobody holds it
+      releaseTags: (key) => {
+        for (const w of this.worlds.values()) w.releaseOrphanTags(key);
+      },
+      now: () => Date.now(),
+      // join codes must be unguessable
+      random: () => randomInt(0x1_0000_0000) / 0x1_0000_0000,
+    });
     this.chat = new ChatService(
       {
-        operator: (id) => {
-          const s = this.sessions.get(id);
-          const op = s?.world.operators.get(id);
-          return s && op ? { op, subnet: s.world.subnet.id } : undefined;
-        },
+        operator,
         operatorIds: () => this.sessions.keys(),
-        send: (operatorId, msg) => {
-          const s = this.sessions.get(operatorId);
-          if (!s) return;
-          for (const st of s.controller ? [s.controller, ...s.spectators] : [...s.spectators]) this.send(st, msg);
-        },
+        send: (operatorId, msg) => this.sendTo(operatorId, msg),
+        clusterOf: (id) => this.clusters.of(id),
         // names are checked in the worlds (claimStarter) against the same filter as chat
         filterChanged: (filter) => {
           for (const w of this.worlds.values()) w.nameFilter = filter;
@@ -208,6 +220,13 @@ export class Game {
       opts.bus,
       this.log,
     );
+  }
+
+  /** Sends an out-of-tick server message to every connection of an operator (controller and spectators). */
+  private sendTo(operatorId: string, msg: ServerMessage): void {
+    const s = this.sessions.get(operatorId);
+    if (!s) return;
+    for (const st of s.controller ? [s.controller, ...s.spectators] : [...s.spectators]) this.send(st, msg);
   }
 
   /** Loads the admin-added chat filter terms; call once after construction (main.ts). */
@@ -404,6 +423,14 @@ export class Game {
     const { reqId, ...command } = d;
     if (st.role !== 'controller') return this.error(st, 'E_STATE', 'spectators cannot send commands', reqId);
     const session = this.sessions.get(st.operatorId!)!;
+    if (command.cmd.startsWith('cluster')) {
+      // Social, not gameplay: handled at once outside the tick (no per-tick budget; the service has its own limits),
+      // replied to the connection that sent it; the next delta carries the new `self.cluster`.
+      const r = this.cluster(session.operatorId, command);
+      if (isClusterError(r)) this.error(st, r.code, r.message, reqId);
+      else this.send(st, { t: 'ack', seq: 0, d: { reqId, result: r } });
+      return;
+    }
     if (command.cmd === 'chat') {
       // Chat is not gameplay: handled outside the tick, with no per-tick budget and its own per-operator limit. The
       // reply goes to the connection that sent it (dropped if that connection has gone).
@@ -424,6 +451,25 @@ export class Game {
     this.replyTo.set(key, { st, reqId });
     st.routes.add(key);
     this.inputs.push({ operatorId: session.operatorId, reqId: key, command });
+  }
+
+  private cluster(id: string, command: Command): ClusterError | object {
+    switch (command.cmd) {
+      case 'clusterCreate':
+        return this.clusters.ensure(id);
+      case 'clusterInvite':
+        return this.clusters.invite(id, command.args.operatorId);
+      case 'clusterAccept':
+        return this.clusters.accept(id, command.args.clusterId);
+      case 'clusterJoin':
+        return this.clusters.join(id, command.args.code);
+      case 'clusterLeave':
+        return this.clusters.leave(id);
+      case 'clusterKick':
+        return this.clusters.kick(id, command.args.operatorId);
+      default:
+        return { code: 'E_INVALID', message: 'unknown cluster command' };
+    }
   }
 
   private violation(st: ConnState): void {
@@ -572,7 +618,10 @@ export class Game {
     for (const load of this.loads.get(session.sub) ?? []) load.stale = true;
     const world = session.world;
     const record = this.record(world, session.operatorId);
+    // Removed while still a member, so the world releases the cluster's tags if nobody of it is left there; then the
+    // cluster lets go of it (leadership passes on, other worlds release orphaned tags, an empty cluster dissolves).
     world.removeOperator(session.operatorId);
+    this.clusters.leave(session.operatorId);
     this.sessions.delete(session.operatorId);
     for (const st of [...session.spectators]) this.kick(st, 'operator left', CLOSE.left);
     for (const [key, route] of this.replyTo) {
@@ -643,6 +692,8 @@ export class Game {
     from.removeOperator(intent.operatorId);
     to.addOperator({ ...record, subnet: to.subnet.id, x: intent.x, y: intent.y });
     session.world = to;
+    // Membership survives travel: the new world's operator gets the view back and every member's `away` flags change.
+    this.clusters.reattach(intent.operatorId);
     // Nothing the client knew about the old subnet carries over: a resume must start from a fresh snapshot.
     session.savedKnown = null;
     session.savedSelf = null;

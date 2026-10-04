@@ -53,6 +53,8 @@ type ClientEvents = {
   chat: Extract<ServerMessage, { t: 'chat' }>['d'];
   chatDeleted: Extract<ServerMessage, { t: 'chatDeleted' }>['d'];
   muted: Extract<ServerMessage, { t: 'muted' }>['d'];
+  /** Clusters (SP4): someone invites you; answer with `client.cluster.accept(clusterId)` before `expiresAt`. */
+  clusterInvite: Extract<ServerMessage, { t: 'clusterInvite' }>['d'];
 };
 
 export interface Target extends Positioned {
@@ -313,6 +315,36 @@ export class DaemonsApi {
 }
 
 /**
+ * Clusters (SP4): up to 4 operators sharing tags and XP. `client.self.cluster` is the current state (it arrives with the
+ * next tick after a command). Joining gives up your personal tags; only the leader invites and kicks.
+ */
+export class ClusterApi {
+  constructor(private readonly client: GameClient) {}
+  /** Creates a cluster of one (if needed) and returns `{ clusterId, code }`: share the code. */
+  create() {
+    return this.client.command({ cmd: 'clusterCreate', actor: 'self', args: {} });
+  }
+  /** Invite an operator within 32 tiles in your subnet (you become leader of a new cluster if you have none). */
+  invite(operatorId: string) {
+    return this.client.command({ cmd: 'clusterInvite', actor: 'self', args: { operatorId } });
+  }
+  accept(clusterId: string) {
+    return this.client.command({ cmd: 'clusterAccept', actor: 'self', args: { clusterId } });
+  }
+  /** Join by the 6-character code from any subnet (a few attempts a minute). */
+  join(code: string) {
+    return this.client.command({ cmd: 'clusterJoin', actor: 'self', args: { code } });
+  }
+  leave() {
+    return this.client.command({ cmd: 'clusterLeave', actor: 'self', args: {} });
+  }
+  /** Leader only. */
+  kick(operatorId: string) {
+    return this.client.command({ cmd: 'clusterKick', actor: 'self', args: { operatorId } });
+  }
+}
+
+/**
  * Chat (SP4): one message every 2 s; `send` queues locally so scripts never hit E_RATE. The server measures the 2 s
  * from when it accepted the previous line, so the next send waits CHAT_INTERVAL_MS after the previous line's reply
  * arrived (never earlier than the server can accept it, whatever the latency); an E_RATE that still happens (another
@@ -403,6 +435,7 @@ export class GameClient {
   readonly operator = new OperatorApi(this);
   readonly daemons = new DaemonsApi(this);
   readonly chat = new ChatApi(this);
+  readonly cluster = new ClusterApi(this);
 
   private ws: WebSocketLike | null = null;
   private readonly Ws: WebSocketCtor;
@@ -663,6 +696,9 @@ export class GameClient {
         return;
       case 'muted':
         this.emit('muted', msg.d);
+        return;
+      case 'clusterInvite':
+        this.emit('clusterInvite', msg.d);
         return;
     }
   }

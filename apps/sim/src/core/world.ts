@@ -163,8 +163,23 @@ export class World {
     this.operators.delete(id);
     // Wilds its party tagged would stay locked to a party with nobody left here (leave or travel) until the tag window
     // ran out; while another member of the party is still in this world, the tag stays theirs.
+    this.releaseOrphanTags(key);
+  }
+
+  /**
+   * Releases the wild tags held under party key `key` when no operator in this world holds that key any more (it left,
+   * travelled, joined a cluster, or its cluster dissolved). A tagged daemon under an open capture keeps its tag (as tag
+   * expiry never ends one mid-capture), re-keyed to the capturer's party so the capture's XP and rights stay consistent.
+   */
+  releaseOrphanTags(key: string): void {
     for (const other of this.operators.values()) if (partyKey(other) === key) return;
-    for (const d of this.daemons.values()) if (d.wild?.tagOwner === key) this.releaseTag(d);
+    for (const d of this.daemons.values()) {
+      if (d.wild?.tagOwner !== key) continue;
+      let capturer: Operator | undefined;
+      for (const cap of this.captures.values()) if (cap.state === 'open' && cap.targetId === d.id) capturer = this.operators.get(cap.operatorId);
+      if (capturer) d.wild.tagOwner = partyKey(capturer);
+      else this.releaseTag(d);
+    }
   }
 
   /** Ends a wild daemon's tag: it forgets its attackers and heals (as when the tag window expires). */

@@ -25,7 +25,7 @@ export interface ChatHost {
   operatorIds(): Iterable<string>;
   /** Sends to every connection of the operator. */
   send(operatorId: string, msg: Extract<ServerMessage, { t: 'chat' | 'chatDeleted' | 'muted' }>): void;
-  /** Cluster / org membership resolution (plans 2–3 fill these in; until then nobody is in one). */
+  /** Cluster (SP4 plan 2: `ClusterService.of`) and org (plan 3) membership resolution. */
   clusterOf?(operatorId: string): { id: string; members: Iterable<string> } | undefined;
   orgOf?(operatorId: string): { id: string; tag: string } | undefined;
   /** The compiled filter (defaults + admin terms) changed: names are checked against it too (SP4 spec §5.1). */
@@ -233,8 +233,9 @@ export class ChatService {
         return out;
       }
       case 'cluster': {
+        // The cluster's live members: only operators with a session (a member whose session left is no longer one).
         const c = this.host.clusterOf?.(from);
-        return c && c.id === id ? [...c.members] : null;
+        return c && c.id === id ? [...c.members].filter((m) => this.host.operator(m) !== undefined) : null;
       }
       case 'org': {
         const o = this.host.orgOf?.(from);

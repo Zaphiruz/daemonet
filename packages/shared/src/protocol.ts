@@ -46,6 +46,12 @@ export const Command = z.discriminatedUnion('cmd', [
   z.object({ cmd: z.literal('decompile'), actor: Self, args: z.object({ daemonId: Id, confirm: z.boolean().default(false) }) }),
   z.object({ cmd: z.literal('acceptTicket'), actor: Self, args: z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), subnet: Id, index: z.number().int().min(0).max(BOARD_SIZE - 1) }) }),
   z.object({ cmd: z.literal('abandonTicket'), actor: Self, args: z.object({ ticketId: Id }) }),
+  z.object({ cmd: z.literal('clusterCreate'), actor: Self, args: z.object({}) }),
+  z.object({ cmd: z.literal('clusterInvite'), actor: Self, args: z.object({ operatorId: Id }) }),
+  z.object({ cmd: z.literal('clusterAccept'), actor: Self, args: z.object({ clusterId: Id }) }),
+  z.object({ cmd: z.literal('clusterJoin'), actor: Self, args: z.object({ code: z.string().regex(/^[A-Za-z0-9]{6}$/) }) }),
+  z.object({ cmd: z.literal('clusterLeave'), actor: Self, args: z.object({}) }),
+  z.object({ cmd: z.literal('clusterKick'), actor: Self, args: z.object({ operatorId: Id }) }),
   z.object({ cmd: z.literal('chat'), actor: Self, args: z.object({ channel: z.string().min(3).max(80), text: z.string().min(1).max(512) }) }),
   z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
@@ -275,6 +281,8 @@ export const ServerMessage = z.discriminatedUnion('t', [
   }),
   z.object({ t: z.literal('chatDeleted'), seq: Seq, d: z.object({ id: Id, channel: z.string() }) }),
   z.object({ t: z.literal('muted'), seq: Seq, d: z.object({ until: z.string().nullable() }) }),
+  /** An invite to a cluster (SP4): accept with `clusterAccept { clusterId }` before `expiresAt`. */
+  z.object({ t: z.literal('clusterInvite'), seq: Seq, d: z.object({ clusterId: Id, from: Id, name: z.string().nullable(), expiresAt: z.string() }) }),
   z.object({
     t: z.literal('authOk'),
     seq: Seq,

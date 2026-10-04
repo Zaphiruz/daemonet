@@ -318,3 +318,39 @@ describe('createBridge chat (SP4)', () => {
     done();
   });
 });
+
+describe('createBridge clusters (SP4 plan 2)', () => {
+  const clusterCmd = (reqId: string, cmd: string, args: object) => JSON.stringify({ t: 'cmd', seq: 2, d: { reqId, cmd, actor: 'self', args } });
+
+  it('relays clusterInvite (credential-free) once authenticated, re-sequenced', async () => {
+    const { port2, frames, bridge, done } = setup();
+    const invite = JSON.stringify({ t: 'clusterInvite', seq: 7, d: { clusterId: 'c1', from: 'op2', name: 'bob', expiresAt: '2026-10-04T00:01:00.000Z' } });
+    bridge.deliver(invite);
+    await settle();
+    expect(frames()).toEqual([]);
+    port2.postMessage(auth);
+    await until(() => frames().length >= 2);
+    bridge.deliver(invite);
+    await settle();
+    const got = frames().slice(2);
+    expect(got.map((g) => [g.t, g.seq])).toEqual([['clusterInvite', 3]]);
+    expect(got[0]!.d).toMatchObject({ clusterId: 'c1', from: 'op2' });
+    done();
+  });
+
+  it('sends script cluster commands as s:-prefixed cmd frames counted in the per-tick command budget', async () => {
+    const { port2, sent, frames, done } = setup({ commandsPerTick: 2 });
+    port2.postMessage(auth);
+    await until(() => frames().length >= 2);
+    port2.postMessage(clusterCmd('a', 'clusterJoin', { code: 'ABC234' }));
+    port2.postMessage(clusterCmd('b', 'clusterAccept', { clusterId: 'c1' }));
+    port2.postMessage(clusterCmd('c', 'clusterJoin', { code: 'ABC235' }));
+    await until(() => frames().some((g) => g.t === 'err'));
+    expect(sent.map((s) => (JSON.parse(s) as { d: { reqId: string; cmd: string } }).d)).toMatchObject([
+      { reqId: 's:a', cmd: 'clusterJoin' },
+      { reqId: 's:b', cmd: 'clusterAccept' },
+    ]);
+    expect(frames().find((g) => g.t === 'err')!.d).toMatchObject({ code: 'E_RATE', reqId: 'c' });
+    done();
+  });
+});

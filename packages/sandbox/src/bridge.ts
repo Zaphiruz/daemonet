@@ -57,8 +57,10 @@ type Envelope = { t?: unknown; d?: unknown };
  * Server frame types relayed to the sandbox. `chat`, `chatDeleted` and `muted` (SP4) are deliberate additions: they carry
  * public chat lines and the operator's own mute state, no credential, so a script can read and answer chat. A script's
  * `chat` commands are ordinary `cmd` frames and share the per-tick command budget and the frame flood budget.
+ * `clusterInvite` (SP4 plan 2) is one too: a cluster id, the inviter's id and name and an expiry (no credential, and the
+ * cluster id only works with the invite), so a script can accept invites; its `cluster*` commands share the same budgets.
  */
-const RELAYED: ReadonlySet<string> = new Set(['delta', 'ack', 'err', 'kick', 'chat', 'chatDeleted', 'muted']);
+const RELAYED: ReadonlySet<string> = new Set(['delta', 'ack', 'err', 'kick', 'chat', 'chatDeleted', 'muted', 'clusterInvite']);
 
 /** Error replies per tick; beyond this a flooding script gets silence rather than more work for the host. */
 const MAX_ERRORS_PER_TICK = 8;
