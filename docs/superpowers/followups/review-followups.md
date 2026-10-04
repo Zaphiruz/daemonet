@@ -187,3 +187,12 @@ Fixed before merge: admin filter terms apply to names; bus onReconnect + periodi
 - T5: no Log feedback on a successful admin mute; no unread badge on the Chat tab
 Task F: minor (deferred): resync read can briefly overwrite a just-confirmed sim auto-mute (healed by next 60 s resync) — local mute epoch
 Task F: minor (deferred): `before` without `beforeId` still accepted (strict at<before); cleanChatText \p{Cf} strips ZWJ/ZWNJ (emoji sequences split); prune scans without an `at` index; frontend chat store LIMIT 256 stops "older lines" on full channels; join-time `muted` doesn't reach a sandbox started later
+
+## 2026-10-01-daemonet-sp4-plan2-clusters
+
+Fixed before merge: solo operators exempt from the party radius; three-pass defeat resolution; kicks rotate the code; founding re-keys tags
+
+- T1: for Task 2 — release/re-key the operator's tags on cluster join/leave (stale key loses capture XP); cluster ids ≤56 chars (Id max 64 with `cluster:` prefix); sdk-types.ts `cluster` declaration
+- T2: invite reveals to a nearby operator whether the target is in a cluster (boolean); join limit per operator only (not per IP) — ~30-bit codes adequate
+- T3: stale invites reappear after join+leave within 60 s (clear on gaining a cluster); copy button silent without clipboard; failed join clears the input; inner ErrorBoundary test not discriminating; `send` duplicates `run`
+Task F: minor (deferred): bystander `clear` credit within 32 tiles is intended per spec §6 (record in spec; one-line change if tuning wanted); an inviter whose invite is ignored is a cluster of one and loses the solo radius exemption; invites cleared on close but not on transparent reconnect
