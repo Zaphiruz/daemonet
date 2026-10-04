@@ -1,4 +1,4 @@
-import { MAX_ANSWER_BYTES } from '@daemonet/rules';
+import { MAX_ANSWER_BYTES, STAT_KEYS } from '@daemonet/rules';
 import { describe, expect, it } from 'vitest';
 import { MAX_MESSAGE_BYTES, MAX_SUBMIT_BYTES, ServerMessage, parseClientMessage } from '../src/protocol.js';
 
@@ -35,6 +35,19 @@ describe('parseClientMessage', () => {
       { cmd: 'use', actor: 'dmn_1', args: { move: 'ping', targetId: 'w1' } },
     ];
     for (const g of good) expect(parseClientMessage(cmd(g)).ok, g.cmd).toBe(true);
+  });
+
+  it('accepts the SP3a evolve / hold / unhold / bitflipper shapes, with every stat key and nothing else', () => {
+    const good = [
+      { cmd: 'evolve', actor: 'self', args: { daemonId: 'dmn_1', formId: 'echolet' } },
+      { cmd: 'hold', actor: 'self', args: { daemonId: 'dmn_1', itemId: 'jumboframe' } },
+      { cmd: 'unhold', actor: 'self', args: { daemonId: 'dmn_1' } },
+      ...STAT_KEYS.map((stat) => ({ cmd: 'useItem', actor: 'self', args: { item: 'bitflipper', daemonId: 'dmn_1', stat } })),
+    ];
+    for (const g of good) expect(parseClientMessage(cmd(g)).ok, JSON.stringify(g)).toBe(true);
+    expect(parseClientMessage(cmd({ cmd: 'useItem', actor: 'self', args: { item: 'bitflipper', daemonId: 'dmn_1', stat: 'luck' } })).ok).toBe(false);
+    expect(parseClientMessage(cmd({ cmd: 'useItem', actor: 'self', args: { item: 'jumboframe', daemonId: 'dmn_1' } })).ok).toBe(false);
+    expect(parseClientMessage(cmd({ cmd: 'evolve', actor: 'dmn_1', args: { daemonId: 'dmn_1', formId: 'echolet' } })).ok).toBe(false);
   });
 
   it('rejects operator-only commands sent by a daemon actor', () => {

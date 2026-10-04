@@ -17,7 +17,7 @@ const store = PrismaStore.connect(config.databaseUrl);
 await store.ping();
 const subnet = getSubnet(config.subnet);
 const seed = await store.createSeed(subnet.id);
-const world = new World({ subnet, seed: seed.seed, seedId: seed.id });
+const world = new World({ subnet, seed: seed.seed, seedId: seed.id, discovered: await store.listDiscoveries() });
 
 // The dev verifier only exists when AUTH_DEV_BYPASS=true (loadConfig refuses that in production).
 const verify = combineVerifiers(

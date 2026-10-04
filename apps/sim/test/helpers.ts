@@ -1,4 +1,4 @@
-import { computeStats, getSpecies, movesAtLevel, rollSpawn, statBlock, statBlockToArray, xpForLevel, createRng, type SubnetDef, type SpawnRoll } from '@daemonet/rules';
+import { computeStats, emptyMoveTypeUses, getSpecies, movesAtLevel, rollSpawn, statBlock, statBlockToArray, xpForLevel, createRng, type SubnetDef, type SpawnRoll } from '@daemonet/rules';
 import type { Command } from '@daemonet/shared';
 import { World, type Input, type OperatorRecord, type OwnedDaemonRecord, type StepResult } from '../src/core/index.js';
 
@@ -13,8 +13,10 @@ export const TEST_SUBNET: SubnetDef = {
   regions: [],
 };
 
-export function makeWorld(seed = 'test'): World {
-  return new World({ subnet: TEST_SUBNET, seed, seedId: 'seed0001', spawner: false });
+export const FIXED_CLOCK = '2026-09-30T00:00:00.000Z';
+
+export function makeWorld(seed = 'test', discovered: string[] = []): World {
+  return new World({ subnet: TEST_SUBNET, seed, seedId: 'seed0001', spawner: false, discovered, clock: () => FIXED_CLOCK });
 }
 
 export function ownedRecord(species: string, level: number, slot: number, id = `own-${species}-${slot}`): OwnedDaemonRecord {
@@ -37,6 +39,13 @@ export function ownedRecord(species: string, level: number, slot: number, id = `
     moves: movesAtLevel(sp, level),
     crashed: false,
     slot,
+    heldItem: null,
+    patched: false,
+    moveTypeUses: emptyMoveTypeUses(),
+    crashes: 0,
+    arenaWins: 0,
+    history: [],
+    originalOperatorId: 'alice',
   };
 }
 

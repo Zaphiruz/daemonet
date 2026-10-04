@@ -28,7 +28,14 @@ export const Command = z.discriminatedUnion('cmd', [
   z.object({ cmd: z.literal('swap'), actor: Self, args: z.object({ outId: Id, inId: Id }) }),
   z.object({ cmd: z.literal('capture'), actor: Self, args: z.object({ targetId: Id, tool: z.enum(['sniff', 'tap', 'mirror', 'dump']) }) }),
   z.object({ cmd: z.literal('submitCapture'), actor: Self, args: z.object({ captureId: Id, answer: z.unknown() }) }),
-  z.object({ cmd: z.literal('useItem'), actor: Self, args: z.object({ item: z.literal('restore'), daemonId: Id }) }),
+  z.object({
+    cmd: z.literal('useItem'),
+    actor: Self,
+    args: z.object({ item: z.enum(['restore', 'bitflipper']), daemonId: Id, stat: z.enum(['hp', 'attack', 'defense', 'focus', 'resolve', 'speed', 'haste', 'energy']).optional() }),
+  }),
+  z.object({ cmd: z.literal('evolve'), actor: Self, args: z.object({ daemonId: Id, formId: Id }) }),
+  z.object({ cmd: z.literal('hold'), actor: Self, args: z.object({ daemonId: Id, itemId: Id }) }),
+  z.object({ cmd: z.literal('unhold'), actor: Self, args: z.object({ daemonId: Id }) }),
   z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
   z.object({ cmd: z.literal('store'), actor: Self, args: z.object({ daemonId: Id }) }),
@@ -126,6 +133,22 @@ export const RamDaemon = z.object({
   slot: z.number().int(),
   /** move id -> tick at which it is ready again. */
   cooldowns: z.record(z.string(), z.number().int()),
+  heldItem: z.string().nullable(),
+  patched: z.boolean(),
+  /** lifetime move uses per type, TYPES order */
+  moveTypeUses: z.array(z.number().int()).length(16),
+  crashes: z.number().int(),
+  evolutions: z.array(
+    z.object({
+      form: Id,
+      name: z.string(),
+      level: z.number().int(),
+      hidden: z.boolean(),
+      revealed: z.boolean(),
+      met: z.boolean(),
+      requirement: z.array(z.unknown()).nullable(),
+    }),
+  ),
 });
 export type RamDaemon = z.infer<typeof RamDaemon>;
 
@@ -176,6 +199,8 @@ export const GameEvent = z.discriminatedUnion('e', [
   z.object({ e: z.literal('levelUp'), daemon: Id, level: z.number().int() }),
   z.object({ e: z.literal('restored'), daemons: z.array(Id) }),
   z.object({ e: z.literal('swap'), out: Id, in: Id }),
+  z.object({ e: z.literal('evolved'), daemon: Id, from: Id, to: Id, changes: z.array(z.unknown()) }),
+  z.object({ e: z.literal('discovery'), form: Id, operator: Id, operatorName: z.string().nullable() }),
 ]);
 export type GameEvent = z.infer<typeof GameEvent>;
 

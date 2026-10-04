@@ -1,7 +1,8 @@
-import { statBlockToArray, type StatusId } from '@daemonet/rules';
+import { evolutionOptions, statBlockToArray, type StatusId } from '@daemonet/rules';
 import type { Entity, OperatorSelf, RamDaemon } from '@daemonet/shared';
 import { distance } from './grid.js';
 import type { Daemon, Operator } from './model.js';
+import { evolutionContext } from './systems/evolve.js';
 import type { World } from './world.js';
 
 export const INTEREST_RADIUS = 32;
@@ -34,6 +35,7 @@ export function toOperatorEntity(op: Operator): Entity {
 }
 
 export function toRamDaemon(world: World, d: Daemon): RamDaemon {
+  const op = world.operators.get(d.ownerId!)!;
   return {
     id: d.id,
     species: d.species,
@@ -52,6 +54,19 @@ export function toRamDaemon(world: World, d: Daemon): RamDaemon {
     crashed: d.crashed,
     slot: d.slot,
     cooldowns: Object.fromEntries(Object.entries(d.cooldowns).filter(([, t]) => t > world.tick)),
+    heldItem: d.heldItem,
+    patched: d.patched,
+    moveTypeUses: [...d.moveTypeUses],
+    crashes: d.crashes,
+    evolutions: evolutionOptions(d, evolutionContext(world, op, d)).map((o) => ({
+      form: o.form,
+      name: o.name,
+      level: o.level,
+      hidden: o.hidden,
+      revealed: o.revealed,
+      met: o.met,
+      requirement: o.requirement ? [...o.requirement] : null,
+    })),
   };
 }
 

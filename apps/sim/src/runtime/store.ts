@@ -14,6 +14,8 @@ export interface Store {
   /** Idempotent by intent.id. Domain failures (name taken, not on Disk) resolve with ok: false. */
   applyIntent(intent: Intent, ctx: IntentContext): Promise<IntentResult>;
   checkpoint(records: readonly OperatorRecord[]): Promise<void>;
+  /** Form ids with a Discovery row (loaded once at boot into World.discovered). */
+  listDiscoveries(): Promise<string[]>;
   ping(): Promise<void>;
   close(): Promise<void>;
 }
@@ -24,8 +26,12 @@ export function randomHex(bytes: number): string {
   return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function stateFields(d: OwnedDaemonRecord) {
-  return { level: d.level, xp: d.xp, hp: d.hp, energy: d.energy, moves: d.moves, crashed: d.crashed };
+/** Everything a checkpoint (or store) writes back; identity, species and capture-log fields never change here. */
+export function stateFields(d: OwnedDaemonRecord) {
+  return {
+    level: d.level, xp: d.xp, hp: d.hp, energy: d.energy, moves: [...d.moves], crashed: d.crashed,
+    ivs: [...d.ivs], patched: d.patched, heldItem: d.heldItem, moveTypeUses: [...d.moveTypeUses], crashes: d.crashes, history: d.history.map((h) => ({ ...h })),
+  };
 }
 
 interface MemDaemon extends OwnedDaemonRecord {
@@ -50,6 +56,7 @@ export class MemoryStore implements Store {
   readonly daemons = new Map<string, MemDaemon>();
   readonly applied = new Set<string>();
   readonly seeds: Array<{ id: string; seed: string; subnet: string }> = [];
+  readonly discoveries = new Map<string, { operatorId: string; discoveredAt: string }>();
   /** Tests set this to make the next N applyIntent calls throw. */
   failNext = 0;
 
@@ -100,11 +107,11 @@ export class MemoryStore implements Store {
         op.name = intent.name;
         op.starterClaimed = true;
         op.inventory = { ...intent.inventory };
-        this.daemons.set(intent.daemon.id, { ...intent.daemon, operatorId: op.id, location: 'RAM' });
+        this.daemons.set(intent.daemon.id, { ...intent.daemon, originalOperatorId: intent.log.originalOperatorId, operatorId: op.id, location: 'RAM' });
         break;
       }
       case 'capture':
-        this.daemons.set(intent.daemon.id, { ...intent.daemon, operatorId: op.id, location: intent.location });
+        this.daemons.set(intent.daemon.id, { ...intent.daemon, originalOperatorId: intent.log.originalOperatorId, operatorId: op.id, location: intent.location });
         break;
       case 'store': {
         const d = this.daemons.get(intent.daemonId);
@@ -121,6 +128,28 @@ export class MemoryStore implements Store {
         const { operatorId: _o, location: _l, ...rec } = d;
         return { ok: true, daemon: { ...rec } };
       }
+      case 'evolve': {
+        const d = this.daemons.get(intent.daemonId);
+        if (!d || d.operatorId !== op.id || d.location !== 'RAM' || d.species !== intent.from) return { ok: false, reason: 'daemon not found' };
+        Object.assign(d, {
+          species: intent.to,
+          ivs: [...intent.ivs],
+          bonus: [...intent.bonus],
+          clean: intent.clean,
+          signature: intent.signature,
+          heldItem: intent.heldItem,
+          moves: [...intent.moves],
+          hp: intent.hp,
+          history: [...d.history, ...intent.history],
+        });
+        let discovered = false;
+        if (!this.discoveries.has(intent.to)) {
+          this.discoveries.set(intent.to, { operatorId: op.id, discoveredAt: new Date().toISOString() });
+          discovered = true;
+        }
+        this.applied.add(intent.id);
+        return { ok: true, discovered };
+      }
     }
     this.applied.add(intent.id);
     return { ok: true };
@@ -133,9 +162,14 @@ export class MemoryStore implements Store {
       Object.assign(op, { x: rec.x, y: rec.y, bits: rec.bits, inventory: { ...rec.inventory } });
       for (const d of rec.ram) {
         const row = this.daemons.get(d.id);
-        if (row && row.operatorId === op.id && row.location === 'RAM') Object.assign(row, stateFields(d));
+        // A record taken before an evolve committed (other species) must not roll the evolved row back.
+        if (row && row.operatorId === op.id && row.location === 'RAM' && row.species === d.species) Object.assign(row, stateFields(d));
       }
     }
+  }
+
+  async listDiscoveries(): Promise<string[]> {
+    return [...this.discoveries.keys()];
   }
 
   async ping(): Promise<void> {}

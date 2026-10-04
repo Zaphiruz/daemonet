@@ -1,6 +1,7 @@
 import {
   DEFAULT_ODDS,
   RAM_SLOTS,
+  emptyMoveTypeUses,
   computeStats,
   createRng,
   getSpecies,
@@ -15,12 +16,13 @@ import {
   type SubnetDef,
 } from '@daemonet/rules';
 import { Grid, type Point } from './grid.js';
-import type { Capture, Daemon, Input, Intent, IntentResult, Operator, OperatorRecord, OwnedDaemonRecord, StepResult } from './model.js';
+import { freshEngagement, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type StepResult } from './model.js';
 import { Out } from './out.js';
 import { planWild } from './systems/ai.js';
 import { executeQueuedUses, type QueuedUse } from './systems/combat.js';
 import { handleCommands } from './systems/commands.js';
 import { completeCaptureIntent, progressCaptures } from './systems/capture.js';
+import { completeEvolveIntent } from './systems/evolve.js';
 import { moveAll } from './systems/movement.js';
 import { resolveDefeats } from './systems/progress.js';
 import { runSpawner } from './systems/spawner.js';
@@ -37,6 +39,10 @@ export interface WorldOptions {
   spawner?: boolean;
   /** Spawn odds (tests only). */
   odds?: SpawnOdds;
+  /** Form ids already discovered server-wide (loaded from the store at boot). */
+  discovered?: Iterable<string>;
+  /** Wall-clock ISO timestamp for history entries (tests inject a fixed one). */
+  clock?: () => string;
 }
 
 export class World {
@@ -54,6 +60,9 @@ export class World {
   readonly captures = new Map<string, Capture>();
   readonly regionCounts: number[];
   readonly nextSpawnTick: number[];
+  /** Evolution forms whose first evolution has been recorded (hidden requirements are revealed). */
+  readonly discovered: Set<string>;
+  readonly now: () => string;
   queuedUses: QueuedUse[] = [];
   private readonly pending = new Map<string, Intent>();
   private counter = 0;
@@ -68,6 +77,8 @@ export class World {
     this.spawnerEnabled = opts.spawner ?? true;
     this.regionCounts = opts.subnet.regions.map(() => 0);
     this.nextSpawnTick = opts.subnet.regions.map(() => 0);
+    this.discovered = new Set(opts.discovered ?? []);
+    this.now = opts.clock ?? (() => new Date().toISOString());
     if (this.spawnerEnabled) runSpawner(this, this.carry, true);
   }
 
@@ -133,10 +144,10 @@ export class World {
 
   // ---- daemons ----
 
-  private makeDaemon(species: string, level: number, fields: Omit<Daemon, 'species' | 'types' | 'level' | 'stats'>): Daemon {
+  private makeDaemon(species: string, level: number, fields: Omit<Daemon, 'species' | 'types' | 'level' | 'stats' | 'trait' | 'engagement'>): Daemon {
     const sp = getSpecies(species);
     const stats = computeStats({ base: sp.base, ivs: fields.ivs, bonus: fields.bonus, level, nature: fields.nature });
-    return { ...fields, species, types: sp.types, level, stats };
+    return { ...fields, species, types: sp.types, level, stats, trait: sp.traits[fields.traitSlot], engagement: freshEngagement() };
   }
 
   addOwned(op: Operator, rec: OwnedDaemonRecord): Daemon {
@@ -164,6 +175,13 @@ export class World {
       lastCombatTick: -Infinity,
       pending: false,
       wild: null,
+      heldItem: rec.heldItem,
+      patched: rec.patched,
+      moveTypeUses: [...rec.moveTypeUses],
+      crashes: rec.crashes,
+      arenaWins: rec.arenaWins,
+      history: rec.history.map((h) => ({ ...h })),
+      originalOperatorId: rec.originalOperatorId,
     });
     this.daemons.set(d.id, d);
     op.ram.push(d.id);
@@ -192,6 +210,13 @@ export class World {
       moves: [...d.moves],
       crashed: d.crashed,
       slot: d.slot,
+      heldItem: d.heldItem,
+      patched: d.patched,
+      moveTypeUses: [...d.moveTypeUses],
+      crashes: d.crashes,
+      arenaWins: d.arenaWins,
+      history: d.history.map((h) => ({ ...h })),
+      originalOperatorId: d.originalOperatorId,
     };
   }
 
@@ -221,6 +246,13 @@ export class World {
       statuses: {},
       lastCombatTick: -Infinity,
       pending: false,
+      heldItem: null,
+      patched: false,
+      moveTypeUses: emptyMoveTypeUses(),
+      crashes: 0,
+      arenaWins: 0,
+      history: [],
+      originalOperatorId: null,
       wild: {
         behaviour: sp.behaviour,
         region,
@@ -255,6 +287,7 @@ export class World {
 
   activate(d: Daemon, op: Operator): void {
     d.active = true;
+    d.engagement = freshEngagement();
     d.x = op.x;
     d.y = op.y;
     d.path = [];
@@ -294,6 +327,8 @@ export class World {
     this.pending.delete(id);
     const out = this.carry;
     const op = this.operators.get(intent.operatorId);
+    // An evolve still records its discovery when the operator has left meanwhile.
+    if (intent.kind === 'evolve') return completeEvolveIntent(this, op, intent, result, out);
     if (!op) return;
     switch (intent.kind) {
       case 'claimStarter': {

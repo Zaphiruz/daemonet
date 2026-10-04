@@ -1,4 +1,4 @@
-import { getMove, typeMultiplier, type ToolId } from '@daemonet/rules';
+import { getMove, typeMultiplier, type StatKey, type ToolId } from '@daemonet/rules';
 import {
   COMMANDS_PER_TICK,
   HEARTBEAT_MS,
@@ -208,6 +208,19 @@ export class OperatorApi {
   }
   useRestore(daemonId: string) {
     return this.client.command({ cmd: 'useItem', actor: 'self', args: { item: 'restore', daemonId } });
+  }
+  /** Raises one IV by 1 (cap 31) and marks the daemon patched forever. */
+  useBitFlipper(daemonId: string, stat: StatKey) {
+    return this.client.command({ cmd: 'useItem', actor: 'self', args: { item: 'bitflipper', daemonId, stat } });
+  }
+  evolve(daemonId: string, formId: string) {
+    return this.client.command({ cmd: 'evolve', actor: 'self', args: { daemonId, formId } });
+  }
+  hold(daemonId: string, itemId: string) {
+    return this.client.command({ cmd: 'hold', actor: 'self', args: { daemonId, itemId } });
+  }
+  unhold(daemonId: string) {
+    return this.client.command({ cmd: 'unhold', actor: 'self', args: { daemonId } });
   }
   restoreAll() {
     return this.client.command({ cmd: 'restoreAll', actor: 'self', args: {} });

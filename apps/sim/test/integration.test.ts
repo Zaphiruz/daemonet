@@ -24,7 +24,7 @@ const running: Harness[] = [];
 const clients: GameClient[] = [];
 
 async function boot(store: MemoryStore, seedId: string): Promise<Harness> {
-  const world = new World({ subnet: TEST_SUBNET, seed: seedId, seedId, spawner: false });
+  const world = new World({ subnet: TEST_SUBNET, seed: seedId, seedId, spawner: false, discovered: await store.listDiscoveries() });
   const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), seedId, retryDelaysMs: [1, 1, 1] });
   const server = await startServer({ game, store, port: 0, host: '127.0.0.1', trustProxyHops: 0, maxConnectionsPerIp: 16, log: silent });
   // 16 ms ticks: fast tests, while the 64-tick resume window (~1 s) still outlasts the SDK's first reconnect backoff.
@@ -118,6 +118,33 @@ describe('SDK against a live sim', () => {
     const h2 = await boot(store, 'bbbb0003');
     const back = await bot(h2.url, 'alice');
     expect(back.self.ram.map((d) => d.species).sort()).toEqual(['hashling', 'nullpup']);
+  });
+
+  it('evolves a daemon through the SDK: options on the RAM view, evolved + discovery events, survives a restart', async () => {
+    const store = new MemoryStore();
+    const h = await boot(store, 'aaaa0005');
+    const alice = await bot(h.url, 'alice');
+    const bob = await bot(h.url, 'bob');
+    await alice.operator.claimStarter('pingling', 'alice');
+    await bob.operator.claimStarter('nullpup', 'bob');
+    await until(alice, () => alice.self.ram.length === 1 && bob.self.ram.length === 1);
+    const d = h.world.daemons.get(alice.self.ram[0]!.id)!;
+    d.level = 8;
+    await until(alice, () => alice.self.ram[0]!.evolutions.some((o) => o.form === 'echolet' && o.met));
+    const discovery = new Promise((resolve) => bob.on('discovery', resolve));
+    const evolved = new Promise((resolve) => alice.on('evolved', resolve));
+    await expect(alice.operator.evolve(d.id, 'echolet')).resolves.toMatchObject({ species: 'echolet' });
+    await expect(evolved).resolves.toMatchObject({ daemon: d.id, from: 'pingling', to: 'echolet' });
+    await expect(discovery).resolves.toMatchObject({ form: 'echolet', operatorName: 'alice' });
+    await until(alice, () => alice.self.ram[0]!.species === 'echolet');
+    expect(alice.self.ram[0]!.evolutions.map((o) => o.form)).toEqual(['tracerat', 'broadcaw']);
+
+    await h.stop();
+    running.splice(running.indexOf(h), 1);
+    const h2 = await boot(store, 'bbbb0006');
+    expect(h2.world.discovered.has('echolet')).toBe(true);
+    const back = await bot(h2.url, 'alice');
+    expect(back.self.ram[0]).toMatchObject({ species: 'echolet', level: 8 });
   });
 
   it('another operator cannot capture a daemon tagged by someone else', async () => {

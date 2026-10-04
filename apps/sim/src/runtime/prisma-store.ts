@@ -1,6 +1,6 @@
-import { createPrisma, type Daemon as DaemonRow, type PrismaClient } from '@daemonet/db';
-import type { Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
-import { randomHex, type IntentContext, type Store } from './store.js';
+import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient } from '@daemonet/db';
+import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
+import { randomHex, stateFields as memStateFields, type IntentContext, type Store } from './store.js';
 
 function toRecord(row: DaemonRow): OwnedDaemonRecord {
   return {
@@ -19,11 +19,33 @@ function toRecord(row: DaemonRow): OwnedDaemonRecord {
     moves: row.moves,
     crashed: row.crashed,
     slot: row.slot,
+    heldItem: row.heldItem,
+    patched: row.patched,
+    moveTypeUses: row.moveTypeUses.length === 16 ? row.moveTypeUses : Array.from({ length: 16 }, (_, i) => row.moveTypeUses[i] ?? 0),
+    crashes: row.crashes,
+    arenaWins: row.arenaWins,
+    history: historyOf(row),
+    originalOperatorId: row.originalOperatorId,
   };
 }
 
+function historyOf(row: DaemonRow): HistoryEntry[] {
+  return Array.isArray(row.history) ? (row.history as unknown as HistoryEntry[]) : [];
+}
+
+/** Prisma's Json input type has no room for plain interfaces; history entries are plain data. */
+const json = (h: readonly HistoryEntry[]): Prisma.InputJsonValue => h as unknown as Prisma.InputJsonValue;
+
+/** Everything a checkpoint (or store) writes back: the same fields as MemoryStore. */
 function stateFields(d: OwnedDaemonRecord) {
-  return { level: d.level, xp: d.xp, hp: d.hp, energy: d.energy, moves: d.moves, crashed: d.crashed };
+  const fields = memStateFields(d);
+  return { ...fields, history: json(fields.history) };
+}
+
+/** Columns for a new daemon row; the capture log (originalOperatorId…) comes from the intent's log. */
+function createData(d: OwnedDaemonRecord, operatorId: string) {
+  const { originalOperatorId: _o, history, ...rest } = d;
+  return { ...rest, history: json(history), operatorId };
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -107,8 +129,7 @@ export class PrismaStore implements Store {
             const d = intent.daemon;
             await tx.daemon.create({
               data: {
-                ...d,
-                operatorId: intent.operatorId,
+                ...createData(d, intent.operatorId),
                 location: 'RAM',
                 originalOperatorId: intent.log.originalOperatorId,
                 capturedAt: now,
@@ -124,8 +145,7 @@ export class PrismaStore implements Store {
             const d = intent.daemon;
             await tx.daemon.create({
               data: {
-                ...d,
-                operatorId: intent.operatorId,
+                ...createData(d, intent.operatorId),
                 location: intent.location,
                 originalOperatorId: intent.log.originalOperatorId,
                 capturedAt: now,
@@ -153,6 +173,30 @@ export class PrismaStore implements Store {
             if (res.count !== 1) throw new DomainFailure('not on Disk');
             const row = await tx.daemon.findUniqueOrThrow({ where: { id: intent.daemonId } });
             return { ok: true, daemon: toRecord(row) } as const;
+          }
+          case 'evolve': {
+            const row = await tx.daemon.findUnique({ where: { id: intent.daemonId } });
+            if (!row || row.operatorId !== intent.operatorId || row.location !== 'RAM' || row.species !== intent.from) throw new DomainFailure('daemon not found');
+            const res = await tx.daemon.updateMany({
+              // Guarded on the species read above, so a concurrent writer cannot be overwritten.
+              where: { id: intent.daemonId, operatorId: intent.operatorId, location: 'RAM', species: intent.from },
+              data: {
+                species: intent.to,
+                ivs: intent.ivs,
+                bonus: intent.bonus,
+                clean: intent.clean,
+                signature: intent.signature,
+                heldItem: intent.heldItem,
+                moves: intent.moves,
+                hp: intent.hp,
+                history: json([...historyOf(row), ...intent.history]),
+              },
+            });
+            if (res.count !== 1) throw new DomainFailure('daemon not found');
+            // ON CONFLICT DO NOTHING: a concurrent first evolution into the same form waits for ours and inserts
+            // nothing (count 0 = not the discoverer); it never raises a Discovery P2002.
+            const first = await tx.discovery.createMany({ data: [{ formId: intent.to, operatorId: intent.operatorId }], skipDuplicates: true });
+            return { ok: true, discovered: first.count === 1 } as const;
           }
         }
       });
@@ -190,10 +234,16 @@ export class PrismaStore implements Store {
           data: { x: rec.x, y: rec.y, bits: BigInt(rec.bits), inventory: rec.inventory, lastSeenAt: now },
         });
         for (const d of rec.ram) {
-          await tx.daemon.updateMany({ where: { id: d.id, operatorId: rec.id, location: 'RAM' }, data: stateFields(d) });
+          // `species` guard: a record taken before an evolve committed must not roll the evolved row back.
+          await tx.daemon.updateMany({ where: { id: d.id, operatorId: rec.id, location: 'RAM', species: d.species }, data: stateFields(d) });
         }
       }
     });
+  }
+
+  async listDiscoveries(): Promise<string[]> {
+    const rows = await this.prisma.discovery.findMany({ select: { formId: true }, orderBy: { discoveredAt: 'asc' } });
+    return rows.map((r) => r.formId);
   }
 
   async ping(): Promise<void> {

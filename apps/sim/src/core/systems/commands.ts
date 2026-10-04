@@ -1,10 +1,25 @@
-import { DISK_SLOTS, RUNNING_MAX, STARTING_INVENTORY, SWAP_COOLDOWN_MS, computeStats, getSpecies, movesAtLevel, rollSpawn, statBlockToArray, xpForLevel } from '@daemonet/rules';
+import {
+  DISK_SLOTS,
+  MAX_IV,
+  RUNNING_MAX,
+  STARTING_INVENTORY,
+  SWAP_COOLDOWN_MS,
+  computeStats,
+  emptyMoveTypeUses,
+  getSpecies,
+  isHoldable,
+  movesAtLevel,
+  rollSpawn,
+  statBlockToArray,
+  xpForLevel,
+} from '@daemonet/rules';
 import type { Command } from '@daemonet/shared';
 import { distance, type Point } from '../grid.js';
 import { Rejection, type Daemon, type Input, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
 import { startCapture, submitCapture } from './capture.js';
+import { evolve } from './evolve.js';
 import { restoreDaemon } from './upkeep.js';
 
 export const LEASH_TILES = 8;
@@ -92,13 +107,36 @@ function handle(world: World, input: Input, out: Out): void {
       return out.ok(input, { status: submitCapture(world, op, c.args, out) });
     case 'useItem': {
       const d = ownedDaemon(world, op, c.args.daemonId);
-      if ((op.inventory.restore ?? 0) <= 0) throw new Rejection('E_STATE', 'no restore left');
+      if ((op.inventory[c.args.item] ?? 0) <= 0) throw new Rejection('E_STATE', `no ${c.args.item} left`);
+      // A pending store / evolve snapshots the daemon: a change made now would be lost when it completes.
+      if (d.pending) throw new Rejection('E_STATE', 'daemon is busy');
       if (world.tick - d.lastCombatTick < world.ticks(OUT_OF_COMBAT_MS)) throw new Rejection('E_STATE', 'daemon is in combat');
+      if (c.args.item === 'bitflipper') return bitFlip(world, op, d, c.args.stat, input, out);
       op.inventory.restore = (op.inventory.restore ?? 0) - 1;
       restoreDaemon(d);
       out.emit({ e: 'restored', daemons: [d.id] }, { to: op.id });
       return out.ok(input);
     }
+    case 'hold': {
+      const d = ownedDaemon(world, op, c.args.daemonId);
+      if (d.pending) throw new Rejection('E_STATE', 'daemon is busy');
+      if (!isHoldable(c.args.itemId)) throw new Rejection('E_INVALID', `${c.args.itemId} cannot be held`);
+      if ((op.inventory[c.args.itemId] ?? 0) <= 0) throw new Rejection('E_STATE', `no ${c.args.itemId} left`);
+      if (d.heldItem) op.inventory[d.heldItem] = (op.inventory[d.heldItem] ?? 0) + 1;
+      op.inventory[c.args.itemId] = (op.inventory[c.args.itemId] ?? 0) - 1;
+      d.heldItem = c.args.itemId;
+      return out.ok(input);
+    }
+    case 'unhold': {
+      const d = ownedDaemon(world, op, c.args.daemonId);
+      if (d.pending) throw new Rejection('E_STATE', 'daemon is busy');
+      if (!d.heldItem) throw new Rejection('E_STATE', 'nothing held');
+      op.inventory[d.heldItem] = (op.inventory[d.heldItem] ?? 0) + 1;
+      d.heldItem = null;
+      return out.ok(input);
+    }
+    case 'evolve':
+      return evolve(world, op, ownedDaemon(world, op, c.args.daemonId), c.args.formId, input, out);
     case 'restoreAll':
       requireAtHost(world, op);
       op.path = [];
@@ -117,6 +155,22 @@ function handle(world: World, input: Input, out: Out): void {
       return;
     }
   }
+}
+
+/** Bit Flipper: +1 to one IV (cap 31); the daemon is patched for life and never rolls clean. */
+function bitFlip(world: World, op: Operator, d: Daemon, stat: Cmd<'useItem'>['args']['stat'], input: Input, out: Out): void {
+  if (!stat) throw new Rejection('E_INVALID', 'bitflipper needs a stat');
+  if (d.ivs[stat] >= MAX_IV) throw new Rejection('E_STATE', `${stat} IV is already ${MAX_IV}`);
+  op.inventory.bitflipper = (op.inventory.bitflipper ?? 0) - 1;
+  d.ivs[stat]++;
+  d.patched = true;
+  const sp = getSpecies(d.species);
+  const oldMax = d.stats.hp;
+  d.stats = computeStats({ base: sp.base, ivs: d.ivs, bonus: d.bonus, level: d.level, nature: d.nature });
+  // A crashed daemon stays at 0 HP; otherwise it keeps its missing HP.
+  if (d.hp > 0) d.hp = Math.min(d.stats.hp, d.hp + (d.stats.hp - oldMax));
+  d.history.push({ at: world.now(), kind: 'patched', detail: `${stat} +1 (bitflipper)` });
+  return out.ok(input, { ivs: statBlockToArray(d.ivs), patched: true });
 }
 
 function moveTo(world: World, op: Operator, c: Cmd<'moveTo'>, input: Input, out: Out): void {
@@ -174,6 +228,13 @@ function claimStarter(world: World, op: Operator, c: Cmd<'claimStarter'>, input:
     moves: movesAtLevel(species, STARTER_LEVEL),
     crashed: false,
     slot: 0,
+    heldItem: null,
+    patched: false,
+    moveTypeUses: emptyMoveTypeUses(),
+    crashes: 0,
+    arenaWins: 0,
+    history: [{ at: world.now(), kind: 'captured' as const, detail: `starter on ${world.subnet.id}` }],
+    originalOperatorId: op.id,
   };
   world.trackIntent(
     {
