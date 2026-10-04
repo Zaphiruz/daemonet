@@ -8,7 +8,7 @@ import { startServer, type RunningServer } from '../src/runtime/server.js';
 import { gracefulShutdown } from '../src/runtime/shutdown.js';
 import { MemoryStore } from '../src/runtime/store.js';
 import { solve } from '../../../packages/rules/test/solvers.js';
-import { TEST_SUBNET, placeWild } from './helpers.js';
+import { TEST_SUBNET, TEST_SUBNET_B, placeWild } from './helpers.js';
 
 const silent = { info() {}, warn() {}, error() {} };
 
@@ -24,8 +24,10 @@ const running: Harness[] = [];
 const clients: GameClient[] = [];
 
 async function boot(store: MemoryStore, seedId: string): Promise<Harness> {
-  const world = new World({ subnet: TEST_SUBNET, seed: seedId, seedId, spawner: false, discovered: await store.listDiscoveries() });
-  const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), seedId, retryDelaysMs: [1, 1, 1] });
+  const discovered = await store.listDiscoveries();
+  const world = new World({ subnet: TEST_SUBNET, seed: seedId, seedId, spawner: false, discovered });
+  const worldB = new World({ subnet: TEST_SUBNET_B, seed: `${seedId}b`, seedId: `${seedId.slice(0, 7)}b`, spawner: false, discovered });
+  const game = new Game({ worlds: [world, worldB], store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1] });
   const server = await startServer({ game, store, port: 0, host: '127.0.0.1', trustProxyHops: 0, maxConnectionsPerIp: 16, log: silent });
   // 16 ms ticks: fast tests, while the 64-tick resume window (~1 s) still outlasts the SDK's first reconnect backoff.
   const stopLoop = startLoop(() => game.tick(), 16);
@@ -145,6 +147,35 @@ describe('SDK against a live sim', () => {
     expect(h2.world.discovered.has('echolet')).toBe(true);
     const back = await bot(h2.url, 'alice');
     expect(back.self.ram[0]).toMatchObject({ species: 'echolet', level: 8 });
+  });
+
+  it('travels through a gateway: new subnet snapshot, entities reset, daemons kept, subnet remembered after a restart', async () => {
+    const store = new MemoryStore();
+    const h = await boot(store, 'aaaa0007');
+    const alice = await bot(h.url, 'alice');
+    await alice.operator.claimStarter('pingling', 'alice');
+    await until(alice, () => alice.self.ram.length === 1);
+    placeWild(h.world, 'bitrot', 5, 7.5, 5.5);
+    await until(alice, () => alice.world.wild.length === 1);
+    const op = h.world.operators.get(alice.operatorId)!;
+    const gate = TEST_SUBNET.gateways[0]!;
+    op.x = gate.at.x;
+    op.y = gate.at.y;
+    h.world.daemons.get(op.ram[0]!)!.level = 10;
+    await until(alice, () => alice.world.gateways.length === 0 || alice.self.x === gate.at.x);
+    const travelled = new Promise((resolve) => alice.on('travelled', resolve));
+    await expect(alice.operator.travel(gate.id)).resolves.toMatchObject({ subnet: 'testb' });
+    await expect(travelled).resolves.toMatchObject({ from: 'test', to: 'testb' });
+    await until(alice, () => alice.subnet === 'testb');
+    expect(alice.world.wild.length).toBe(0);
+    expect(alice.self.ram).toHaveLength(1);
+    expect(alice.self.x).toBe(3.5);
+
+    await h.stop();
+    running.splice(running.indexOf(h), 1);
+    const h2 = await boot(store, 'bbbb0008');
+    const back = await bot(h2.url, 'alice');
+    expect(back.subnet).toBe('testb');
   });
 
   it('another operator cannot capture a daemon tagged by someone else', async () => {

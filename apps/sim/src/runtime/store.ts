@@ -45,6 +45,7 @@ interface MemOperator {
   name: string | null;
   starterClaimed: boolean;
   bits: number;
+  subnet: string;
   x: number;
   y: number;
   inventory: Record<string, number>;
@@ -66,10 +67,10 @@ export class MemoryStore implements Store {
     return { id: row.id, seed: row.seed };
   }
 
-  async loadOrCreateOperator(sub: string, _subnet: string, spawn: Point): Promise<OperatorRecord> {
+  async loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord> {
     let op = [...this.operators.values()].find((o) => o.sub === sub);
     if (!op) {
-      op = { id: crypto.randomUUID(), sub, name: null, starterClaimed: false, bits: 0, x: spawn.x, y: spawn.y, inventory: {} };
+      op = { id: crypto.randomUUID(), sub, name: null, starterClaimed: false, bits: 0, subnet, x: spawn.x, y: spawn.y, inventory: {} };
       this.operators.set(op.id, op);
     }
     const mine = [...this.daemons.values()].filter((d) => d.operatorId === op.id);
@@ -77,6 +78,7 @@ export class MemoryStore implements Store {
       id: op.id,
       name: op.name,
       starterClaimed: op.starterClaimed,
+      subnet: op.subnet,
       x: op.x,
       y: op.y,
       bits: op.bits,
@@ -150,6 +152,9 @@ export class MemoryStore implements Store {
         this.applied.add(intent.id);
         return { ok: true, discovered };
       }
+      case 'travel':
+        Object.assign(op, { subnet: intent.to, x: intent.x, y: intent.y });
+        break;
     }
     this.applied.add(intent.id);
     return { ok: true };
@@ -159,7 +164,7 @@ export class MemoryStore implements Store {
     for (const rec of records) {
       const op = this.operators.get(rec.id);
       if (!op) continue;
-      Object.assign(op, { x: rec.x, y: rec.y, bits: rec.bits, inventory: { ...rec.inventory } });
+      Object.assign(op, { subnet: rec.subnet, x: rec.x, y: rec.y, bits: rec.bits, inventory: { ...rec.inventory } });
       for (const d of rec.ram) {
         const row = this.daemons.get(d.id);
         // A record taken before an evolve committed (other species) must not roll the evolved row back.

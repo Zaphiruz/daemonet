@@ -128,6 +128,27 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(after.ram[0]).toMatchObject({ ivs: [21, 20, 20, 20, 20, 20, 20, 20], patched: true, heldItem: 'jumboframe', moveTypeUses: uses, crashes: 2, history, originalOperatorId: a.id });
     });
 
+    it('records travel (subnet and position) and reloads it', async () => {
+      const a = await store.loadOrCreateOperator('sub-t', 'lo', SPAWN);
+      expect(a.subnet).toBe('lo');
+      const intent: Intent = { id: 'i-travel', kind: 'travel', operatorId: a.id, reqId: 'r', gatewayId: 'lo-lan', from: 'lo', to: 'lan', x: 5.5, y: 5.5 };
+      expect(await store.applyIntent(intent, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect(await store.loadOrCreateOperator('sub-t', 'lo', SPAWN)).toMatchObject({ subnet: 'lan', x: 5.5, y: 5.5 });
+      const rec = await store.loadOrCreateOperator('sub-t', 'lo', SPAWN);
+      await store.checkpoint([{ ...rec, subnet: 'dmz', x: 9, y: 9 }]);
+      expect(await store.loadOrCreateOperator('sub-t', 'lo', SPAWN)).toMatchObject({ subnet: 'dmz', x: 9, y: 9 });
+    });
+
+    it('replays a travel intent without moving the operator again', async () => {
+      const a = await store.loadOrCreateOperator('sub-t2', 'lo', SPAWN);
+      const intent: Intent = { id: 'i-travel-2', kind: 'travel', operatorId: a.id, reqId: 'r', gatewayId: 'lo-lan', from: 'lo', to: 'lan', x: 5.5, y: 5.5 };
+      expect(await store.applyIntent(intent, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      const rec = await store.loadOrCreateOperator('sub-t2', 'lo', SPAWN);
+      await store.checkpoint([{ ...rec, x: 7, y: 8 }]);
+      expect(await store.applyIntent(intent, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect(await store.loadOrCreateOperator('sub-t2', 'lo', SPAWN)).toMatchObject({ subnet: 'lan', x: 7, y: 8 });
+    });
+
     it('applies evolve intents idempotently and records the first discovery of each form', async () => {
       const a = await store.loadOrCreateOperator('sub-g', 'lo', SPAWN);
       const b = await store.loadOrCreateOperator('sub-h', 'lo', SPAWN);

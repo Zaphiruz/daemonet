@@ -28,7 +28,7 @@ class FakeConn implements Conn {
 
 function setup(store = new MemoryStore(), seedId = 'abcd1234') {
   const world = new World({ subnet: TEST_SUBNET, seed: 'game', seedId, spawner: false });
-  const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), seedId, retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4 });
+  const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4 });
   return { world, game, store };
 }
 
@@ -333,7 +333,7 @@ describe('checkpoint ordering', () => {
   it('the last checkpoint taken is the one that sticks, even when an older write would commit later', async () => {
     const store = new HeldCheckpointStore();
     const world = new World({ subnet: TEST_SUBNET, seed: 'game', seedId: 'abcd1234', spawner: false });
-    const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), seedId: 'abcd1234', checkpointEveryTicks: 8, leaveAfterTicks: 4 });
+    const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), checkpointEveryTicks: 8, leaveAfterTicks: 4 });
     const conn = await join(game, 'alice');
     await game.message(conn, cmd({ cmd: 'moveTo', actor: 'self', args: { x: 9.5, y: 4.5 } }));
     for (let i = 0; i < 40; i++) game.tick(); // periodic checkpoints along the way

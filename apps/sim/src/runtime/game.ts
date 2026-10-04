@@ -24,10 +24,12 @@ const silent: Logger = { info() {}, warn() {}, error() {} };
 export const CLOSE = { auth: 4401, takeover: 4409, rate: 4429, timeout: 4408, unavailable: 4503, left: 4410 } as const;
 
 export interface GameOptions {
-  world: World;
+  /** One world per hosted subnet; the first is the default (new operators, unknown subnets). */
+  worlds?: readonly World[];
+  /** Shorthand for a single world. */
+  world?: World;
   store: Store;
   verify: TokenVerifier;
-  seedId: string;
   log?: Logger;
   /** Waits between intent persistence attempts (default 128/512/2048 ms). */
   retryDelaysMs?: readonly number[];
@@ -65,6 +67,8 @@ interface ReplyRoute {
 interface Session {
   operatorId: string;
   sub: string;
+  /** The world the operator is in right now (changes on travel). */
+  world: World;
   controller: ConnState | null;
   spectators: Set<ConnState>;
   resumeToken: string;
@@ -97,10 +101,14 @@ function sameSecret(a: string, b: string): boolean {
 }
 
 export class Game {
+  /** Hosted worlds by subnet id; all step once per game tick. */
+  readonly worlds: Map<string, World>;
+  /** New operators and operators of unhosted subnets start here. */
+  readonly defaultWorld: World;
+  /** The default world (tests, and callers that host one subnet). */
   readonly world: World;
   private readonly store: Store;
   private readonly verify: TokenVerifier;
-  private readonly seedId: string;
   private readonly log: Logger;
   private readonly retryDelays: readonly number[];
   private readonly checkpointEvery: number;
@@ -115,8 +123,8 @@ export class Game {
   private readonly loads = new Map<string, Set<{ stale: boolean }>>();
   private readonly inflight = new Set<Promise<void>>();
   private inputs: Input[] = [];
-  /** Tail of the serialized checkpoint writes (never rejects). */
-  private checkpointChain: Promise<void> = Promise.resolve();
+  /** Tail of the serialized store writes: every checkpoint and every travel intent, across all worlds (never rejects). */
+  private writeChain: Promise<void> = Promise.resolve();
   /**
    * Pending command replies keyed `conn.id:reqId` (the key is the reqId the world sees), so a later connection that
    * reuses a reqId never receives an earlier connection's reply.
@@ -124,12 +132,18 @@ export class Game {
   private readonly replyTo = new Map<string, ReplyRoute>();
   private radius = INTEREST_RADIUS;
   private readonly tickMs: number[] = [];
+  /** Game ticks so far (every world advances once per game tick). */
+  private ticks = 0;
 
   constructor(opts: GameOptions) {
-    this.world = opts.world;
+    const worlds = opts.worlds ?? (opts.world ? [opts.world] : []);
+    if (worlds.length === 0) throw new Error('Game needs at least one world');
+    this.worlds = new Map(worlds.map((w) => [w.subnet.id, w]));
+    if (this.worlds.size !== worlds.length) throw new Error('Game worlds must host distinct subnets');
+    this.defaultWorld = worlds[0]!;
+    this.world = this.defaultWorld;
     this.store = opts.store;
     this.verify = opts.verify;
-    this.seedId = opts.seedId;
     this.log = opts.log ?? silent;
     this.retryDelays = opts.retryDelaysMs ?? [128, 512, 2048];
     this.checkpointEvery = opts.checkpointEveryTicks ?? 512;
@@ -139,10 +153,15 @@ export class Game {
     this.maxSpectators = opts.maxSpectators ?? 4;
   }
 
+  /** The world a connected operator is in. */
+  worldOf(operatorId: string): World | undefined {
+    return this.sessions.get(operatorId)?.world;
+  }
+
   // ---- connections ----
 
   connect(conn: Conn): void {
-    const t = this.world.tick;
+    const t = this.ticks;
     this.conns.set(conn.id, {
       conn, seq: 0, phase: 'new', openedTick: t, lastSeenTick: t, bucket: BUCKET_MAX,
       sub: null, operatorId: null, role: null, known: new Map(), lastSelf: null, routes: new Set(),
@@ -158,7 +177,7 @@ export class Game {
   async message(conn: Conn, raw: string): Promise<void> {
     const st = this.conns.get(conn.id);
     if (!st || st.phase === 'closed') return;
-    st.lastSeenTick = this.world.tick;
+    st.lastSeenTick = this.ticks;
     if (--st.bucket < 0) {
       st.bucket = 0;
       this.send(st, { t: 'err', seq: 0, d: { code: 'E_RATE', message: 'too many messages' } });
@@ -204,9 +223,17 @@ export class Game {
       if (st.phase === 'closed') return;
       let session = this.sessions.get(rec.id);
       if (!session) {
-        if (!this.world.operators.has(rec.id)) this.world.addOperator(rec);
+        // An operator whose subnet this process does not host starts over at the default world's spawn.
+        let world = this.worlds.get(rec.subnet);
+        if (!world) {
+          world = this.defaultWorld;
+          rec.subnet = world.subnet.id;
+          rec.x = world.subnet.spawn.x;
+          rec.y = world.subnet.spawn.y;
+        }
+        if (!world.operators.has(rec.id)) world.addOperator(rec);
         session = {
-          operatorId: rec.id, sub: claims.sub, controller: null, spectators: new Set(), resumeToken: randomHex(16), buffer: [], baseTick: this.world.tick,
+          operatorId: rec.id, sub: claims.sub, world, controller: null, spectators: new Set(), resumeToken: randomHex(16), buffer: [], baseTick: world.tick,
           savedKnown: null, savedSelf: null, commandsThisTick: 0, violations: [], leaveAtTick: null,
         };
         this.sessions.set(rec.id, session);
@@ -220,7 +247,7 @@ export class Game {
         }
         st.role = 'spectator';
         session.spectators.add(st);
-        if (!session.controller && session.leaveAtTick === null) session.leaveAtTick = this.world.tick + this.leaveAfter;
+        if (!session.controller && session.leaveAtTick === null) session.leaveAtTick = this.ticks + this.leaveAfter;
       } else {
         const old = session.controller;
         if (old) {
@@ -234,9 +261,9 @@ export class Game {
         session.leaveAtTick = null;
       }
       st.phase = 'ready';
-      this.send(st, { t: 'authOk', seq: 0, d: { operatorId: rec.id, role: st.role, resumeToken: session.resumeToken, tick: this.world.tick } });
+      this.send(st, { t: 'authOk', seq: 0, d: { operatorId: rec.id, role: st.role, resumeToken: session.resumeToken, tick: session.world.tick } });
       if (!(st.role === 'controller' && this.tryResume(st, session, d.resumeToken, d.lastTick))) this.snapshot(st);
-      this.log.info({ sub: claims.sub, role: st.role, ip: st.conn.ip }, 'operator connected');
+      this.log.info({ sub: claims.sub, role: st.role, ip: st.conn.ip, subnet: session.world.subnet.id }, 'operator connected');
     } catch (err) {
       this.log.error({ err: (err as Error).message }, 'auth: store unavailable');
       this.error(st, 'E_STATE', 'service unavailable');
@@ -249,7 +276,7 @@ export class Game {
    * leave in progress, and reloads when a leave started while the load was in flight (its result may predate it).
    */
   private async loadOperator(sub: string) {
-    const subnet = this.world.subnet;
+    const subnet = this.defaultWorld.subnet;
     for (;;) {
       const pending = this.leaving.get(sub);
       if (pending) {
@@ -272,7 +299,7 @@ export class Game {
 
   private tryResume(st: ConnState, session: Session, token: string | undefined, lastTick: number | undefined): boolean {
     if (token === undefined || !sameSecret(token, session.resumeToken) || lastTick === undefined || !session.savedKnown) return false;
-    if (lastTick < session.baseTick || lastTick > this.world.tick) return false;
+    if (lastTick < session.baseTick || lastTick > session.world.tick) return false;
     st.known = new Map(session.savedKnown);
     st.lastSelf = session.savedSelf;
     for (const entry of session.buffer) if (entry.tick > lastTick) this.send(st, entry.msg);
@@ -280,17 +307,18 @@ export class Game {
   }
 
   private snapshot(st: ConnState): void {
-    const op = this.world.operators.get(st.operatorId!)!;
     const session = this.sessions.get(st.operatorId!)!;
+    const world = session.world;
+    const op = world.operators.get(st.operatorId!)!;
     if (st.role === 'controller') {
       session.buffer = [];
-      session.baseTick = this.world.tick;
+      session.baseTick = world.tick;
     }
-    const entities = entitiesNear(this.world, op.x, op.y, this.radius);
-    const self = toSelf(this.world, op);
+    const entities = entitiesNear(world, op.x, op.y, this.radius);
+    const self = toSelf(world, op);
     st.known = new Map(entities.map((e) => [e.id, e]));
     st.lastSelf = JSON.stringify(self);
-    this.send(st, { t: 'snapshot', seq: 0, d: { tick: this.world.tick, subnet: this.world.subnet.id, self, entities } });
+    this.send(st, { t: 'snapshot', seq: 0, d: { tick: world.tick, subnet: world.subnet.id, self, entities } });
   }
 
   private async reauth(st: ConnState, token: string): Promise<void> {
@@ -313,6 +341,11 @@ export class Game {
       return this.violation(st);
     }
     session.commandsThisTick++;
+    if (command.cmd === 'travel') {
+      // The world validates the gateway itself; it cannot know which subnets this process hosts.
+      const gate = session.world.subnet.gateways.find((g) => g.id === command.args.gatewayId);
+      if (gate && !this.worlds.has(gate.to)) return this.error(st, 'E_STATE', `${gate.to} is not available`, reqId);
+    }
     const key = `${st.conn.id}:${reqId}`;
     this.replyTo.set(key, { st, reqId });
     st.routes.add(key);
@@ -322,7 +355,7 @@ export class Game {
   private violation(st: ConnState): void {
     const session = st.operatorId ? this.sessions.get(st.operatorId) : undefined;
     if (!session) return;
-    const now = this.world.tick;
+    const now = this.ticks;
     session.violations = session.violations.filter((t) => now - t < VIOLATION_WINDOW_TICKS);
     session.violations.push(now);
     if (session.violations.length > MAX_VIOLATIONS) this.kick(st, 'rate limit', CLOSE.rate);
@@ -357,7 +390,7 @@ export class Game {
       session.controller = null;
       session.savedKnown = st.known;
       session.savedSelf = st.lastSelf;
-      session.leaveAtTick = this.world.tick + this.leaveAfter;
+      session.leaveAtTick = this.ticks + this.leaveAfter;
     }
   }
 
@@ -365,16 +398,48 @@ export class Game {
 
   tick(): void {
     const t0 = performance.now();
-    const world = this.world;
+    this.ticks++;
     for (const st of [...this.conns.values()]) {
       st.bucket = Math.min(BUCKET_MAX, st.bucket + BUCKET_REFILL_PER_TICK);
-      if (st.phase !== 'ready' && world.tick - st.openedTick > this.authTimeout) this.kick(st, 'auth timeout', CLOSE.timeout);
-      else if (st.phase === 'ready' && world.tick - st.lastSeenTick > this.idleTimeout) this.kick(st, 'idle', CLOSE.timeout);
+      if (st.phase !== 'ready' && this.ticks - st.openedTick > this.authTimeout) this.kick(st, 'auth timeout', CLOSE.timeout);
+      else if (st.phase === 'ready' && this.ticks - st.lastSeenTick > this.idleTimeout) this.kick(st, 'idle', CLOSE.timeout);
     }
 
-    const result = world.step(this.inputs);
+    // Each input goes to the world its operator is in now.
+    const inputsByWorld = new Map<World, Input[]>();
+    for (const input of this.inputs) {
+      const world = this.sessions.get(input.operatorId)?.world;
+      if (!world) continue;
+      let list = inputsByWorld.get(world);
+      if (!list) inputsByWorld.set(world, (list = []));
+      list.push(input);
+    }
     this.inputs = [];
     for (const s of this.sessions.values()) s.commandsThisTick = 0;
+
+    for (const world of this.worlds.values()) this.stepWorld(world, inputsByWorld.get(world) ?? []);
+
+    if (this.ticks % this.checkpointEvery === 0) this.checkpointAll();
+    for (const session of [...this.sessions.values()]) {
+      // A travelling operator leaves once the hand-off has settled (from whichever world it ends up in).
+      if (!session.controller && session.leaveAtTick !== null && session.leaveAtTick <= this.ticks && !this.travelling(session)) this.leave(session);
+    }
+
+    const ms = performance.now() - t0;
+    this.tickMs.push(ms);
+    if (this.tickMs.length > 1024) this.tickMs.shift();
+    const recent = this.tickMs.slice(-16);
+    const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+    if (avg > SLOW_TICK_MS && this.radius !== INTEREST_RADIUS / 2) {
+      this.radius = INTEREST_RADIUS / 2;
+      this.log.warn({ avgMs: avg }, 'slow ticks: shrinking interest radius');
+    } else if (avg < RECOVERED_TICK_MS) {
+      this.radius = INTEREST_RADIUS;
+    }
+  }
+
+  private stepWorld(world: World, inputs: Input[]): void {
+    const result = world.step(inputs);
 
     for (const r of result.replies) {
       const route = this.replyTo.get(r.reqId);
@@ -386,9 +451,10 @@ export class Game {
       if (r.ok) this.send(st, { t: 'ack', seq: 0, d: r.result === undefined ? { reqId } : { reqId, result: r.result } });
       else this.error(st, r.code, r.message, reqId);
     }
-    for (const intent of result.intents) this.persist(intent);
+    for (const intent of result.intents) this.persist(world, intent);
 
     for (const session of this.sessions.values()) {
+      if (session.world !== world) continue;
       const op = world.operators.get(session.operatorId);
       if (!op) continue;
       const events = result.events
@@ -412,29 +478,17 @@ export class Game {
         }
       }
     }
+  }
 
-    if (result.tick % this.checkpointEvery === 0) this.checkpointAll();
-    for (const session of [...this.sessions.values()]) {
-      if (!session.controller && session.leaveAtTick !== null && session.leaveAtTick <= result.tick) this.leave(session);
-    }
-
-    const ms = performance.now() - t0;
-    this.tickMs.push(ms);
-    if (this.tickMs.length > 1024) this.tickMs.shift();
-    const recent = this.tickMs.slice(-16);
-    const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
-    if (avg > SLOW_TICK_MS && this.radius !== INTEREST_RADIUS / 2) {
-      this.radius = INTEREST_RADIUS / 2;
-      this.log.warn({ avgMs: avg }, 'slow ticks: shrinking interest radius');
-    } else if (avg < RECOVERED_TICK_MS) {
-      this.radius = INTEREST_RADIUS;
-    }
+  private travelling(session: Session): boolean {
+    return session.world.operators.get(session.operatorId)?.travelling === true;
   }
 
   private leave(session: Session): void {
     for (const load of this.loads.get(session.sub) ?? []) load.stale = true;
-    const record = this.world.checkpoint(session.operatorId);
-    this.world.removeOperator(session.operatorId);
+    const world = session.world;
+    const record = world.checkpoint(session.operatorId);
+    world.removeOperator(session.operatorId);
     this.sessions.delete(session.operatorId);
     for (const st of [...session.spectators]) this.kick(st, 'operator left', CLOSE.left);
     for (const [key, route] of this.replyTo) {
@@ -450,30 +504,70 @@ export class Game {
     this.log.info({ sub: session.sub }, 'operator left');
   }
 
+  /**
+   * One checkpoint of every operator in every world. A travelling operator is skipped: its record would still name the
+   * source subnet, and the travel intent (queued on the same chain) is what moves it.
+   */
   private checkpointAll(): void {
-    const records = [...this.world.operators.keys()].map((id) => this.world.checkpoint(id));
+    const records: OperatorRecord[] = [];
+    for (const world of this.worlds.values()) {
+      for (const op of world.operators.values()) if (!op.travelling) records.push(world.checkpoint(op.id));
+    }
     if (records.length === 0) return;
     this.track(this.writeCheckpoint(records, (err) => this.log.error({ err: err.message }, 'checkpoint failed')));
   }
 
   /**
-   * Queues a checkpoint write behind every earlier one, so writes commit in the order their records were taken (a slow
-   * periodic checkpoint can never overwrite a newer leave checkpoint). Failures are reported and do not break the chain.
+   * Queues a checkpoint write behind every earlier store write, so writes commit in the order their records were taken
+   * (a slow periodic checkpoint can never overwrite a newer leave checkpoint or a committed travel). Failures are
+   * reported and do not break the chain.
    */
   private writeCheckpoint(records: readonly OperatorRecord[], onError: (err: Error) => void): Promise<void> {
-    const write = this.checkpointChain.then(() => this.store.checkpoint(records)).catch((err: Error) => onError(err));
-    this.checkpointChain = write;
-    return write;
+    return this.serialized(() => this.store.checkpoint(records)).catch((err: Error) => onError(err));
   }
 
-  private persist(intent: Intent): void {
-    const stored = intent.kind === 'store' ? this.world.daemons.get(intent.daemonId) : undefined;
-    const ctx = { seedId: this.seedId, ...(stored ? { storedDaemon: this.world.toRecord(stored) } : {}) };
+  /** Runs `fn` after every store write queued before it (one chain for all worlds). */
+  private serialized<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.writeChain.then(fn);
+    this.writeChain = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+
+  /** A committed travel intent: hand the operator from its world to the destination and start it with a fresh snapshot. */
+  private moveOperator(from: World, intent: Extract<Intent, { kind: 'travel' }>): void {
+    const session = this.sessions.get(intent.operatorId);
+    const to = this.worlds.get(intent.to);
+    if (!session || session.world !== from || !to || !from.operators.has(intent.operatorId)) {
+      this.log.warn({ operator: intent.operatorId, from: intent.from, to: intent.to }, 'travel committed but the operator could not be moved');
+      return;
+    }
+    const record = from.checkpoint(intent.operatorId);
+    from.removeOperator(intent.operatorId);
+    to.addOperator({ ...record, subnet: to.subnet.id, x: intent.x, y: intent.y });
+    session.world = to;
+    // Nothing the client knew about the old subnet carries over: a resume must start from a fresh snapshot.
+    session.savedKnown = null;
+    session.savedSelf = null;
+    session.buffer = [];
+    session.baseTick = to.tick;
+    to.emitCarry({ e: 'travelled', from: intent.from, to: intent.to }, { to: intent.operatorId });
+    for (const st of session.controller ? [session.controller, ...session.spectators] : [...session.spectators]) this.snapshot(st);
+    this.log.info({ sub: session.sub, from: intent.from, to: intent.to }, 'operator travelled');
+  }
+
+  private persist(world: World, intent: Intent): void {
+    const stored = intent.kind === 'store' ? world.daemons.get(intent.daemonId) : undefined;
+    const ctx = { seedId: world.seedId, ...(stored ? { storedDaemon: world.toRecord(stored) } : {}) };
+    // A travel rewrites the operator's subnet and position: it must commit after every checkpoint taken before it.
+    const apply = () => (intent.kind === 'travel' ? this.serialized(() => this.store.applyIntent(intent, ctx)) : this.store.applyIntent(intent, ctx));
     const run = async () => {
       let result: IntentResult = { ok: false, reason: 'persist failed' };
       for (let attempt = 0; attempt <= this.retryDelays.length; attempt++) {
         try {
-          result = await this.store.applyIntent(intent, ctx);
+          result = await apply();
           break;
         } catch (err) {
           this.log.warn({ intent: intent.id, attempt, err: (err as Error).message }, 'intent persist failed');
@@ -482,9 +576,21 @@ export class Game {
           await sleep(delay);
         }
       }
-      this.world.completeIntent(intent.id, result);
+      world.completeIntent(intent.id, result);
+      if (intent.kind === 'evolve' && result.ok) this.shareDiscovery(world, intent, result.discovered === true);
+      if (intent.kind === 'travel' && result.ok) this.moveOperator(world, intent);
     };
     this.track(run());
+  }
+
+  /** A committed evolution is known in every hosted world; a first discovery is announced in all of them. */
+  private shareDiscovery(origin: World, intent: Extract<Intent, { kind: 'evolve' }>, first: boolean): void {
+    const operatorName = origin.operators.get(intent.operatorId)?.name ?? null;
+    for (const w of this.worlds.values()) {
+      if (w === origin) continue;
+      w.discovered.add(intent.to);
+      if (first) w.emitCarry({ e: 'discovery', form: intent.to, operator: intent.operatorId, operatorName }, { at: null });
+    }
   }
 
   private track(p: Promise<unknown>): void {

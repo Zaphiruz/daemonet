@@ -2,7 +2,7 @@ import { computeStats, emptyMoveTypeUses, getSpecies, movesAtLevel, rollSpawn, s
 import type { Command } from '@daemonet/shared';
 import { World, type Input, type OperatorRecord, type OwnedDaemonRecord, type StepResult } from '../src/core/index.js';
 
-/** 32 x 32 open test subnet: one wall segment, host at (4.5, 4.5), no spawn regions. */
+/** 32 x 32 open test subnet: one wall segment, host at (4.5, 4.5), no spawn regions, a gateway to `testb` in the far corner. */
 export const TEST_SUBNET: SubnetDef = {
   id: 'test',
   tier: 0,
@@ -12,7 +12,15 @@ export const TEST_SUBNET: SubnetDef = {
   host: { x: 4.5, y: 4.5 },
   spawn: { x: 5.5, y: 4.5 },
   regions: [],
-  gateways: [],
+  gateways: [{ id: 'test-testb', at: { x: 28.5, y: 28.5 }, to: 'testb', arrive: { x: 3.5, y: 3.5 }, requires: { level: 10 } }],
+};
+
+/** The other side of the test gateway (same layout, no gate level on the way back). */
+export const TEST_SUBNET_B: SubnetDef = {
+  ...TEST_SUBNET,
+  id: 'testb',
+  tier: 1,
+  gateways: [{ id: 'testb-test', at: { x: 3.5, y: 3.5 }, to: 'test', arrive: { x: 26.5, y: 28.5 }, requires: { level: 0 } }],
 };
 
 export const FIXED_CLOCK = '2026-09-30T00:00:00.000Z';
@@ -56,6 +64,7 @@ export function operatorRecord(id: string, overrides: Partial<OperatorRecord> = 
     id,
     name: id,
     starterClaimed: true,
+    subnet: 'test',
     x: 5.5,
     y: 5.5,
     bits: 0,

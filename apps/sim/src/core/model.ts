@@ -43,6 +43,8 @@ export interface OperatorRecord {
   id: string;
   name: string | null;
   starterClaimed: boolean;
+  /** Subnet the operator was last in (the runtime picks the world). */
+  subnet: string;
   x: number;
   y: number;
   bits: number;
@@ -147,6 +149,8 @@ export interface Operator {
   restoreUntil: number | null;
   hitTick: number;
   pendingClaim: boolean;
+  /** Locked by a pending travel intent. */
+  travelling: boolean;
 }
 
 export interface Capture {
@@ -192,7 +196,8 @@ export type Intent =
       hp: number;
       changes: EvolutionChange[];
       history: HistoryEntry[];
-    };
+    }
+  | { id: string; kind: 'travel'; operatorId: string; reqId: string; gatewayId: string; from: string; to: string; x: number; y: number };
 
 /** `discovered`: an evolve intent created the first Discovery row for its form. */
 export type IntentResult = { ok: true; daemon?: OwnedDaemonRecord; discovered?: boolean } | { ok: false; reason: string };

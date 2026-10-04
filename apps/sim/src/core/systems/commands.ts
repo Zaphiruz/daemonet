@@ -1,5 +1,6 @@
 import {
   DISK_SLOTS,
+  GATEWAY_RADIUS,
   MAX_IV,
   RUNNING_MAX,
   STARTING_INVENTORY,
@@ -74,6 +75,7 @@ function handle(world: World, input: Input, out: Out): void {
   if (!op.starterClaimed && !['claimStarter', 'moveTo', 'stop'].includes(c.cmd)) {
     throw new Rejection('E_STATE', 'claim a starter first');
   }
+  if (op.travelling) throw new Rejection('E_STATE', 'travelling');
   switch (c.cmd) {
     case 'moveTo':
       return moveTo(world, op, c, input, out);
@@ -137,6 +139,8 @@ function handle(world: World, input: Input, out: Out): void {
     }
     case 'evolve':
       return evolve(world, op, ownedDaemon(world, op, c.args.daemonId), c.args.formId, input, out);
+    case 'travel':
+      return travel(world, op, c, input, out);
     case 'restoreAll':
       requireAtHost(world, op);
       op.path = [];
@@ -155,6 +159,29 @@ function handle(world: World, input: Input, out: Out): void {
       return;
     }
   }
+}
+
+/**
+ * Travel through a gateway (SP3b spec §4.2): within GATEWAY_RADIUS of it, nothing running, no open capture,
+ * nothing pending, and the best daemon in RAM at the gate level. The move itself happens once the store has
+ * recorded the new subnet (the runtime hands the operator to the destination world).
+ */
+function travel(world: World, op: Operator, c: Cmd<'travel'>, input: Input, out: Out): void {
+  const gate = world.subnet.gateways.find((g) => g.id === c.args.gatewayId);
+  if (!gate) throw new Rejection('E_INVALID', `no gateway ${c.args.gatewayId} in ${world.subnet.id}`);
+  if (distance(op, gate.at) > GATEWAY_RADIUS) throw new Rejection('E_RANGE', 'move onto the gateway first');
+  if (op.running.length > 0) throw new Rejection('E_STATE', 'recall running daemons first');
+  if (op.captureId) throw new Rejection('E_STATE', 'a capture is in progress');
+  if (world.hasPendingFor(op.id)) throw new Rejection('E_STATE', 'wait for pending actions');
+  const best = Math.max(0, ...op.ram.map((id) => world.daemons.get(id)!.level));
+  if (best < gate.requires.level) throw new Rejection('E_STATE', `${gate.to} needs a level ${gate.requires.level} daemon`);
+  op.travelling = true;
+  op.path = [];
+  op.restoreUntil = null;
+  world.trackIntent(
+    { id: world.newId('i'), kind: 'travel', operatorId: op.id, reqId: input.reqId, gatewayId: gate.id, from: world.subnet.id, to: gate.to, x: gate.arrive.x, y: gate.arrive.y },
+    out,
+  );
 }
 
 /** Bit Flipper: +1 to one IV (cap 31); the daemon is patched for life and never rolls clean. */

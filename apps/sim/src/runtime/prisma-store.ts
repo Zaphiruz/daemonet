@@ -104,6 +104,7 @@ export class PrismaStore implements Store {
       id: op.id,
       name: op.name,
       starterClaimed: op.starterClaimed,
+      subnet: op.subnet,
       x: op.x,
       y: op.y,
       bits: Number(op.bits),
@@ -198,6 +199,10 @@ export class PrismaStore implements Store {
             const first = await tx.discovery.createMany({ data: [{ formId: intent.to, operatorId: intent.operatorId }], skipDuplicates: true });
             return { ok: true, discovered: first.count === 1 } as const;
           }
+          case 'travel': {
+            await tx.operator.update({ where: { id: intent.operatorId }, data: { subnet: intent.to, x: intent.x, y: intent.y } });
+            return { ok: true } as const;
+          }
         }
       });
     } catch (err) {
@@ -231,7 +236,7 @@ export class PrismaStore implements Store {
       for (const rec of records) {
         await tx.operator.update({
           where: { id: rec.id },
-          data: { x: rec.x, y: rec.y, bits: BigInt(rec.bits), inventory: rec.inventory, lastSeenAt: now },
+          data: { subnet: rec.subnet, x: rec.x, y: rec.y, bits: BigInt(rec.bits), inventory: rec.inventory, lastSeenAt: now },
         });
         for (const d of rec.ram) {
           // `species` guard: a record taken before an evolve committed must not roll the evolved row back.

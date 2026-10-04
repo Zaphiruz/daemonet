@@ -16,7 +16,7 @@ import {
   type SubnetDef,
 } from '@daemonet/rules';
 import { Grid, type Point } from './grid.js';
-import { freshEngagement, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type StepResult } from './model.js';
+import { freshEngagement, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
 import { Out } from './out.js';
 import { planWild } from './systems/ai.js';
 import { executeQueuedUses, type QueuedUse } from './systems/combat.js';
@@ -112,6 +112,7 @@ export class World {
       restoreUntil: null,
       hitTick: -1,
       pendingClaim: false,
+      travelling: false,
     };
     this.operators.set(op.id, op);
     for (const d of [...rec.ram].sort((a, b) => a.slot - b.slot)) this.addOwned(op, d);
@@ -133,6 +134,7 @@ export class World {
       id: op.id,
       name: op.name,
       starterClaimed: op.starterClaimed,
+      subnet: this.subnet.id,
       x: op.x,
       y: op.y,
       bits: op.bits,
@@ -327,6 +329,17 @@ export class World {
     out.intent(intent);
   }
 
+  /** True while any intent of `operatorId` is waiting for the store. */
+  hasPendingFor(operatorId: string): boolean {
+    for (const i of this.pending.values()) if (i.operatorId === operatorId) return true;
+    return false;
+  }
+
+  /** Queue an event for the next step (the runtime uses it when it hands an operator over between worlds). */
+  emitCarry(event: ScopedEvent['event'], scope: { to: string } | { at: Point | null }): void {
+    this.carry.emit(event, scope);
+  }
+
   completeIntent(id: string, result: IntentResult): void {
     const intent = this.pending.get(id);
     if (!intent) throw new RangeError(`unknown intent ${id}`);
@@ -365,6 +378,11 @@ export class World {
         if (!this.ownsDaemon(op, rec.id)) this.addOwned(op, rec);
         return out.ok(intent, { daemon: toRamDaemon(this, this.daemons.get(rec.id)!) });
       }
+      case 'travel':
+        // Unlock and reply only: on success the runtime moves the operator to the destination world.
+        op.travelling = false;
+        if (!result.ok) return out.fail(intent, 'E_STATE', result.reason);
+        return out.ok(intent, { subnet: intent.to });
     }
   }
 
