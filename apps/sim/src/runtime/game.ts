@@ -815,7 +815,11 @@ export class Game {
     return dest.operators.size + inbound < INCIDENT_MAX_OPERATORS;
   }
 
-  /** Incident gateways open only while an Incident runs in the destination and it has room (also shown to clients). */
+  /**
+   * Incident gateways open only while an Incident runs in the destination and it has room. Server-side only:
+   * `closedGateways` is not part of any snapshot or delta (clients judge the gateway from the `incident` events and do
+   * not know when the arena is full; a refused travel says so), and `travel` re-checks the room where it executes.
+   */
   private gateIncidentGateways(): void {
     for (const world of this.worlds.values()) {
       for (const g of world.subnet.gateways) {

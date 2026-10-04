@@ -9,6 +9,7 @@ import {
   decompileStoreGain,
   economyIntentProblem,
   INCIDENT_RECOVERY_MS,
+  incidentOpenedAt,
   incidentRewardIntent,
   incidentRewardProblem,
   ledgerReason,
@@ -499,7 +500,7 @@ export class PrismaStore implements Store {
     const participants = jsonParticipants(intent.participants);
     // ON CONFLICT DO NOTHING (no Incident_pkey P2002 when two payouts create the row at once), then lock it.
     await tx.incident.createMany({
-      data: [{ id: intent.incidentId, n: intent.n, species: intent.species, endsAt: new Date(intent.endsAt), outcome: 'CLEARED', participants, closedAt: now }],
+      data: [{ id: intent.incidentId, n: intent.n, species: intent.species, openedAt: new Date(intent.openedAt), endsAt: new Date(intent.endsAt), outcome: 'CLEARED', participants, closedAt: now }],
       skipDuplicates: true,
     });
     const rows = await tx.$queryRaw<Array<{ outcome: string; participants: unknown }>>`
@@ -523,7 +524,7 @@ export class PrismaStore implements Store {
     const closed = row.outcome !== 'OPEN';
     const data = { n: row.n, species: row.species, endsAt: new Date(row.endsAt), outcome: row.outcome, participants: jsonParticipants(row.participants), closedAt: closed ? new Date() : null };
     await this.prisma.$transaction(async (tx) => {
-      await tx.incident.createMany({ data: [{ id: row.id, ...data }], skipDuplicates: true });
+      await tx.incident.createMany({ data: [{ id: row.id, openedAt: new Date(incidentOpenedAt(row)), ...data }], skipDuplicates: true });
       // a closed row is final: only an OPEN one takes the outcome
       if (closed) await tx.incident.updateMany({ where: { id: row.id, outcome: 'OPEN' }, data });
     });
@@ -550,7 +551,7 @@ export class PrismaStore implements Store {
     const done = new Set(paid.map((l) => `${l.ref}:${l.operatorId}`));
     const out: IncidentRewardIntent[] = [];
     for (const r of cleared) {
-      const row: IncidentRow = { id: r.id, n: r.n, species: r.species, endsAt: r.endsAt.toISOString(), outcome: 'CLEARED', participants: participantsOf(r.participants) };
+      const row: IncidentRow = { id: r.id, n: r.n, species: r.species, openedAt: r.openedAt.toISOString(), endsAt: r.endsAt.toISOString(), outcome: 'CLEARED', participants: participantsOf(r.participants) };
       for (const p of unpaidParticipants(row, (id) => done.has(`${row.id}:${id}`))) out.push(incidentRewardIntent(row, p));
     }
     return out;

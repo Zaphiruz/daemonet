@@ -144,6 +144,7 @@ function clear(world: World, inc: IncidentState, out: Out): void {
         incidentId: inc.id,
         n: inc.n,
         species: inc.species,
+        openedAt: new Date(inc.openedAtMs).toISOString(),
         endsAt,
         reward: p.reward,
         damage: p.damage,

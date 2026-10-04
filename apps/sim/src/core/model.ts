@@ -363,7 +363,8 @@ export type Intent =
       incidentId: string;
       n: number;
       species: string;
-      /** ISO end of the Incident window (the row is created from the intent when it is missing). */
+      /** ISO start and end of the Incident window (the row is created from the intent when it is missing). */
+      openedAt: string;
       endsAt: string;
       reward: number;
       damage: number;

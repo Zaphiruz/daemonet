@@ -44,7 +44,7 @@ function incidentRewards(incidentId: string, damage: Record<string, number>): Re
   const participants = incidentParticipants(new Map(Object.entries(damage))).map((p) => ({ ...p, name: null }));
   return participants.filter((p) => p.reward > 0).map((p) => ({
     id: incidentRewardId(incidentId, p.operatorId), kind: 'incidentReward', operatorId: p.operatorId, incidentId, n: 7, species: KERNEL_DAEMONS[0]!,
-    endsAt: '2026-10-01T04:20:00.000Z', reward: p.reward, damage: p.damage, share: p.share, participants: participants.map((x) => ({ ...x })),
+    openedAt: '2026-10-01T04:00:00.000Z', endsAt: '2026-10-01T04:20:00.000Z', reward: p.reward, damage: p.damage, share: p.share, participants: participants.map((x) => ({ ...x })),
   }));
 }
 
@@ -358,6 +358,17 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await store.markIncidentPayoutRefused('abcd1234-incR', a.id);
       await store.markIncidentPayoutRefused('abcd1234-nope', a.id);
       expect(await store.recoverIncidents()).toEqual([]);
+    });
+
+    it('a payout that creates the Incident row records when the Incident opened (not when it was paid)', async () => {
+      const a = await store.loadOrCreateOperator('sub-open-a', 'lo', SPAWN);
+      const b = await store.loadOrCreateOperator('sub-open-b', 'lo', SPAWN);
+      const openedAt = '2026-10-01T04:00:07.000Z';
+      const [ra, rb] = incidentRewards('abcd1234-incO', { [a.id]: 600, [b.id]: 400 }).map((r) => ({ ...r, openedAt }));
+      // no record landed: a's payout creates the row; b's is interrupted
+      expect(await store.applyIntent(ra!, { seedId: 'abcd1234' })).toMatchObject({ ok: true });
+      expect(await store.applyIntent({ ...rb!, openedAt: 'not a date' }, { seedId: 'abcd1234' })).toEqual({ ok: false, reason: 'invalid payout' });
+      expect(await store.recoverIncidents()).toEqual([rb]);
     });
 
     it('boot recovery closes Incidents left OPEN and returns only the payouts a restart interrupted', async () => {

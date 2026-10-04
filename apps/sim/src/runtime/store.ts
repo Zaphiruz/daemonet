@@ -2,6 +2,7 @@ import {
   DISK_BASE,
   DISK_EXPANSION_ITEM,
   DISK_STEP,
+  INCIDENT_WINDOW_MS,
   OPEN_TICKETS_MAX,
   TICKETS_PER_DAY,
   dayKey,
@@ -314,10 +315,17 @@ export interface IncidentRow {
   id: string;
   n: number;
   species: string;
+  /** ISO start of the window; when missing, `endsAt` minus the window (`incidentOpenedAt`). */
+  openedAt?: string;
   /** ISO end of the window. */
   endsAt: string;
   outcome: 'OPEN' | 'CLEARED' | 'EXPIRED';
   participants: IncidentParticipant[];
+}
+
+/** When an Incident row's window opened: its own `openedAt`, else `endsAt` minus the window (the sim's definition). */
+export function incidentOpenedAt(row: Pick<IncidentRow, 'openedAt' | 'endsAt'>): string {
+  return row.openedAt ?? new Date(Date.parse(row.endsAt) - INCIDENT_WINDOW_MS).toISOString();
 }
 
 /** How far back boot recovery looks for unfinished payouts. */
@@ -356,7 +364,7 @@ export function incidentRewardProblem(intent: IncidentRewardIntent): string | nu
   const ps = intent.participants;
   if (!Array.isArray(ps) || ps.length === 0 || new Set(ps.map((p) => p.operatorId)).size !== ps.length) return 'invalid payout';
   if (!ps.every((p) => Number.isSafeInteger(p.damage) && p.damage > 0 && Number.isSafeInteger(p.reward) && p.reward >= 0)) return 'invalid payout';
-  if (intent.id !== incidentRewardId(intent.incidentId, intent.operatorId) || Number.isNaN(Date.parse(intent.endsAt))) return 'invalid payout';
+  if (intent.id !== incidentRewardId(intent.incidentId, intent.operatorId) || Number.isNaN(Date.parse(intent.endsAt)) || Number.isNaN(Date.parse(intent.openedAt))) return 'invalid payout';
   if (!samePayouts(incidentParticipants(new Map(ps.map((p) => [p.operatorId, p.damage]))), ps)) return 'payouts do not match the rules';
   const mine = ps.find((p) => p.operatorId === intent.operatorId);
   if (!mine || mine.reward <= 0 || mine.reward !== intent.reward || mine.damage !== intent.damage) return 'payouts do not match the rules';
@@ -372,6 +380,7 @@ export function incidentRewardIntent(row: IncidentRow, p: IncidentParticipant): 
     incidentId: row.id,
     n: row.n,
     species: row.species,
+    openedAt: incidentOpenedAt(row),
     endsAt: row.endsAt,
     reward: p.reward,
     damage: p.damage,
@@ -808,7 +817,7 @@ export class MemoryStore implements Store {
         if (this.incidentLedgerSeq(op.id, intent.incidentId) !== null) return { ok: false, reason: 'already paid' };
         const participants = intent.participants.map((p) => ({ ...p }));
         if (!row) {
-          this.incidents.set(intent.incidentId, { id: intent.incidentId, n: intent.n, species: intent.species, endsAt: intent.endsAt, outcome: 'CLEARED', participants, closedAt: this.now() });
+          this.incidents.set(intent.incidentId, { id: intent.incidentId, n: intent.n, species: intent.species, openedAt: intent.openedAt, endsAt: intent.endsAt, outcome: 'CLEARED', participants, closedAt: this.now() });
         } else if (row.outcome === 'OPEN') {
           Object.assign(row, { outcome: 'CLEARED', participants, closedAt: this.now() });
         }
@@ -832,7 +841,7 @@ export class MemoryStore implements Store {
     const cur = this.incidents.get(row.id);
     const closedAt = row.outcome === 'OPEN' ? null : this.now();
     const fields = { n: row.n, species: row.species, endsAt: row.endsAt, outcome: row.outcome, participants: row.participants.map((p) => ({ ...p })), closedAt };
-    if (!cur) this.incidents.set(row.id, { id: row.id, ...fields });
+    if (!cur) this.incidents.set(row.id, { id: row.id, openedAt: incidentOpenedAt(row), ...fields });
     else if (cur.outcome === 'OPEN') Object.assign(cur, fields);
   }
 
