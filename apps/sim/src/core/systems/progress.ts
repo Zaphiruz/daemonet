@@ -1,6 +1,7 @@
 import { computeStats, getSpecies, levelForXp, movesAtLevel, splitXp, xpYield } from '@daemonet/rules';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
+import { advanceTickets } from './tickets.js';
 
 /** Split `total` XP across owned daemons; level them up (stats, HP delta, moves). */
 export function awardXp(world: World, daemonIds: readonly string[], total: number, out: Out): void {
@@ -31,6 +32,8 @@ export function resolveDefeats(world: World, out: Out): void {
       if (owner) {
         const recipients = [...d.wild.damagedBy].filter((id) => owner.ram.includes(id) && !world.daemons.get(id)!.crashed);
         awardXp(world, recipients, xpYield(getSpecies(d.species).baseYield, d.level), out);
+        // A clear counts for the tag owner only (the operator whose daemons fought it).
+        advanceTickets(world, owner, { kind: 'clear', type: d.types[0]! }, out);
       }
       world.removeDaemon(d.id);
       continue;

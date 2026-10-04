@@ -1,6 +1,23 @@
-import { DISK_BASE, DISK_EXPANSION_ITEM, DISK_STEP, decompileYield, diskExpansionPrice, fragmentId, getRecipe, getSpecies, recipeFragments } from '@daemonet/rules';
-import type { EconomyIntent, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
+import {
+  DISK_BASE,
+  DISK_EXPANSION_ITEM,
+  DISK_STEP,
+  OPEN_TICKETS_MAX,
+  TICKETS_PER_DAY,
+  dayKey,
+  decompileYield,
+  diskExpansionPrice,
+  fragmentId,
+  getRecipe,
+  getSpecies,
+  recipeFragments,
+  ticketKey,
+  type TicketKind,
+  type TicketParams,
+} from '@daemonet/rules';
+import type { Intent, IntentResult, OpenTicket, OperatorRecord, OwnedDaemonRecord, Point, ShopIntent } from '../core/index.js';
 import { shopPrice } from '../core/systems/economy.js';
+import { boardTicket } from '../core/systems/tickets.js';
 
 export interface IntentContext {
   seedId: string;
@@ -12,11 +29,19 @@ export interface IntentContext {
 export interface Store {
   /** Registers this boot's world seed; the returned id (8 hex chars) prefixes every generated id. */
   createSeed(subnet: string): Promise<{ id: string; seed: string }>;
+  /**
+   * Loads the operator with its open tickets (with progress), today's (UTC, store clock) accepted count and keys, and
+   * its Codex research.
+   */
   loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord>;
-  /** Idempotent by intent.id. Domain failures (name taken, not on Disk) resolve with ok: false. */
+  /**
+   * Idempotent by intent.id. Domain failures (name taken, not on Disk, ticket not open) resolve with ok: false. A
+   * `completeTicket` moves the row OPEN -> DONE and credits the reward with exactly one ledger row (reason `ticket`,
+   * ref = ticket id) in one transaction; capture / claimStarter add a Research point and report the line's total.
+   */
   applyIntent(intent: Intent, ctx: IntentContext): Promise<IntentResult>;
   /**
-   * Writes position, inventory and RAM daemon state. Never writes `bits` or `diskCapacity` (only intents and
+   * Writes position, inventory, RAM daemon state and the progress of OPEN tickets (never lowering it). Never writes `bits` or `diskCapacity` (only intents and
    * `grantBits` change those, with a ledger row) and skips `inventory` and every daemon's `heldItem` on records marked
    * `inventoryInFlight` (a held item moves only together with the inventory).
    */
@@ -47,7 +72,7 @@ export interface LedgerRow {
 }
 
 /** Ledger reason of a bits-spending intent. */
-export function ledgerReason(intent: Extract<EconomyIntent, { kind: 'buy' | 'craft' }>): 'shop' | 'disk' | 'craft' {
+export function ledgerReason(intent: Extract<ShopIntent, { kind: 'buy' | 'craft' }>): 'shop' | 'disk' | 'craft' {
   if (intent.kind === 'craft') return 'craft';
   return intent.itemId === DISK_EXPANSION_ITEM ? 'disk' : 'shop';
 }
@@ -57,7 +82,7 @@ export function ledgerReason(intent: Extract<EconomyIntent, { kind: 'buy' | 'cra
  * intent can never mint bits or items. Returns the failure reason, or null when the intent is well-formed.
  * `diskCapacity` is the operator's committed capacity (Disk expansions are priced on it).
  */
-export function economyIntentProblem(intent: EconomyIntent, diskCapacity: number): string | null {
+export function economyIntentProblem(intent: ShopIntent, diskCapacity: number): string | null {
   const count = (n: number, min: number) => Number.isSafeInteger(n) && n >= min;
   switch (intent.kind) {
     case 'buy': {
@@ -117,7 +142,7 @@ function decompileTypeYield(row: DecompileRow, latest: OwnedDaemonRecord | undef
  * level, plus at most one held item that either side believes the daemon holds (`row.heldItem` or `latest.heldItem`):
  * each side returns the held item IT knows of (see `decompileStoreGain`).
  */
-export function decompileProblem(intent: Extract<EconomyIntent, { kind: 'decompile' }>, row: DecompileRow, latest: OwnedDaemonRecord | undefined): string | null {
+export function decompileProblem(intent: Extract<ShopIntent, { kind: 'decompile' }>, row: DecompileRow, latest: OwnedDaemonRecord | undefined): string | null {
   if (latest && (latest.id !== intent.daemonId || latest.species !== row.species || latest.level < row.level)) return 'invalid decompile';
   const types = decompileTypeYield(row, latest);
   if (!types) return 'invalid decompile';
@@ -154,6 +179,74 @@ export function withItems(inv: Readonly<Record<string, number>>, items: Readonly
 export function missingItem(inv: Readonly<Record<string, number>>, items: Readonly<Record<string, number>>): string | null {
   for (const [id, n] of Object.entries(items)) if ((inv[id] ?? 0) < n) return id;
   return null;
+}
+
+/** One UTC day earlier (`YYYY-MM-DD`). */
+function previousDay(day: string): string {
+  return dayKey(new Date(Date.parse(`${day}T00:00:00.000Z`) - 86_400_000).toISOString());
+}
+
+/**
+ * Domain check of an accept shared by both stores: the board must be today's or yesterday's (an accept can commit just
+ * after midnight) by the store's clock, and the ticket must be exactly the rules' board entry, so a forged or stale
+ * intent can never create a ticket with another reward or target. Returns the failure reason, or null.
+ */
+export function ticketAcceptProblem(intent: Extract<Intent, { kind: 'acceptTicket' }>, nowIso: string): string | null {
+  const today = dayKey(nowIso);
+  if (intent.day !== today && intent.day !== previousDay(today)) return `the board for ${intent.day} is gone`;
+  const def = Number.isSafeInteger(intent.index) && intent.index >= 0 ? boardTicket(intent.subnet, intent.day, intent.index) : undefined;
+  const same =
+    def !== undefined &&
+    def.kind === intent.ticketKind &&
+    def.target === intent.target &&
+    def.reward === intent.reward &&
+    JSON.stringify(def.params) === JSON.stringify(intent.params);
+  return same ? null : 'ticket does not match the board';
+}
+
+/** The caps an accept must respect, given the operator's committed rows (checked under the operator lock). */
+export function ticketCapProblem(rows: ReadonlyArray<Pick<TicketRow, 'day' | 'subnet' | 'index' | 'status'>>, intent: Extract<Intent, { kind: 'acceptTicket' }>): string | null {
+  if (rows.some((t) => t.day === intent.day && t.subnet === intent.subnet && t.index === intent.index)) return 'already accepted';
+  if (rows.filter((t) => t.status === 'OPEN').length >= OPEN_TICKETS_MAX) return `at most ${OPEN_TICKETS_MAX} open tickets`;
+  if (rows.filter((t) => t.day === intent.day).length >= TICKETS_PER_DAY) return `at most ${TICKETS_PER_DAY} tickets per day`;
+  return null;
+}
+
+/** The ticket part of an operator record from its rows (`rows`: every OPEN row and every row of `day`). */
+export function ticketState(
+  rows: ReadonlyArray<Omit<TicketRow, 'operatorId' | 'acceptedAt' | 'completedAt'>>,
+  day: string,
+): Pick<OperatorRecord, 'tickets' | 'ticketsToday' | 'ticketsDay' | 'acceptedToday'> {
+  const todays = rows.filter((t) => t.day === day);
+  return {
+    tickets: rows
+      .filter((t) => t.status === 'OPEN')
+      .map(
+        (t): OpenTicket => ({
+          id: t.id, day: t.day, subnet: t.subnet, index: t.index, kind: t.kind, params: structuredClone(t.params), target: t.target, reward: t.reward,
+          progress: t.progress, pending: false, completing: false,
+        }),
+      ),
+    ticketsToday: todays.length,
+    ticketsDay: day,
+    acceptedToday: todays.map((t) => ticketKey(t.day, t.subnet, t.index)),
+  };
+}
+
+export interface TicketRow {
+  id: string;
+  operatorId: string;
+  day: string;
+  subnet: string;
+  index: number;
+  kind: TicketKind;
+  params: TicketParams;
+  target: number;
+  reward: number;
+  progress: number;
+  status: 'OPEN' | 'DONE' | 'ABANDONED';
+  acceptedAt: string;
+  completedAt: string | null;
 }
 
 export function randomHex(bytes: number): string {
@@ -206,8 +299,27 @@ export class MemoryStore implements Store {
   readonly discoveries = new Map<string, { operatorId: string; discoveredAt: string }>();
   readonly ledger: LedgerRow[] = [];
   readonly archive = new Map<string, MemDaemon & { reason: string; archivedAt: string }>();
+  readonly tickets = new Map<string, TicketRow>();
+  /** `${operatorId}:${line}` -> points */
+  readonly research = new Map<string, number>();
+  /** Wall clock for "today" (tests pin it). */
+  now: () => string = () => new Date().toISOString();
   /** Tests set this to make the next N applyIntent calls throw. */
   failNext = 0;
+
+  private researchFor(operatorId: string): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [key, points] of this.research) if (key.startsWith(`${operatorId}:`)) out[key.slice(operatorId.length + 1)] = points;
+    return out;
+  }
+
+  /** Mirrors PrismaStore's INSERT ... ON CONFLICT increment; returns the line's new total. */
+  private addResearch(operatorId: string, species: string): number {
+    const key = `${operatorId}:${getSpecies(species).line}`;
+    const points = (this.research.get(key) ?? 0) + 1;
+    this.research.set(key, points);
+    return points;
+  }
 
   async createSeed(subnet: string) {
     const row = { id: randomHex(4), seed: randomHex(16), subnet };
@@ -234,7 +346,17 @@ export class MemoryStore implements Store {
       inventory: { ...op.inventory },
       ram: mine.filter((d) => d.location === 'RAM').sort((a, b) => a.slot - b.slot).map(({ operatorId: _o, location: _l, ...rec }) => ({ ...rec })),
       diskSlots: mine.filter((d) => d.location === 'DISK').map((d) => d.slot).sort((a, b) => a - b),
+      ...this.ticketStateOf(op.id),
+      research: this.researchFor(op.id),
     };
+  }
+
+  private ticketStateOf(operatorId: string) {
+    const day = dayKey(this.now());
+    return ticketState(
+      this.ticketRows(operatorId).filter((t) => t.status === 'OPEN' || t.day === day),
+      day,
+    );
   }
 
   async applyIntent(intent: Intent, ctx: IntentContext): Promise<IntentResult> {
@@ -247,6 +369,9 @@ export class MemoryStore implements Store {
         const d = this.daemons.get(intent.daemonId)!;
         const { operatorId: _o, location: _l, ...rec } = d;
         return { ok: true, daemon: { ...rec } };
+      }
+      if (intent.kind === 'capture' || intent.kind === 'claimStarter') {
+        return { ok: true, research: this.research.get(`${intent.operatorId}:${getSpecies(intent.daemon.species).line}`) ?? 0 };
       }
       return { ok: true };
     }
@@ -262,13 +387,18 @@ export class MemoryStore implements Store {
         op.starterClaimed = true;
         op.inventory = { ...intent.inventory };
         this.daemons.set(intent.daemon.id, { ...intent.daemon, originalOperatorId: intent.log.originalOperatorId, operatorId: op.id, location: 'RAM' });
-        break;
+        const research = this.addResearch(op.id, intent.daemon.species);
+        this.applied.add(intent.id);
+        return { ok: true, research };
       }
-      case 'capture':
+      case 'capture': {
         // Mirrors the Daemon (operatorId, location, slot) unique constraint.
         if (this.slotTaken(op.id, intent.location, intent.daemon.slot)) return { ok: false, reason: 'slot taken' };
         this.daemons.set(intent.daemon.id, { ...intent.daemon, originalOperatorId: intent.log.originalOperatorId, operatorId: op.id, location: intent.location });
-        break;
+        const research = this.addResearch(op.id, intent.daemon.species);
+        this.applied.add(intent.id);
+        return { ok: true, research };
+      }
       case 'store': {
         const d = this.daemons.get(intent.daemonId);
         if (!d || d.operatorId !== op.id || d.location !== 'RAM') return { ok: false, reason: 'daemon not found' };
@@ -341,9 +471,41 @@ export class MemoryStore implements Store {
         op.inventory = withItems(op.inventory, decompileStoreGain(d, ctx.storedDaemon), 1);
         break;
       }
+      case 'acceptTicket': {
+        const problem = ticketAcceptProblem(intent, this.now()) ?? ticketCapProblem(this.ticketRows(op.id), intent);
+        if (problem) return { ok: false, reason: problem };
+        // Mirrors the Ticket primary key (a second row with this id is an error, not a domain answer).
+        if (this.tickets.has(intent.ticketId)) throw new Error(`duplicate ticket id ${intent.ticketId}`);
+        this.tickets.set(intent.ticketId, {
+          id: intent.ticketId, operatorId: op.id, day: intent.day, subnet: intent.subnet, index: intent.index, kind: intent.ticketKind, params: structuredClone(intent.params),
+          target: intent.target, reward: intent.reward, progress: 0, status: 'OPEN', acceptedAt: this.now(), completedAt: null,
+        });
+        break;
+      }
+      case 'abandonTicket': {
+        const t = this.tickets.get(intent.ticketId);
+        if (!t || t.operatorId !== op.id || t.status !== 'OPEN') return { ok: false, reason: 'no open ticket' };
+        t.status = 'ABANDONED';
+        break;
+      }
+      case 'completeTicket': {
+        const t = this.tickets.get(intent.ticketId);
+        if (!t || t.operatorId !== op.id || t.status !== 'OPEN') return { ok: false, reason: 'no open ticket' };
+        if (t.reward !== intent.reward) return { ok: false, reason: 'reward does not match the ticket' };
+        t.status = 'DONE';
+        t.progress = t.target;
+        t.completedAt = this.now();
+        op.bits += intent.reward;
+        this.ledger.push({ operatorId: op.id, delta: intent.reward, reason: 'ticket', ref: intent.ticketId, at: new Date().toISOString() });
+        break;
+      }
     }
     this.applied.add(intent.id);
     return { ok: true };
+  }
+
+  private ticketRows(operatorId: string): TicketRow[] {
+    return [...this.tickets.values()].filter((t) => t.operatorId === operatorId);
   }
 
   private slotTaken(operatorId: string, location: 'RAM' | 'DISK', slot: number): boolean {
@@ -361,6 +523,11 @@ export class MemoryStore implements Store {
         const row = this.daemons.get(d.id);
         // A record taken before an evolve committed (other species) must not roll the evolved row back.
         if (row && row.operatorId === op.id && row.location === 'RAM' && row.species === d.species) Object.assign(row, checkpointFields(d, rec.inventoryInFlight));
+      }
+      for (const t of rec.tickets) {
+        const row = this.tickets.get(t.id);
+        // Only an OPEN row's progress, and never lowered (a completion already set it to the target).
+        if (row && row.operatorId === op.id && row.status === 'OPEN' && row.progress < t.progress) row.progress = Math.min(row.target, t.progress);
       }
     }
   }

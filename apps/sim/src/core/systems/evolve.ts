@@ -5,6 +5,7 @@ import { Rejection, type Daemon, type HistoryEntry, type Input, type Intent, typ
 import type { Out } from '../out.js';
 import { INTEREST_RADIUS } from '../view.js';
 import type { World } from '../world.js';
+import { advanceTickets } from './tickets.js';
 
 /** What requirement checks see for `d` right now. */
 export function evolutionContext(world: World, op: Operator, d: Daemon): EvolutionContext {
@@ -78,6 +79,8 @@ export function completeEvolveIntent(world: World, op: Operator | undefined, int
   world.discovered.add(intent.to);
   if (result.discovered) out.emit({ e: 'discovery', form: intent.to, operator: intent.operatorId, operatorName: op?.name ?? null }, { at: null });
   if (!op) return;
+  // Every committed evolution counts once toward evolve tickets, also one replayed onto a reloaded operator.
+  advanceTickets(world, op, { kind: 'evolve' }, out);
   if (!d || d.species !== intent.from) return out.ok(intent, { species: intent.to, changes: intent.changes });
   const sp = getSpecies(intent.to);
   const liveHp = d.hp;

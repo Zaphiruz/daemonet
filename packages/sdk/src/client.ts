@@ -1,4 +1,4 @@
-import { getMove, getSubnet, typeMultiplier, type GatewayDef, type StatKey, type ToolId, type TypeId } from '@daemonet/rules';
+import { dayKey, getMove, getSubnet, ticketBoard, typeMultiplier, type GatewayDef, type StatKey, type TicketDef, type ToolId, type TypeId } from '@daemonet/rules';
 import {
   COMMANDS_PER_TICK,
   HEARTBEAT_MS,
@@ -116,6 +116,15 @@ export class WorldView {
     }
     const me = this.origin();
     return [...gateways].sort((a, b) => distance(a.at, me) - distance(b.at, me));
+  }
+
+  /** Today's helpdesk board at this subnet's host (deterministic content; accept with operator.acceptTicket). */
+  get tickets(): TicketDef[] {
+    try {
+      return ticketBoard(this.client.subnet, dayKey(new Date().toISOString()));
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -248,6 +257,13 @@ export class OperatorApi {
   /** Destroy a RAM daemon at a host for fragments; clean / signature daemons need `confirm`. */
   decompile(daemonId: string, confirm = false) {
     return this.client.command({ cmd: 'decompile', actor: 'self', args: { daemonId, confirm } });
+  }
+  /** Accept a ticket from today's board at this host (`index` 0-7). */
+  acceptTicket(index: number, subnet = this.client.subnet, day = dayKey(new Date().toISOString())) {
+    return this.client.command({ cmd: 'acceptTicket', actor: 'self', args: { day, subnet, index } });
+  }
+  abandonTicket(ticketId: string) {
+    return this.client.command({ cmd: 'abandonTicket', actor: 'self', args: { ticketId } });
   }
   /** Travel through a gateway you are standing on; resolves when the new subnet's snapshot has arrived. */
   travel(gatewayId: string) {

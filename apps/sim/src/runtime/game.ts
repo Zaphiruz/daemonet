@@ -343,7 +343,7 @@ export class Game {
       session.buffer = [];
       session.baseTick = world.tick;
     }
-    const entities = entitiesNear(world, op.x, op.y, this.radius);
+    const entities = entitiesNear(world, op.x, op.y, this.radius, op);
     const self = toSelf(world, op);
     st.known = new Map(entities.map((e) => [e.id, e]));
     st.lastSelf = JSON.stringify(self);
@@ -446,10 +446,10 @@ export class Game {
     if (this.ticks % this.checkpointEvery === 0) this.checkpointAll();
     for (const session of [...this.sessions.values()]) {
       // A travelling operator leaves once the hand-off has settled (from whichever world it ends up in).
-      // An intent that rewrites the inventory in the store (buy / craft / decompile / claimStarter) settles first too:
-      // the leave checkpoint then carries its outcome, and a reconnect meanwhile resumes this session (so it can never
-      // claim or spend again on a reload that predates the intent).
-      if (!session.controller && session.leaveAtTick !== null && session.leaveAtTick <= this.ticks && !this.travelling(session) && !this.inventoryInFlight(session)) {
+      // An economy intent (buy / craft / decompile, ticket accept / abandon / payout) or a starter claim settles first
+      // too: the leave checkpoint then carries its outcome, and a reconnect meanwhile resumes this session (so it can
+      // never claim, spend, accept or be paid again on a reload that predates the intent).
+      if (!session.controller && session.leaveAtTick !== null && session.leaveAtTick <= this.ticks && !this.travelling(session) && !this.economyInFlight(session)) {
         this.leave(session);
       }
     }
@@ -489,7 +489,7 @@ export class Game {
       const events = result.events
         .filter((e) => (e.to === null ? e.at === null || distance(e.at, op) <= this.radius : e.to === op.id))
         .map((e) => e.event);
-      const near = entitiesNear(world, op.x, op.y, this.radius);
+      const near = entitiesNear(world, op.x, op.y, this.radius, op);
       const self = toSelf(world, op);
       const selfJson = JSON.stringify(self);
       const targets = session.controller ? [session.controller, ...session.spectators] : [...session.spectators];
@@ -513,9 +513,9 @@ export class Game {
     return session.world.operators.get(session.operatorId)?.travelling === true;
   }
 
-  /** The same predicate that makes checkpoints skip the inventory (`World.inventoryInFlight`). */
-  private inventoryInFlight(session: Session): boolean {
-    return session.world.inventoryInFlight(session.operatorId);
+  /** Any economy intent or starter claim of the operator still pending (`World.economyInFlight`). */
+  private economyInFlight(session: Session): boolean {
+    return session.world.economyInFlight(session.operatorId);
   }
 
   private leave(session: Session): void {
@@ -607,13 +607,15 @@ export class Game {
     // store / decompile write (archive) the daemon's current state along with the move.
     const stored = intent.kind === 'store' || intent.kind === 'decompile' ? world.daemons.get(intent.daemonId) : undefined;
     const ctx = { seedId: world.seedId, ...(stored ? { storedDaemon: world.toRecord(stored) } : {}) };
-    // A travel rewrites the operator's subnet and position, and an economy intent its inventory: each must commit
-    // after every checkpoint taken before it (a checkpoint taken while it is pending leaves the inventory alone).
+    // A travel rewrites the operator's subnet and position, and an economy intent its bits, inventory or ticket rows:
+    // each must commit after every checkpoint taken before it (a checkpoint taken while an inventory intent is pending
+    // leaves the inventory alone; one taken while a ticket intent is pending only writes progress of OPEN rows).
     const ordered = intent.kind === 'travel' || isEconomyIntent(intent);
     const apply = () => (ordered ? this.serialized(() => this.store.applyIntent(intent, ctx)) : this.store.applyIntent(intent, ctx));
     // A thrown error leaves the outcome unknown (the commit may have landed). For an intent whose refund would be
     // written over a committed result by the next checkpoint (economy: bits / items; capture: the consumed tool;
-    // claimStarter: the starting inventory), a
+    // claimStarter: the starting inventory), or whose invented failure would desync the world from the store (tickets:
+    // a revert of a committed accept frees a cap slot, a failed payout would be raised again), a
     // failure is never synthesized: the same intent is retried (idempotent by id) until the store answers. Shutdown
     // abandons it still pending, so the final checkpoint leaves the inventory to the store. An error that persists past
     // the retry cap (a store bug, or a long outage) still invents no outcome: retrying stops and the operator reloads

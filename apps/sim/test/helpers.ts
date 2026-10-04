@@ -72,6 +72,11 @@ export function operatorRecord(id: string, overrides: Partial<OperatorRecord> = 
     inventory: { sniff: 8, tap: 2, mirror: 2, dump: 2, restore: 2 },
     ram: [ownedRecord('pingling', 20, 0, `${id}-d0`), ownedRecord('glitchmite', 20, 1, `${id}-d1`)],
     diskSlots: [],
+    tickets: [],
+    ticketsToday: 0,
+    ticketsDay: '2026-09-30',
+    acceptedToday: [],
+    research: {},
     ...overrides,
   };
 }

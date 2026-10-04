@@ -14,7 +14,7 @@ import {
 } from '../src/game/sandbox.ts';
 
 const self: OperatorSelf = {
-  id: 'op1', name: 'alice', starterClaimed: true, x: 5, y: 5, bits: 0, diskCapacity: 256, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
+  id: 'op1', name: 'alice', starterClaimed: true, x: 5, y: 5, bits: 0, diskCapacity: 256, tickets: [], ticketsToday: 0, research: {}, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
 };
 
 type Handler = (v: unknown) => void;

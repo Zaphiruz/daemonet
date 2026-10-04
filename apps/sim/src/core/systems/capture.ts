@@ -17,9 +17,10 @@ import { distance } from '../grid.js';
 import { Rejection, type Capture, type Intent, type IntentResult, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import { toRamDaemon } from '../view.js';
-import type { World } from '../world.js';
+import { addResearch, type World } from '../world.js';
 import { FLEE_MS } from './ai.js';
 import { awardXp } from './progress.js';
+import { advanceTickets } from './tickets.js';
 
 export function startCapture(world: World, op: Operator, args: { targetId: string; tool: ToolId }, out: Out): string {
   if (op.captureId) throw new Rejection('E_STATE', 'a capture is already active');
@@ -165,8 +166,13 @@ export function completeCaptureIntent(world: World, op: Operator, intent: Extrac
     out.emit({ e: 'captureResult', captureId: intent.captureId, ok: false, reason: 'persist_failed' }, { to: op.id });
     return;
   }
+  // Research and tickets count the capture once, for the operator who made it (a reload after the commit already
+  // loaded the research point: see addResearch).
+  const reloaded = intent.location === 'RAM' && world.ownsDaemon(op, intent.daemon.id);
+  const line = addResearch(op, intent.daemon.species, result, reloaded);
+  advanceTickets(world, op, { kind: 'capture', line: Number(line), level: intent.daemon.level }, out);
   if (intent.location === 'RAM') {
-    const d = world.ownsDaemon(op, intent.daemon.id) ? world.daemons.get(intent.daemon.id)! : world.addOwned(op, intent.daemon);
+    const d = reloaded ? world.daemons.get(intent.daemon.id)! : world.addOwned(op, intent.daemon);
     out.emit({ e: 'captureResult', captureId: intent.captureId, ok: true, daemon: toRamDaemon(world, d) }, { to: op.id });
   } else {
     out.emit({ e: 'captureResult', captureId: intent.captureId, ok: true }, { to: op.id });

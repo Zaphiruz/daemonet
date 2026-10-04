@@ -21,6 +21,7 @@ import type { World } from '../world.js';
 import { startCapture, submitCapture } from './capture.js';
 import { buy, craft, decompile } from './economy.js';
 import { evolve } from './evolve.js';
+import { abandonTicket, acceptTicket } from './tickets.js';
 import { restoreDaemon } from './upkeep.js';
 
 export const LEASH_TILES = 8;
@@ -150,6 +151,10 @@ function handle(world: World, input: Input, out: Out): void {
     case 'decompile':
       requireAtHost(world, op);
       return decompile(world, op, ownedDaemon(world, op, c.args.daemonId), c.args.confirm, input, out);
+    case 'acceptTicket':
+      return acceptTicket(world, op, c.args, input, out);
+    case 'abandonTicket':
+      return abandonTicket(world, op, c.args.ticketId, input, out);
     case 'restoreAll':
       requireAtHost(world, op);
       op.path = [];

@@ -1,6 +1,6 @@
 import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient } from '@daemonet/db';
 import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
-import { DISK_EXPANSION_ITEM, DISK_STEP } from '@daemonet/rules';
+import { DISK_EXPANSION_ITEM, DISK_STEP, dayKey, getSpecies, type TicketKind, type TicketParams } from '@daemonet/rules';
 import {
   checkpointFields,
   decompileProblem,
@@ -10,6 +10,9 @@ import {
   missingItem,
   randomHex,
   stateFields as memStateFields,
+  ticketAcceptProblem,
+  ticketCapProblem,
+  ticketState,
   withItems,
   type IntentContext,
   type LedgerRow,
@@ -81,6 +84,21 @@ class DomainFailure extends Error {}
 
 type Tx = Prisma.TransactionClient;
 
+const jsonParams = (p: TicketParams): Prisma.InputJsonValue => p as unknown as Prisma.InputJsonValue;
+
+/**
+ * One Codex research point for the daemon's line, as INSERT ... ON CONFLICT DO UPDATE (never a Research_pkey P2002, even
+ * for concurrent captures of one line); returns the line's new total.
+ */
+async function addResearch(tx: Tx, operatorId: string, species: string): Promise<number> {
+  const line = getSpecies(species).line;
+  const rows = await tx.$queryRaw<Array<{ points: number }>>`
+    INSERT INTO "Research" ("operatorId", "line", "points") VALUES (${operatorId}, ${line}, 1)
+    ON CONFLICT ("operatorId", "line") DO UPDATE SET "points" = "Research"."points" + 1
+    RETURNING "points"`;
+  return Number(rows[0]!.points);
+}
+
 /**
  * Locks the operator row (FOR NO KEY UPDATE: it never changes the key, so foreign-key checks are not blocked) for the
  * rest of the transaction and returns its economy columns. Every economy intent takes
@@ -131,6 +149,11 @@ export class PrismaStore implements Store {
       if (!isUniqueViolation(err) || !/Operator_sub_key|\(`sub`\)/.test(violatedConstraint(err))) throw err;
       op = await upsert();
     }
+    const day = dayKey(new Date().toISOString());
+    const [tickets, research] = await Promise.all([
+      this.prisma.ticket.findMany({ where: { operatorId: op.id, OR: [{ status: 'OPEN' }, { day }] }, orderBy: { acceptedAt: 'asc' } }),
+      this.prisma.research.findMany({ where: { operatorId: op.id } }),
+    ]);
     return {
       id: op.id,
       name: op.name,
@@ -143,6 +166,11 @@ export class PrismaStore implements Store {
       inventory: (op.inventory ?? {}) as Record<string, number>,
       ram: op.daemons.filter((d) => d.location === 'RAM').map(toRecord),
       diskSlots: op.daemons.filter((d) => d.location === 'DISK').map((d) => d.slot),
+      ...ticketState(
+        tickets.map((t) => ({ ...t, kind: t.kind as TicketKind, params: t.params as unknown as TicketParams })),
+        day,
+      ),
+      research: Object.fromEntries(research.map((r) => [String(r.line), r.points])),
     };
   }
 
@@ -176,7 +204,7 @@ export class PrismaStore implements Store {
                 spawnIndex: intent.log.spawnIndex,
               },
             });
-            return { ok: true } as const;
+            return { ok: true, research: await addResearch(tx, intent.operatorId, d.species) } as const;
           }
           case 'capture': {
             const d = intent.daemon;
@@ -192,7 +220,7 @@ export class PrismaStore implements Store {
                 spawnIndex: intent.log.spawnIndex,
               },
             });
-            return { ok: true } as const;
+            return { ok: true, research: await addResearch(tx, intent.operatorId, d.species) } as const;
           }
           case 'store': {
             const res = await tx.daemon.updateMany({
@@ -287,6 +315,44 @@ export class PrismaStore implements Store {
             await tx.operator.update({ where: { id: intent.operatorId }, data: { inventory: withItems(op.inventory, decompileStoreGain(row, ctx.storedDaemon), 1) } });
             return { ok: true } as const;
           }
+          case 'acceptTicket': {
+            // The operator lock serializes accepts of one operator, so the cap counts see each other's rows.
+            await lockOperator(tx, intent.operatorId);
+            const rows = await tx.ticket.findMany({
+              where: { operatorId: intent.operatorId, OR: [{ status: 'OPEN' }, { day: intent.day }] },
+              select: { day: true, subnet: true, index: true, status: true },
+            });
+            const problem = ticketAcceptProblem(intent, now.toISOString()) ?? ticketCapProblem(rows, intent);
+            if (problem) throw new DomainFailure(problem);
+            await tx.ticket.create({
+              data: {
+                id: intent.ticketId, operatorId: intent.operatorId, day: intent.day, subnet: intent.subnet, index: intent.index, kind: intent.ticketKind,
+                params: jsonParams(intent.params), target: intent.target, reward: intent.reward, acceptedAt: now,
+              },
+            });
+            return { ok: true } as const;
+          }
+          case 'abandonTicket': {
+            await lockOperator(tx, intent.operatorId);
+            const res = await tx.ticket.updateMany({ where: { id: intent.ticketId, operatorId: intent.operatorId, status: 'OPEN' }, data: { status: 'ABANDONED' } });
+            if (res.count !== 1) throw new DomainFailure('no open ticket');
+            return { ok: true } as const;
+          }
+          case 'completeTicket': {
+            await lockOperator(tx, intent.operatorId);
+            const row = await tx.ticket.findUnique({ where: { id: intent.ticketId } });
+            if (!row || row.operatorId !== intent.operatorId || row.status !== 'OPEN') throw new DomainFailure('no open ticket');
+            if (row.reward !== intent.reward) throw new DomainFailure('reward does not match the ticket');
+            // Conditional on OPEN: the row moves to DONE once, and only that transaction pays.
+            const res = await tx.ticket.updateMany({
+              where: { id: intent.ticketId, operatorId: intent.operatorId, status: 'OPEN' },
+              data: { status: 'DONE', progress: row.target, completedAt: now },
+            });
+            if (res.count !== 1) throw new DomainFailure('no open ticket');
+            await tx.operator.update({ where: { id: intent.operatorId }, data: { bits: { increment: BigInt(intent.reward) } } });
+            await tx.bitsLedger.create({ data: { operatorId: intent.operatorId, delta: BigInt(intent.reward), reason: 'ticket', ref: intent.ticketId } });
+            return { ok: true } as const;
+          }
         }
       });
     } catch (err) {
@@ -299,6 +365,10 @@ export class PrismaStore implements Store {
           if (replay) return replay;
         }
         if (intent.kind === 'claimStarter' && violated.includes('Operator_name_key')) return { ok: false, reason: 'name taken' };
+        // A concurrent accept of the same board entry committed first (the cap check could not see it yet).
+        if (intent.kind === 'acceptTicket' && (violated.includes('Ticket_operatorId_day_subnet_index_key') || /\(`operatorId`,`day`,`subnet`,`index`\)|operatorId,day,subnet,index/.test(violated))) {
+          return { ok: false, reason: 'already accepted' };
+        }
         // The slot is occupied (the runtime retries unknown outcomes of these kinds until the store answers, so a
         // deterministic conflict must be a domain answer, not an error).
         if (violated.includes('Daemon_operatorId_location_slot_key') || /\(`operatorId`,`location`,`slot`\)|operatorId,location,slot/.test(violated)) {
@@ -311,9 +381,13 @@ export class PrismaStore implements Store {
   }
 
   /** The stored result when this intent was already applied, else null. */
-  private async replayed(db: Pick<PrismaClient, 'appliedAction' | 'daemon'>, intent: Intent): Promise<IntentResult | null> {
+  private async replayed(db: Pick<PrismaClient, 'appliedAction' | 'daemon' | 'research'>, intent: Intent): Promise<IntentResult | null> {
     const done = await db.appliedAction.findUnique({ where: { key: intent.id } });
     if (!done) return null;
+    if (intent.kind === 'capture' || intent.kind === 'claimStarter') {
+      const r = await db.research.findUnique({ where: { operatorId_line: { operatorId: intent.operatorId, line: getSpecies(intent.daemon.species).line } } });
+      return { ok: true, research: r?.points ?? 0 };
+    }
     if (intent.kind !== 'load') return { ok: true };
     const row = await db.daemon.findUniqueOrThrow({ where: { id: intent.daemonId } });
     return { ok: true, daemon: toRecord(row) };
@@ -332,6 +406,10 @@ export class PrismaStore implements Store {
         for (const d of rec.ram) {
           // `species` guard: a record taken before an evolve committed must not roll the evolved row back.
           await tx.daemon.updateMany({ where: { id: d.id, operatorId: rec.id, location: 'RAM', species: d.species }, data: { ...checkpointFields(d, rec.inventoryInFlight), history: json(d.history) } });
+        }
+        for (const t of rec.tickets) {
+          // Only an OPEN row's progress, and never lowered (a completion already set it to the target).
+          await tx.ticket.updateMany({ where: { id: t.id, operatorId: rec.id, status: 'OPEN', progress: { lt: t.progress } }, data: { progress: t.progress } });
         }
       }
     });

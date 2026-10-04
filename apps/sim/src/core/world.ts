@@ -16,7 +16,7 @@ import {
   type SubnetDef,
 } from '@daemonet/rules';
 import { Grid, type Point } from './grid.js';
-import { freshEngagement, isEconomyIntent, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
+import { freshEngagement, isEconomyIntent, isInventoryIntent, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
 import { Out } from './out.js';
 import { planWild } from './systems/ai.js';
 import { executeQueuedUses, type QueuedUse } from './systems/combat.js';
@@ -27,8 +27,22 @@ import { completeEvolveIntent } from './systems/evolve.js';
 import { moveAll } from './systems/movement.js';
 import { resolveDefeats } from './systems/progress.js';
 import { runSpawner } from './systems/spawner.js';
+import { checkTickets, completeTicketIntent } from './systems/tickets.js';
 import { upkeep } from './systems/upkeep.js';
 import { toRamDaemon } from './view.js';
+
+/**
+ * One Codex research point for a committed capture / claim of `species` (design §7.2). The store reports the line's
+ * committed total (taken as is, never lowering it); without it, a completion onto an operator that was reloaded after the
+ * commit (`reloaded`: its record already counted the point) adds nothing.
+ */
+export function addResearch(op: Operator, species: string, result: IntentResult, reloaded: boolean): string {
+  const line = String(getSpecies(species).line);
+  const before = op.research[line] ?? 0;
+  const after = result.ok && result.research !== undefined ? Math.max(before, result.research) : reloaded ? before : before + 1;
+  op.research[line] = after;
+  return line;
+}
 
 export interface WorldOptions {
   subnet: SubnetDef;
@@ -120,6 +134,11 @@ export class World {
       hitTick: -1,
       pendingClaim: false,
       travelling: false,
+      tickets: rec.tickets.map((t) => ({ ...t, params: { ...t.params }, pending: false, completing: false })),
+      ticketsToday: rec.ticketsToday,
+      ticketsDay: rec.ticketsDay,
+      acceptedKeys: new Set(rec.acceptedToday),
+      research: { ...rec.research },
     };
     this.operators.set(op.id, op);
     for (const d of [...rec.ram].sort((a, b) => a.slot - b.slot)) this.addOwned(op, d);
@@ -163,12 +182,27 @@ export class World {
       inventory: { ...op.inventory },
       ram: op.ram.map((id) => this.toRecord(this.daemons.get(id)!)),
       diskSlots: [...op.diskSlots].sort((a, b) => a - b),
+      // A ticket waiting for its accept has no row yet; one waiting for its abandon keeps its last progress.
+      tickets: op.tickets.filter((t) => !t.pending).map((t) => ({ ...t, params: { ...t.params } })),
+      ticketsToday: op.ticketsToday,
+      ticketsDay: op.ticketsDay,
+      acceptedToday: [...op.acceptedKeys],
+      research: { ...op.research },
       ...(this.inventoryInFlight(op.id) ? { inventoryInFlight: true } : {}),
     };
   }
 
   /** True while an intent that rewrites the operator's inventory in the store is pending (see OperatorRecord). */
   inventoryInFlight(operatorId: string): boolean {
+    for (const i of this.pending.values()) if (i.operatorId === operatorId && isInventoryIntent(i)) return true;
+    return false;
+  }
+
+  /**
+   * True while an economy intent (bits, inventory or tickets) or a starter claim of the operator is pending: a leave
+   * waits for it, so the leave checkpoint carries its outcome and a reconnect meanwhile resumes this session.
+   */
+  economyInFlight(operatorId: string): boolean {
     for (const i of this.pending.values()) if (i.operatorId === operatorId && (isEconomyIntent(i) || i.kind === 'claimStarter')) return true;
     return false;
   }
@@ -398,7 +432,9 @@ export class World {
         op.name = intent.name;
         op.starterClaimed = true;
         op.inventory = { ...intent.inventory };
-        if (!this.ownsDaemon(op, intent.daemon.id)) this.addOwned(op, intent.daemon);
+        const reloaded = this.ownsDaemon(op, intent.daemon.id);
+        addResearch(op, intent.daemon.species, result, reloaded);
+        if (!reloaded) this.addOwned(op, intent.daemon);
         return out.ok(intent, { daemonId: intent.daemon.id });
       }
       case 'capture':
@@ -429,6 +465,10 @@ export class World {
       case 'craft':
       case 'decompile':
         return completeEconomyIntent(this, op, intent, result, out);
+      case 'acceptTicket':
+      case 'abandonTicket':
+      case 'completeTicket':
+        return completeTicketIntent(this, op, intent, result, out);
     }
   }
 
@@ -447,6 +487,7 @@ export class World {
     progressCaptures(this, out);
     if (this.spawnerEnabled) runSpawner(this, out, false);
     upkeep(this, out);
+    checkTickets(this, out);
     return { tick: this.tick, events: out.events, replies: out.replies, intents: out.intents };
   }
 }

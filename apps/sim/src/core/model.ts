@@ -1,4 +1,4 @@
-import type { Behaviour, EvolutionChange, StatBlock, StatusId, ToolId, TypeId, Challenge } from '@daemonet/rules';
+import type { Behaviour, EvolutionChange, StatBlock, StatusId, TicketKind, TicketParams, ToolId, TypeId, Challenge } from '@daemonet/rules';
 import type { Command, ErrorCode, GameEvent } from '@daemonet/shared';
 import type { Point } from './grid.js';
 
@@ -38,6 +38,23 @@ export interface OwnedDaemonRecord {
   originalOperatorId: string | null;
 }
 
+/** An accepted, still-open ticket as the sim tracks it. */
+export interface OpenTicket {
+  id: string;
+  day: string;
+  subnet: string;
+  index: number;
+  kind: TicketKind;
+  params: TicketParams;
+  target: number;
+  reward: number;
+  progress: number;
+  /** Waiting for the accept / abandon intent. */
+  pending: boolean;
+  /** Completion intent in flight. */
+  completing: boolean;
+}
+
 /** What the runtime loads from the DB when an operator connects. */
 export interface OperatorRecord {
   id: string;
@@ -54,6 +71,15 @@ export interface OperatorRecord {
   ram: OwnedDaemonRecord[];
   /** Occupied Disk slots (0-255). */
   diskSlots: number[];
+  /** Open tickets (with progress) and today's accepted count. */
+  tickets: OpenTicket[];
+  ticketsToday: number;
+  /** UTC day `ticketsToday` counts (YYYY-MM-DD). */
+  ticketsDay: string;
+  /** Keys (day:subnet:index) of every ticket accepted today, open or not. */
+  acceptedToday: string[];
+  /** Codex research points per bestiary line. */
+  research: Record<string, number>;
   /**
    * Set on checkpoint records while an intent that rewrites the inventory in the store (buy, craft, decompile,
    * claimStarter) is in flight: the store must leave `inventory` alone so it can neither rewind a committed intent
@@ -160,6 +186,11 @@ export interface Operator {
   pendingClaim: boolean;
   /** Locked by a pending travel intent. */
   travelling: boolean;
+  tickets: OpenTicket[];
+  ticketsToday: number;
+  ticketsDay: string;
+  acceptedKeys: Set<string>;
+  research: Record<string, number>;
 }
 
 export interface Capture {
@@ -223,18 +254,60 @@ export type Intent =
       output: { item: string; qty: number };
     }
   /** `fragments` also carries the daemon's held item (it returns to the inventory). */
-  | { id: string; kind: 'decompile'; operatorId: string; reqId: string; daemonId: string; species: string; fragments: Record<string, number>; history: HistoryEntry };
+  | { id: string; kind: 'decompile'; operatorId: string; reqId: string; daemonId: string; species: string; fragments: Record<string, number>; history: HistoryEntry }
+  | {
+      id: string;
+      kind: 'acceptTicket';
+      operatorId: string;
+      reqId: string;
+      ticketId: string;
+      day: string;
+      subnet: string;
+      index: number;
+      ticketKind: TicketKind;
+      params: TicketParams;
+      target: number;
+      reward: number;
+    }
+  | { id: string; kind: 'abandonTicket'; operatorId: string; reqId: string; ticketId: string }
+  /** Raised by the sim itself (no reqId): pays the reward and closes the row. */
+  | { id: string; kind: 'completeTicket'; operatorId: string; ticketId: string; reward: number };
 
-/** Intent kinds that spend bits or rewrite the operator's inventory in the store. */
-export const ECONOMY_INTENTS = ['buy', 'craft', 'decompile'] as const;
+/** Shop, crafting and decompile: intents that spend bits or rewrite the operator's inventory in the store. */
+export const SHOP_INTENTS = ['buy', 'craft', 'decompile'] as const;
+export type ShopIntent = Extract<Intent, { kind: (typeof SHOP_INTENTS)[number] }>;
+
+/**
+ * Intent kinds that move bits, the inventory or tickets in the store (SP3b economy contract). Each is serialized behind
+ * every earlier store write, retried (same id) until the store answers definitively, and awaited by a leave.
+ */
+export const ECONOMY_INTENTS = [...SHOP_INTENTS, 'acceptTicket', 'abandonTicket', 'completeTicket'] as const;
 export type EconomyIntent = Extract<Intent, { kind: (typeof ECONOMY_INTENTS)[number] }>;
 
 export function isEconomyIntent(intent: Intent): intent is EconomyIntent {
   return (ECONOMY_INTENTS as readonly string[]).includes(intent.kind);
 }
 
-/** `discovered`: an evolve intent created the first Discovery row for its form. */
-export type IntentResult = { ok: true; daemon?: OwnedDaemonRecord; discovered?: boolean } | { ok: false; reason: string };
+/**
+ * Intents that rewrite the operator's inventory (or a held item) in the store: while one is pending, checkpoints leave
+ * the inventory to the store (`OperatorRecord.inventoryInFlight`). Ticket intents never touch the inventory.
+ */
+export function isInventoryIntent(intent: Intent): boolean {
+  return (SHOP_INTENTS as readonly string[]).includes(intent.kind) || intent.kind === 'claimStarter';
+}
+
+export type TicketIntent = Extract<Intent, { kind: 'acceptTicket' | 'abandonTicket' | 'completeTicket' }>;
+
+export function isTicketIntent(intent: Intent): intent is TicketIntent {
+  return intent.kind === 'acceptTicket' || intent.kind === 'abandonTicket' || intent.kind === 'completeTicket';
+}
+
+/**
+ * `discovered`: an evolve intent created the first Discovery row for its form. `research`: for capture / claimStarter,
+ * the daemon's line's research points in the store after the commit (also on a replay), so a replayed completion never
+ * counts the point twice.
+ */
+export type IntentResult = { ok: true; daemon?: OwnedDaemonRecord; discovered?: boolean; research?: number } | { ok: false; reason: string };
 
 export interface Input {
   operatorId: string;

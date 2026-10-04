@@ -14,7 +14,7 @@ import {
   type RecipeDef,
   type TypeId,
 } from '@daemonet/rules';
-import { Rejection, type Daemon, type EconomyIntent, type Input, type IntentResult, type Operator } from '../model.js';
+import { Rejection, type Daemon, type ShopIntent, type Input, type IntentResult, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
 
@@ -133,7 +133,7 @@ export function decompile(world: World, op: Operator, d: Daemon, confirm: boolea
   );
 }
 
-export function completeEconomyIntent(world: World, op: Operator, intent: EconomyIntent, result: IntentResult, out: Out): void {
+export function completeEconomyIntent(world: World, op: Operator, intent: ShopIntent, result: IntentResult, out: Out): void {
   switch (intent.kind) {
     case 'buy': {
       const disk = intent.itemId === DISK_EXPANSION_ITEM;

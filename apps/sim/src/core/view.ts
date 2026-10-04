@@ -1,9 +1,10 @@
-import { statBlockToArray, type StatusId } from '@daemonet/rules';
+import { STAT_KEYS, getSpecies, statBlockToArray, type StatusId } from '@daemonet/rules';
 import { evolutionOptions } from '@daemonet/rules/evolution';
 import type { Entity, OperatorSelf, RamDaemon } from '@daemonet/shared';
 import { distance } from './grid.js';
 import type { Daemon, Operator } from './model.js';
 import { evolutionContext } from './systems/evolve.js';
+import { boardTicket } from './systems/tickets.js';
 import type { World } from './world.js';
 
 export const INTEREST_RADIUS = 32;
@@ -11,7 +12,31 @@ export const INTEREST_RADIUS = 32;
 const activeStatuses = (world: World, d: Daemon): StatusId[] =>
   (Object.entries(d.statuses) as Array<[StatusId, number]>).filter(([, until]) => until > world.tick).map(([s]) => s);
 
-export function toDaemonEntity(world: World, d: Daemon): Entity {
+/** Research thresholds (design §7.2): 4 → nature (HP is always exact), 16 → IV buckets, 64 → exact IVs. */
+export const SCAN_NATURE = 4;
+export const SCAN_BUCKETS = 16;
+export const SCAN_IVS = 64;
+export const SCAN_HINTS = 256;
+
+type Scan = NonNullable<Extract<Entity, { kind: 'daemon' }>['scan']>;
+
+/**
+ * What `viewer`'s Codex research reveals about a wild daemon, or undefined. Only the viewer's own projection carries it
+ * (spectators of the viewer's session are the same account); it never contains evolution requirement data.
+ */
+function scanFor(viewer: Operator | undefined, d: Daemon): Scan | undefined {
+  if (!viewer || !d.wild) return undefined;
+  const points = viewer.research[String(getSpecies(d.species).line)] ?? 0;
+  if (points < SCAN_NATURE) return undefined;
+  const scan: Scan = { nature: d.nature };
+  if (points >= SCAN_BUCKETS) scan.ivBuckets = STAT_KEYS.map((k) => Math.floor(d.ivs[k] / 8));
+  if (points >= SCAN_IVS) scan.ivs = statBlockToArray(d.ivs);
+  return scan;
+}
+
+/** `viewer` adds the scan fields its research unlocks (wild daemons only); without a viewer there are none. */
+export function toDaemonEntity(world: World, d: Daemon, viewer?: Operator): Entity {
+  const scan = scanFor(viewer, d);
   return {
     kind: 'daemon',
     id: d.id,
@@ -28,6 +53,7 @@ export function toDaemonEntity(world: World, d: Daemon): Entity {
     signature: d.signature,
     statuses: activeStatuses(world, d),
     hardened: (d.wild?.hardenedUntil ?? 0) > world.tick,
+    ...(scan ? { scan } : {}),
   };
 }
 
@@ -81,6 +107,22 @@ export function toSelf(world: World, op: Operator): OperatorSelf {
     y: op.y,
     bits: op.bits,
     diskCapacity: op.diskCapacity,
+    tickets: op.tickets
+      .filter((t) => !t.pending)
+      .map((t) => ({
+        id: t.id,
+        day: t.day,
+        subnet: t.subnet,
+        index: t.index,
+        kind: t.kind,
+        params: t.params,
+        target: t.target,
+        reward: t.reward,
+        progress: t.progress,
+        title: boardTicket(t.subnet, t.day, t.index)?.title ?? t.kind,
+      })),
+    ticketsToday: op.ticketsToday,
+    research: { ...op.research },
     ram: op.ram.map((id) => toRamDaemon(world, world.daemons.get(id)!)).sort((a, b) => a.slot - b.slot),
     running: [...op.running],
     inventory: { ...op.inventory },
@@ -89,11 +131,11 @@ export function toSelf(world: World, op: Operator): OperatorSelf {
   };
 }
 
-/** Every operator and active daemon within `radius` of (x, y). */
-export function entitiesNear(world: World, x: number, y: number, radius = INTEREST_RADIUS): Entity[] {
+/** Every operator and active daemon within `radius` of (x, y), projected for `viewer` (scans). */
+export function entitiesNear(world: World, x: number, y: number, radius = INTEREST_RADIUS, viewer?: Operator): Entity[] {
   const at = { x, y };
   const out: Entity[] = [];
   for (const op of world.operators.values()) if (distance(op, at) <= radius) out.push(toOperatorEntity(op));
-  for (const d of world.daemons.values()) if (d.active && distance(d, at) <= radius) out.push(toDaemonEntity(world, d));
+  for (const d of world.daemons.values()) if (d.active && distance(d, at) <= radius) out.push(toDaemonEntity(world, d, viewer));
   return out;
 }

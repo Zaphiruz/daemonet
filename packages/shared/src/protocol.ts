@@ -44,6 +44,8 @@ export const Command = z.discriminatedUnion('cmd', [
     args: z.object({ recipeId: Id, qty: z.number().int().min(1).max(CRAFT_MAX_QTY).default(1), using: TypeIdSchema.optional() }),
   }),
   z.object({ cmd: z.literal('decompile'), actor: Self, args: z.object({ daemonId: Id, confirm: z.boolean().default(false) }) }),
+  z.object({ cmd: z.literal('acceptTicket'), actor: Self, args: z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), subnet: Id, index: z.number().int().min(0).max(7) }) }),
+  z.object({ cmd: z.literal('abandonTicket'), actor: Self, args: z.object({ ticketId: Id }) }),
   z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
   z.object({ cmd: z.literal('store'), actor: Self, args: z.object({ daemonId: Id }) }),
@@ -108,6 +110,15 @@ export const DaemonEntity = z.object({
   signature: z.number().int().min(0).max(15),
   statuses: z.array(StatusSchema),
   hardened: z.boolean(),
+  /** Wild daemons only: what the viewer's Codex research reveals (design §7.2). */
+  scan: z
+    .object({
+      nature: z.number().int().optional(),
+      /** IV buckets 0-3 (0-7, 8-15, 16-23, 24-31), STAT_KEYS order. */
+      ivBuckets: z.array(z.number().int().min(0).max(3)).length(8).optional(),
+      ivs: z.array(z.number().int()).length(8).optional(),
+    })
+    .optional(),
 });
 
 export const Entity = z.discriminatedUnion('kind', [OperatorEntity, DaemonEntity]);
@@ -168,6 +179,25 @@ export const OperatorSelf = z.object({
   y: Coord,
   bits: z.number().int(),
   diskCapacity: z.number().int(),
+  /** Open helpdesk tickets. */
+  tickets: z.array(
+    z.object({
+      id: Id,
+      day: z.string(),
+      subnet: Id,
+      index: z.number().int(),
+      kind: z.enum(['clear', 'capture', 'deliver', 'evolve']),
+      params: z.unknown(),
+      target: z.number().int(),
+      reward: z.number().int(),
+      progress: z.number().int(),
+      title: z.string(),
+    }),
+  ),
+  /** Tickets accepted today (UTC), of TICKETS_PER_DAY. */
+  ticketsToday: z.number().int(),
+  /** Codex research points per bestiary line (keys are line numbers). */
+  research: z.record(z.string(), z.number().int()),
   ram: z.array(RamDaemon).max(8),
   running: z.array(Id).max(2),
   inventory: z.record(z.string(), z.number().int().nonnegative()),
@@ -213,6 +243,8 @@ export const GameEvent = z.discriminatedUnion('e', [
   z.object({ e: z.literal('travelled'), from: z.string(), to: z.string() }),
   z.object({ e: z.literal('bits'), delta: z.number().int(), reason: z.string(), balance: z.number().int() }),
   z.object({ e: z.literal('decompiled'), daemon: Id, species: z.string(), fragments: z.record(z.string(), z.number().int()) }),
+  z.object({ e: z.literal('ticketProgress'), ticketId: Id, progress: z.number().int(), target: z.number().int() }),
+  z.object({ e: z.literal('ticketDone'), ticketId: Id, reward: z.number().int() }),
 ]);
 export type GameEvent = z.infer<typeof GameEvent>;
 

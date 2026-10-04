@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createBridge, type BridgeOptions } from '../src/bridge.js';
 
 const self: OperatorSelf = {
-  id: 'op1', name: 'alice', starterClaimed: true, x: 5, y: 5, bits: 0, diskCapacity: 256, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
+  id: 'op1', name: 'alice', starterClaimed: true, x: 5, y: 5, bits: 0, diskCapacity: 256, tickets: [], ticketsToday: 0, research: {}, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
 };
 const state = () => ({ operatorId: 'op1', role: 'controller' as const, tick: 40, subnet: 'lo', self, entities: [] });
 /** Ports deliver asynchronously; wait (a few macrotasks) until `pred` holds. */

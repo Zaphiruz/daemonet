@@ -1,5 +1,5 @@
 import { createPrisma, type PrismaClient } from '@daemonet/db';
-import { decompileYield, fragmentId, getSpecies } from '@daemonet/rules';
+import { TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, getSpecies, ticketBoard } from '@daemonet/rules';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Intent, OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
@@ -31,6 +31,12 @@ function evolve(id: string, operatorId: string, daemonId: string): Intent {
   };
 }
 
+/** A real accept of today's (UTC) `lo` board entry `index` (the stores check the day against their clock). */
+function acceptLo(operatorId: string, index: number, id = `i-acc-${index}`, ticketId = `abcd1234-t${index}`, day = dayKey(new Date().toISOString())): Extract<Intent, { kind: 'acceptTicket' }> {
+  const def = ticketBoard('lo', day)[index]!;
+  return { id, kind: 'acceptTicket', operatorId, reqId: 'r', ticketId, day, subnet: 'lo', index, ticketKind: def.kind, params: def.params, target: def.target, reward: def.reward };
+}
+
 function contract(name: string, make: () => Promise<Store>, reset: () => Promise<void>) {
   describe(`${name} contract`, () => {
     let store: Store;
@@ -56,13 +62,15 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       const a = await store.loadOrCreateOperator('sub-a', 'lo', SPAWN);
       const b = await store.loadOrCreateOperator('sub-b', 'lo', SPAWN);
       const d = ownedRecord('pingling', 5, 0, 'abcd1234-d1');
-      expect(await store.applyIntent(claim(a.id, 'alice', d), { seedId: 'abcd1234' })).toEqual({ ok: true });
-      expect(await store.applyIntent(claim(a.id, 'alice', d), { seedId: 'abcd1234' })).toEqual({ ok: true });
+      // a claim adds a Codex research point for the starter's line and reports the total (also on a replay)
+      expect(await store.applyIntent(claim(a.id, 'alice', d), { seedId: 'abcd1234' })).toEqual({ ok: true, research: 1 });
+      expect(await store.applyIntent(claim(a.id, 'alice', d), { seedId: 'abcd1234' })).toEqual({ ok: true, research: 1 });
       const taken = await store.applyIntent(claim(b.id, 'alice', ownedRecord('nullpup', 5, 0, 'abcd1234-d2'), 'i-claim-b'), { seedId: 'abcd1234' });
       expect(taken).toEqual({ ok: false, reason: 'name taken' });
       const reloaded = await store.loadOrCreateOperator('sub-a', 'lo', SPAWN);
       expect(reloaded).toMatchObject({ name: 'alice', starterClaimed: true, inventory: { sniff: 8, restore: 2 } });
       expect(reloaded.ram.map((r) => r.id)).toEqual(['abcd1234-d1']);
+      expect(reloaded.research).toEqual({ '5': 1 });
     });
 
     it('persists captures idempotently, to RAM or Disk', async () => {
@@ -72,12 +80,15 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       });
       const ram = ownedRecord('bitrot', 6, 1, 'abcd1234-d3');
       const disk = ownedRecord('voidlet', 9, 0, 'abcd1234-d4');
-      expect(await store.applyIntent(intent('i-cap-1', ram, 'RAM'), { seedId: 'abcd1234' })).toEqual({ ok: true });
-      expect(await store.applyIntent(intent('i-cap-1', ram, 'RAM'), { seedId: 'abcd1234' })).toEqual({ ok: true });
-      expect(await store.applyIntent(intent('i-cap-2', disk, 'DISK'), { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect(await store.applyIntent(intent('i-cap-1', ram, 'RAM'), { seedId: 'abcd1234' })).toEqual({ ok: true, research: 1 });
+      // a replay reports the line's total without adding a second point
+      expect(await store.applyIntent(intent('i-cap-1', ram, 'RAM'), { seedId: 'abcd1234' })).toEqual({ ok: true, research: 1 });
+      expect(await store.applyIntent(intent('i-cap-2', disk, 'DISK'), { seedId: 'abcd1234' })).toEqual({ ok: true, research: 1 });
+      expect(await store.applyIntent(intent('i-cap-3', ownedRecord('rotgrub', 16, 2, 'abcd1234-d5'), 'RAM'), { seedId: 'abcd1234' })).toEqual({ ok: true, research: 2 });
       const reloaded = await store.loadOrCreateOperator('sub-c', 'lo', SPAWN);
-      expect(reloaded.ram.map((r) => r.id)).toEqual(['abcd1234-d3']);
+      expect(reloaded.ram.map((r) => r.id)).toEqual(['abcd1234-d3', 'abcd1234-d5']);
       expect(reloaded.diskSlots).toEqual([0]);
+      expect(reloaded.research).toEqual({ '37': 2, [String(getSpecies('voidlet').line)]: 1 });
     });
 
     it('stores to Disk with the latest state and loads back into a RAM slot', async () => {
@@ -419,7 +430,7 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
     it('a second claim is refused once a starter is claimed, even with the starter slot free: no second starter, no inventory overwrite', async () => {
       const a = await store.loadOrCreateOperator('sub-s2', 'lo', SPAWN);
       const ctx = { seedId: 'abcd1234' };
-      expect(await store.applyIntent(claim(a.id, 'sol', ownedRecord('pingling', 5, 0, 'abcd1234-k1'), 'i-k-claim1'), ctx)).toEqual({ ok: true });
+      expect(await store.applyIntent(claim(a.id, 'sol', ownedRecord('pingling', 5, 0, 'abcd1234-k1'), 'i-k-claim1'), ctx)).toEqual({ ok: true, research: 1 });
       // the starter goes to Disk (its RAM slot is free again) and the inventory moves on
       expect(await store.applyIntent({ id: 'i-k-store', kind: 'store', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-k1', diskSlot: 0 }, ctx)).toEqual({ ok: true });
       const rec = await store.loadOrCreateOperator('sub-s2', 'lo', SPAWN);
@@ -466,6 +477,64 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(after.x).toBe(3.5);
       expect(after.ram[0]).toMatchObject({ species: 'tracerat', ivs: [21, 20, 20, 21, 20, 20, 20, 20], hp: 40, moves: ['ping', 'traceroute', 'sigstop', 'synflood'], history: EVOLVED_HISTORY });
     });
+
+    it('accepts, abandons and pays tickets: one DONE row, one ledger row, and the load carries the day', async () => {
+      const a = await store.loadOrCreateOperator('sub-t1', 'lo', SPAWN);
+      const ctx = { seedId: 'abcd1234' };
+      const day = dayKey(new Date().toISOString());
+      const t0 = acceptLo(a.id, 0);
+      expect(await store.applyIntent(t0, ctx)).toEqual({ ok: true });
+      expect(await store.applyIntent(t0, ctx)).toEqual({ ok: true }); // replay
+      expect(await store.applyIntent(acceptLo(a.id, 0, 'i-acc-0b', 'abcd1234-t0b'), ctx)).toEqual({ ok: false, reason: 'already accepted' });
+      expect(await store.applyIntent(acceptLo(a.id, 1), ctx)).toEqual({ ok: true });
+      expect(await store.applyIntent(acceptLo(a.id, 2), ctx)).toEqual({ ok: false, reason: 'at most 2 open tickets' });
+      expect(await store.applyIntent({ id: 'i-ab-1', kind: 'abandonTicket', operatorId: a.id, reqId: 'r', ticketId: 'abcd1234-t1' }, ctx)).toEqual({ ok: true });
+      expect(await store.applyIntent({ id: 'i-ab-1b', kind: 'abandonTicket', operatorId: a.id, reqId: 'r', ticketId: 'abcd1234-t1' }, ctx)).toEqual({ ok: false, reason: 'no open ticket' });
+      // progress from a checkpoint; a lower one never rewinds it
+      const rec = await store.loadOrCreateOperator('sub-t1', 'lo', SPAWN);
+      expect(rec).toMatchObject({ ticketsToday: 2, ticketsDay: day, acceptedToday: [`${day}:lo:0`, `${day}:lo:1`], tickets: [{ id: 'abcd1234-t0', progress: 0, pending: false, completing: false }] });
+      await store.checkpoint([{ ...rec, tickets: [{ ...rec.tickets[0]!, progress: 2 }] }]);
+      await store.checkpoint([{ ...rec, tickets: [{ ...rec.tickets[0]!, progress: 1 }] }]);
+      expect((await store.loadOrCreateOperator('sub-t1', 'lo', SPAWN)).tickets[0]!.progress).toBe(2);
+      // the payout: refused for another operator, a wrong reward or an abandoned ticket; paid once
+      const b = await store.loadOrCreateOperator('sub-t1b', 'lo', SPAWN);
+      const reward = t0.reward;
+      const complete = (id: string, over: Partial<Extract<Intent, { kind: 'completeTicket' }>> = {}): Intent => ({ id, kind: 'completeTicket', operatorId: a.id, ticketId: 'abcd1234-t0', reward, ...over });
+      expect(await store.applyIntent(complete('i-c-b', { operatorId: b.id }), ctx)).toEqual({ ok: false, reason: 'no open ticket' });
+      expect(await store.applyIntent(complete('i-c-r', { reward: reward + 1 }), ctx)).toEqual({ ok: false, reason: 'reward does not match the ticket' });
+      expect(await store.applyIntent(complete('i-c-ab', { ticketId: 'abcd1234-t1' }), ctx)).toEqual({ ok: false, reason: 'no open ticket' });
+      expect(await store.applyIntent(complete('i-c-1'), ctx)).toEqual({ ok: true });
+      expect(await store.applyIntent(complete('i-c-1'), ctx)).toEqual({ ok: true }); // replay: no second payment
+      expect(await store.applyIntent(complete('i-c-2'), ctx)).toEqual({ ok: false, reason: 'no open ticket' });
+      // a checkpoint after the payout cannot touch the DONE row
+      await store.checkpoint([{ ...rec, tickets: [{ ...rec.tickets[0]!, progress: 0 }] }]);
+      const after = await store.loadOrCreateOperator('sub-t1', 'lo', SPAWN);
+      expect(after).toMatchObject({ bits: reward, tickets: [], ticketsToday: 2 });
+      expect(await store.ledgerFor(a.id)).toEqual([{ operatorId: a.id, delta: reward, reason: 'ticket', ref: 'abcd1234-t0', at: expect.any(String) }]);
+      expect((await store.ledgerFor(b.id)).length).toBe(0);
+      // the day still counts both: accepting either again is refused
+      expect(await store.applyIntent(acceptLo(a.id, 1, 'i-acc-1b', 'abcd1234-t1b'), ctx)).toEqual({ ok: false, reason: 'already accepted' });
+    });
+
+    it('refuses accepts that do not match the board, of a stale day, or past the daily cap', async () => {
+      const a = await store.loadOrCreateOperator('sub-t2', 'lo', SPAWN);
+      const ctx = { seedId: 'abcd1234' };
+      const t = acceptLo(a.id, 0);
+      expect(await store.applyIntent({ ...t, id: 'i-f1', reward: t.reward * 8 }, ctx)).toEqual({ ok: false, reason: 'ticket does not match the board' });
+      expect(await store.applyIntent({ ...t, id: 'i-f2', target: 0 }, ctx)).toEqual({ ok: false, reason: 'ticket does not match the board' });
+      expect(await store.applyIntent({ ...t, id: 'i-f3', subnet: 'nowhere' }, ctx)).toEqual({ ok: false, reason: 'ticket does not match the board' });
+      expect(await store.applyIntent({ ...t, id: 'i-f4', index: 8 }, ctx)).toEqual({ ok: false, reason: 'ticket does not match the board' });
+      expect(await store.applyIntent(acceptLo(a.id, 0, 'i-f5', 'abcd1234-f5', '2026-01-01'), ctx)).toEqual({ ok: false, reason: 'the board for 2026-01-01 is gone' });
+      for (let i = 0; i < TICKETS_PER_DAY; i++) {
+        expect(await store.applyIntent(acceptLo(a.id, i, `i-d-${i}`, `abcd1234-d-${i}`), ctx)).toEqual({ ok: true });
+        expect(await store.applyIntent({ id: `i-dab-${i}`, kind: 'abandonTicket', operatorId: a.id, reqId: 'r', ticketId: `abcd1234-d-${i}` }, ctx)).toEqual({ ok: true });
+      }
+      const day = dayKey(new Date().toISOString());
+      const lan = ticketBoard('lan', day)[0]!;
+      const ninth: Intent = { id: 'i-d-9', kind: 'acceptTicket', operatorId: a.id, reqId: 'r', ticketId: 'abcd1234-d-9', day, subnet: 'lan', index: 0, ticketKind: lan.kind, params: lan.params, target: lan.target, reward: lan.reward };
+      expect(await store.applyIntent(ninth, ctx)).toEqual({ ok: false, reason: `at most ${TICKETS_PER_DAY} tickets per day` });
+      expect(await store.loadOrCreateOperator('sub-t2', 'lo', SPAWN)).toMatchObject({ ticketsToday: TICKETS_PER_DAY, tickets: [] });
+    });
   });
 }
 
@@ -474,7 +543,8 @@ contract('MemoryStore', async () => new MemoryStore(), async () => {});
 describe('PrismaStore.loadOrCreateOperator unique races', () => {
   const uniqueViolation = () => Object.assign(new Error('Unique constraint failed on the fields: (`sub`)'), { code: 'P2002' });
   const row = { id: 'op-1', sub: 's', name: null, starterClaimed: false, x: 1, y: 2, bits: 0n, inventory: {}, daemons: [] };
-  const storeWith = (upsert: () => Promise<unknown>) => new PrismaStore({ operator: { upsert } } as unknown as PrismaClient);
+  const storeWith = (upsert: () => Promise<unknown>) =>
+    new PrismaStore({ operator: { upsert }, ticket: { findMany: async () => [] }, research: { findMany: async () => [] } } as unknown as PrismaClient);
 
   it('retries once when a simultaneous first login for the same sub wins the insert', async () => {
     let calls = 0;
@@ -518,7 +588,10 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
       store.applyIntent(claim(a.id, 'rae', d), { seedId: 'abcd1234' }),
       store.applyIntent(claim(a.id, 'rae', d), { seedId: 'abcd1234' }),
     ]);
-    expect(results).toEqual([{ ok: true }, { ok: true }]);
+    expect(results).toEqual([
+      { ok: true, research: 1 },
+      { ok: true, research: 1 },
+    ]);
     expect(await prisma!.daemon.count({ where: { operatorId: a.id } })).toBe(1);
   });
 
@@ -593,6 +666,60 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     const archived = await prisma!.daemonArchive.findUniqueOrThrow({ where: { id: 'abcd1234-e5' } });
     expect(archived).toMatchObject({ operatorId: a.id, species: 'pingling', heldItem: 'jumboframe', reason: 'decompiled', captureTool: 'starter', spawnSeedId: 'abcd1234' });
     expect((archived.history as Array<{ kind: string }>).at(-1)).toMatchObject({ kind: 'decompiled' });
+  });
+
+  it('concurrent payouts of one ticket (different intents): exactly one moves it to DONE and writes the one ledger row', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-race-tk', 'lo', SPAWN);
+    const t = acceptLo(a.id, 0);
+    expect(await store.applyIntent(t, { seedId: 'abcd1234' })).toEqual({ ok: true });
+    const results = await Promise.all(
+      Array.from({ length: 4 }, (_, i) => store.applyIntent({ id: `i-rtk-${i}`, kind: 'completeTicket', operatorId: a.id, ticketId: t.ticketId, reward: t.reward }, { seedId: 'abcd1234' })),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(results.filter((r) => !r.ok)).toEqual(Array.from({ length: 3 }, () => ({ ok: false, reason: 'no open ticket' })));
+    expect(await prisma!.bitsLedger.findMany({ where: { operatorId: a.id }, select: { delta: true, reason: true, ref: true } })).toEqual([{ delta: BigInt(t.reward), reason: 'ticket', ref: t.ticketId }]);
+    expect((await store.loadOrCreateOperator('sub-race-tk', 'lo', SPAWN)).bits).toBe(t.reward);
+    expect(await prisma!.ticket.findUniqueOrThrow({ where: { id: t.ticketId } })).toMatchObject({ status: 'DONE', progress: t.target });
+  });
+
+  it('concurrent accepts cannot pass the open cap, and a concurrent duplicate board entry is "already accepted"', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-race-acc', 'lo', SPAWN);
+    const results = await Promise.all([0, 1, 2, 3, 4].map((i) => store.applyIntent(acceptLo(a.id, i), { seedId: 'abcd1234' })));
+    expect(results.filter((r) => r.ok)).toHaveLength(2);
+    expect(results.filter((r) => !r.ok)).toEqual(Array.from({ length: 3 }, () => ({ ok: false, reason: 'at most 2 open tickets' })));
+    const b = await store.loadOrCreateOperator('sub-race-acc2', 'lo', SPAWN);
+    const dup = await Promise.all([0, 1, 2].map((i) => store.applyIntent(acceptLo(b.id, 5, `i-dupacc-${i}`, `abcd1234-dup-${i}`), { seedId: 'abcd1234' })));
+    expect(dup.filter((r) => r.ok)).toHaveLength(1);
+    expect(dup.filter((r) => !r.ok)).toEqual(Array.from({ length: 2 }, () => ({ ok: false, reason: 'already accepted' })));
+    expect(await prisma!.ticket.count({ where: { operatorId: b.id } })).toBe(1);
+  });
+
+  it('the unique (operator, day, subnet, index) violation is a domain answer only for an accept; a duplicate ticket id rethrows', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-tk-pk', 'lo', SPAWN);
+    const b = await store.loadOrCreateOperator('sub-tk-pk2', 'lo', SPAWN);
+    expect(await store.applyIntent(acceptLo(a.id, 0, 'i-pk-1', 'abcd1234-same'), { seedId: 'abcd1234' })).toEqual({ ok: true });
+    // another operator's accept forged with the same ticket id: Ticket_pkey, not a domain failure
+    await expect(store.applyIntent(acceptLo(b.id, 0, 'i-pk-2', 'abcd1234-same'), { seedId: 'abcd1234' })).rejects.toMatchObject({ code: 'P2002' });
+  });
+
+  it('concurrent captures of one line add one research point each (no Research_pkey conflict)', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-research', 'lo', SPAWN);
+    const cap = (i: number): Intent => ({
+      id: `i-rcap-${i}`, kind: 'capture', operatorId: a.id, captureId: `c${i}`, daemon: ownedRecord('pingling', 5, i, `abcd1234-rc${i}`), location: 'DISK', tool: 'sniff',
+      log: { ...log, tool: 'sniff', spawnIndex: i },
+    });
+    const results = await Promise.all([0, 1, 2, 3].map((i) => store.applyIntent(cap(i), { seedId: 'abcd1234' })));
+    expect(results.map((r) => (r.ok ? r.research : null)).sort()).toEqual([1, 2, 3, 4]);
+    expect(await store.applyIntent(cap(0), { seedId: 'abcd1234' })).toEqual({ ok: true, research: 4 });
+    expect((await store.loadOrCreateOperator('sub-research', 'lo', SPAWN)).research).toEqual({ '5': 4 });
   });
 
   it('simultaneous first logins for one sub all get the same operator', async () => {

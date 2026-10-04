@@ -76,7 +76,7 @@ function fakeClient(self: Record<string, unknown> = {}, over: { role?: 'controll
   const client = {
     subnet: 'lo',
     role: over.role ?? 'controller',
-    self: { x: over.x ?? host.x, y: over.y ?? host.y, bits: 1000, diskCapacity: 256, ram: [], running: [], capture: null, inventory: {}, ...self },
+    self: { x: over.x ?? host.x, y: over.y ?? host.y, bits: 1000, diskCapacity: 256, tickets: [], ticketsToday: 0, research: {}, ram: [], running: [], capture: null, inventory: {}, ...self },
     operator: { buy, craft, decompile, hold: vi.fn(), unhold: vi.fn(), evolve: vi.fn(), run: vi.fn(), recall: vi.fn(), store: vi.fn(), useRestore: vi.fn(), load: vi.fn(() => Promise.resolve({})) },
   };
   return { client: client as unknown as GameClient, buy, craft, decompile };
