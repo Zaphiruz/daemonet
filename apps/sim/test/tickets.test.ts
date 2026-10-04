@@ -1,3 +1,4 @@
+import { MemoryBus } from '@daemonet/bus';
 import { TICKETS_PER_DAY, getSubnet, ticketBoard } from '@daemonet/rules';
 import { Command, type ServerMessage } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
@@ -460,7 +461,7 @@ function game(store: MemoryStore, extra: Partial<GameOptions> = {}) {
   store.now = () => FIXED_CLOCK;
   const a = new World({ subnet: TEST_SUBNET, seed: 'a', seedId: 'aaaa0001', spawner: false, clock: () => FIXED_CLOCK });
   const b = new World({ subnet: TEST_SUBNET_B, seed: 'b', seedId: 'bbbb0002', spawner: false, clock: () => FIXED_CLOCK });
-  const g = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4, ...extra });
+  const g = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), bus: new MemoryBus(), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4, ...extra });
   return { a, b, game: g };
 }
 
@@ -616,7 +617,7 @@ describe('tickets in the runtime', () => {
     store.now = () => FIXED_CLOCK;
     const subnet = getSubnet('lo');
     const world = new World({ subnet, seed: 'lo', seedId: 'cccc0003', spawner: false, clock: () => FIXED_CLOCK });
-    const g = new Game({ worlds: [world], store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4 });
+    const g = new Game({ worlds: [world], store, verify: createDevVerifier('daemonet-users'), bus: new MemoryBus(), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4 });
     const id = await player(store, 'dot', subnet.host);
     store.operators.get(id)!.subnet = 'lo';
     const conn = await join(g, 'dot');

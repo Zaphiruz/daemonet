@@ -77,6 +77,7 @@ export function operatorRecord(id: string, overrides: Partial<OperatorRecord> = 
     ticketsDay: '2026-09-30',
     acceptedToday: [],
     research: {},
+    mutedUntil: null,
     ...overrides,
   };
 }

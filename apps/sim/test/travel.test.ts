@@ -1,3 +1,4 @@
+import { MemoryBus } from '@daemonet/bus';
 import type { Command, ServerMessage } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
 import { World, type Intent, type IntentResult, type OperatorRecord } from '../src/core/index.js';
@@ -117,7 +118,7 @@ class FakeConn implements Conn {
 function setup(store = new MemoryStore(), extra: Partial<GameOptions> = {}) {
   const a = new World({ subnet: TEST_SUBNET, seed: 'a', seedId: 'aaaa0001', spawner: false, clock: () => FIXED_CLOCK });
   const b = new World({ subnet: TEST_SUBNET_B, seed: 'b', seedId: 'bbbb0002', spawner: false, clock: () => FIXED_CLOCK });
-  const game = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4, ...extra });
+  const game = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), bus: new MemoryBus(), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4, ...extra });
   return { a, b, game, store };
 }
 
@@ -245,7 +246,7 @@ describe('multi-world Game', () => {
 
   it('refuses a gateway to a subnet this process does not host', async () => {
     const a = new World({ subnet: TEST_SUBNET, seed: 'a', seedId: 'aaaa0001', spawner: false, clock: () => FIXED_CLOCK });
-    const game = new Game({ worlds: [a], store: new MemoryStore(), verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1] });
+    const game = new Game({ worlds: [a], store: new MemoryStore(), verify: createDevVerifier('daemonet-users'), bus: new MemoryBus(), retryDelaysMs: [1, 1, 1] });
     const { conn, op } = await atGate(game, a);
     await game.message(conn, travelCmd());
     game.tick();
@@ -275,7 +276,7 @@ describe('multi-world Game', () => {
     const a = new World({ subnet: TEST_SUBNET, seed: 'a', seedId: 'aaaa0001', spawner: false, clock: () => FIXED_CLOCK });
     const b = new World({ subnet: { ...TEST_SUBNET_B, gateways: [...TEST_SUBNET_B.gateways, gateC] }, seed: 'b', seedId: 'bbbb0002', spawner: false, clock: () => FIXED_CLOCK });
     const store = new GatedStore();
-    const game = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1] });
+    const game = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), bus: new MemoryBus(), retryDelaysMs: [1, 1, 1] });
     const { conn, op } = await atGate(game, a);
     store.holdTravel();
     await game.message(conn, travelCmd());

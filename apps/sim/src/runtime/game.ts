@@ -1,8 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
+import type { Bus } from '@daemonet/bus';
 import { ticketKey } from '@daemonet/rules';
 import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
 import { INTEREST_RADIUS, distance, entitiesNear, isEconomyIntent, toSelf, type Input, type Intent, type IntentResult, type OperatorRecord, type World } from '../core/index.js';
 import type { TokenVerifier } from './auth.js';
+import { ChatService } from './chat.js';
 import { diffEntities } from './interest.js';
 import { randomHex, type Store } from './store.js';
 
@@ -31,6 +33,8 @@ export interface GameOptions {
   world?: World;
   store: Store;
   verify: TokenVerifier;
+  /** Sim ⇄ api bus (MemoryBus when Redis is not configured). */
+  bus: Bus;
   log?: Logger;
   /** Waits between intent persistence attempts (default 128/512/2048 ms). */
   retryDelaysMs?: readonly number[];
@@ -159,6 +163,8 @@ export class Game {
   private ticks = 0;
   /** Set by `shutdown`: intents whose outcome is still unknown stop retrying (they are left pending, never failed). */
   private stopping = false;
+  /** Chat over the game socket (SP4): outside the tick, its own per-operator limit. */
+  readonly chat: ChatService;
 
   constructor(opts: GameOptions) {
     const worlds = opts.worlds ?? (opts.world ? [opts.world] : []);
@@ -179,6 +185,30 @@ export class Game {
     this.authTimeout = opts.authTimeoutTicks ?? 80;
     this.idleTimeout = opts.idleTimeoutTicks ?? 768;
     this.maxSpectators = opts.maxSpectators ?? 4;
+    this.chat = new ChatService(
+      {
+        operator: (id) => {
+          const s = this.sessions.get(id);
+          const op = s?.world.operators.get(id);
+          return s && op ? { op, subnet: s.world.subnet.id } : undefined;
+        },
+        operatorIds: () => this.sessions.keys(),
+        send: (operatorId, msg) => {
+          const s = this.sessions.get(operatorId);
+          if (!s) return;
+          for (const st of s.controller ? [s.controller, ...s.spectators] : [...s.spectators]) this.send(st, msg);
+        },
+        now: () => Date.now(),
+      },
+      this.store,
+      opts.bus,
+      this.log,
+    );
+  }
+
+  /** Loads the admin-added chat filter terms; call once after construction (main.ts). */
+  async loadChatTerms(): Promise<void> {
+    this.chat.setExtraTerms(await this.store.listFilterTerms());
   }
 
   /** The world a connected operator is in. */
@@ -267,6 +297,7 @@ export class Game {
           savedKnown: null, savedSelf: null, commandsThisTick: 0, violations: [], leaveAtTick: null, reloadRequired: false,
         };
         this.sessions.set(rec.id, session);
+        this.chat.loadMute(rec.id, rec.mutedUntil);
       }
       st.sub = claims.sub;
       st.operatorId = rec.id;
@@ -366,6 +397,17 @@ export class Game {
     const { reqId, ...command } = d;
     if (st.role !== 'controller') return this.error(st, 'E_STATE', 'spectators cannot send commands', reqId);
     const session = this.sessions.get(st.operatorId!)!;
+    if (command.cmd === 'chat') {
+      // Chat is not gameplay: handled outside the tick, with no per-tick budget and its own per-operator limit. The
+      // reply goes to the connection that sent it (dropped if that connection has gone).
+      this.track(
+        this.chat.post(session.operatorId, command.args.channel, command.args.text).then((err) => {
+          if (err) this.error(st, err.code, err.message, reqId);
+          else this.send(st, { t: 'ack', seq: 0, d: { reqId } });
+        }),
+      );
+      return;
+    }
     if (session.commandsThisTick >= COMMANDS_PER_TICK) {
       this.error(st, 'E_RATE', `at most ${COMMANDS_PER_TICK} commands per tick`, reqId);
       return this.violation(st);
@@ -714,6 +756,7 @@ export class Game {
    * abandoned pending), then checkpoint everyone and wait for persistence.
    */
   async shutdown(): Promise<void> {
+    this.chat.close();
     for (const st of [...this.conns.values()]) this.kick(st, 'server shutting down', 1001);
     this.stopping = true;
     await this.flush();

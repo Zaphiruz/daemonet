@@ -186,4 +186,13 @@ describe('store and load', () => {
     world.addOperator(operatorRecord('alice', { x: 20.5, y: 25.5 }));
     expect(step(world, input('alice', { cmd: 'store', actor: self, args: { daemonId: 'alice-d1' } })).replies[0]).toMatchObject({ code: 'E_RANGE' });
   });
+
+  it('refuses operator names the chat filter would block or mask', () => {
+    const world = makeWorld();
+    world.addOperator(operatorRecord('newbie', { starterClaimed: false, name: null, ram: [] }));
+    const claim = (operatorName: string) => step(world, input('newbie', { cmd: 'claimStarter', actor: self, args: { species: 'pingling', operatorName } }));
+    expect(claim('kys').replies[0]).toMatchObject({ code: 'E_INVALID', message: 'that name is not allowed' });
+    expect(claim('shit-lord').replies[0]).toMatchObject({ code: 'E_INVALID' });
+    expect(claim('newbie').intents[0]).toMatchObject({ kind: 'claimStarter', name: 'newbie' });
+  });
 });

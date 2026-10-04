@@ -14,6 +14,8 @@ const Env = z.object({
   /** Comma-separated subnet ids this process hosts (default: every open subnet). */
   SUBNETS: z.string().default(OPEN_SUBNET_IDS.join(',')),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  /** redis://daemonet:<pw>@host:6379/4 — unset: in-process bus (single sim process, no api moderation push). */
+  REDIS_URL: z.string().min(1).optional(),
 });
 
 export interface Config {
@@ -28,6 +30,8 @@ export interface Config {
   /** Hosted subnet ids; the first is the default world (new operators, unhosted subnets). */
   subnets: string[];
   logLevel: string;
+  /** Shared Redis for the sim ⇄ api bus; undefined = in-process bus. */
+  redisUrl: string | undefined;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -51,5 +55,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxConnectionsPerIp: e.MAX_CONNECTIONS_PER_IP,
     subnets,
     logLevel: e.LOG_LEVEL,
+    redisUrl: e.REDIS_URL,
   };
 }

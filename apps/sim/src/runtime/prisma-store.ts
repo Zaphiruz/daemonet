@@ -1,6 +1,6 @@
 import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient } from '@daemonet/db';
 import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
-import { DISK_EXPANSION_ITEM, DISK_STEP, dayKey, getSpecies, type TicketKind, type TicketParams } from '@daemonet/rules';
+import { DISK_EXPANSION_ITEM, DISK_STEP, dayKey, getSpecies, type FilterTerm, type TicketKind, type TicketParams } from '@daemonet/rules';
 import {
   checkpointFields,
   decompileProblem,
@@ -14,6 +14,7 @@ import {
   ticketCapProblem,
   ticketState,
   withItems,
+  type ChatRow,
   type IntentContext,
   type LedgerRow,
   type Store,
@@ -171,7 +172,33 @@ export class PrismaStore implements Store {
         day,
       ),
       research: Object.fromEntries(research.map((r) => [String(r.line), r.points])),
+      mutedUntil: op.mutedUntil ? op.mutedUntil.toISOString() : null,
     };
+  }
+
+  async appendChat(row: ChatRow): Promise<void> {
+    await this.prisma.chatMessage.create({ data: { id: row.id, channel: row.channel, operatorId: row.operatorId, toId: row.toId, text: row.text, at: new Date(row.at) } });
+  }
+
+  async recordFilterHit(hit: { operatorId: string; channel: string; text: string; term: string }): Promise<void> {
+    await this.prisma.chatFilterHit.create({ data: { operatorId: hit.operatorId, channel: hit.channel, text: hit.text, term: hit.term } });
+  }
+
+  async setMute(operatorId: string, until: string | null): Promise<void> {
+    await this.prisma.operator.update({ where: { id: operatorId }, data: { mutedUntil: until ? new Date(until) : null } });
+  }
+
+  async isBlocked(blocker: string, blocked: string): Promise<boolean> {
+    return (await this.prisma.chatBlock.count({ where: { blockerId: blocker, blockedId: blocked } })) > 0;
+  }
+
+  async operatorExists(operatorId: string): Promise<boolean> {
+    return (await this.prisma.operator.count({ where: { id: operatorId } })) > 0;
+  }
+
+  async listFilterTerms(): Promise<FilterTerm[]> {
+    const rows = await this.prisma.chatFilterTerm.findMany({ orderBy: { at: 'asc' } });
+    return rows.map((r) => ({ pattern: r.pattern, kind: r.kind, action: r.action }));
   }
 
   async applyIntent(intent: Intent, ctx: IntentContext): Promise<IntentResult> {

@@ -1,3 +1,4 @@
+import { createBus } from '@daemonet/bus';
 import { getSubnet } from '@daemonet/rules';
 import { pino } from 'pino';
 import { World } from '../core/index.js';
@@ -33,7 +34,10 @@ const verify = combineVerifiers(
   createTicketVerifier(store.prisma, config.requiredGroup),
 );
 
-const game = new Game({ worlds, store, verify, log });
+const bus = createBus(config.redisUrl);
+if (!config.redisUrl) log.warn({}, 'REDIS_URL not set: using the in-process bus (admin chat actions from the api will not reach the sim)');
+const game = new Game({ worlds, store, verify, bus, log });
+await game.loadChatTerms();
 const server = await startServer({ game, store, port: config.port, trustProxyHops: config.trustProxyHops, maxConnectionsPerIp: config.maxConnectionsPerIp, log });
 const stopLoop = startLoop(() => game.tick());
 const statsTimer = setInterval(() => log.info({ tick: game.world.tick, ...game.stats() }, 'tick stats'), 64_000);
@@ -47,7 +51,7 @@ async function shutdown(signal: string) {
   log.info({ signal }, 'shutting down');
   stopLoop();
   clearInterval(statsTimer);
-  await gracefulShutdown({ server, game, store });
+  await gracefulShutdown({ server, game, store, bus });
   process.exit(0);
 }
 process.on('uncaughtException', (err) => {

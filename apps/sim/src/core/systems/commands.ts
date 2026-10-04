@@ -1,4 +1,5 @@
 import {
+  DEFAULT_FILTER,
   GATEWAY_RADIUS,
   MAX_IV,
   RUNNING_MAX,
@@ -9,6 +10,7 @@ import {
   getSpecies,
   isHoldable,
   movesAtLevel,
+  nameAllowedBy,
   rollSpawn,
   statBlockToArray,
   xpForLevel,
@@ -166,6 +168,9 @@ function handle(world: World, input: Input, out: Out): void {
       return store(world, op, c, input, out);
     case 'load':
       return load(world, op, c, input, out);
+    case 'chat':
+      // Chat is handled by the runtime's chat service, outside the tick; it never reaches a world.
+      throw new Rejection('E_STATE', 'chat is not a world command');
     case 'use': {
       const d = runningDaemon(world, op, c.actor);
       if (!d.moves.includes(c.args.move)) throw new Rejection('E_INVALID', `daemon does not know ${c.args.move}`);
@@ -253,6 +258,7 @@ function claimStarter(world: World, op: Operator, c: Cmd<'claimStarter'>, input:
     throw new Rejection('E_INVALID', 'unknown species');
   }
   if (!species.starter) throw new Rejection('E_INVALID', `${species.name} is not a starter`);
+  if (!nameAllowedBy(DEFAULT_FILTER, c.args.operatorName)) throw new Rejection('E_INVALID', 'that name is not allowed');
   const roll = rollSpawn(world.rng, { clean: 0, signatureStep: 0 });
   op.pendingClaim = true;
   const daemon = {

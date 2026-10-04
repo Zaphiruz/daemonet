@@ -1,3 +1,4 @@
+import { MemoryBus } from '@daemonet/bus';
 import { createConnection } from 'node:net';
 import { MAX_SUBMIT_BYTES, type ServerMessage } from '@daemonet/shared';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -15,7 +16,7 @@ let running: RunningServer | null = null;
 
 async function boot(store: Store = new MemoryStore(), maxConnectionsPerIp = 16) {
   const world = new World({ subnet: TEST_SUBNET, seed: 'srv', seedId: 'abcd1234', spawner: false });
-  const game = new Game({ world, store, verify: createDevVerifier('daemonet-users') });
+  const game = new Game({ world, store, verify: createDevVerifier('daemonet-users'), bus: new MemoryBus() });
   running = await startServer({ game, store, port: 0, host: '127.0.0.1', trustProxyHops: 0, maxConnectionsPerIp, log });
   return running;
 }

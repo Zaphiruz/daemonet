@@ -120,6 +120,9 @@ importers:
 
   apps/sim:
     dependencies:
+      '@daemonet/bus':
+        specifier: workspace:*
+        version: link:../../packages/bus
       '@daemonet/db':
         specifier: workspace:*
         version: link:../../packages/db

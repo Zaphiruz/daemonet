@@ -17,6 +17,12 @@ describe('loadConfig', () => {
     }
   });
 
+  it('reads the optional REDIS_URL (unset: in-process bus)', () => {
+    expect(loadConfig({ ...base, AUTH_DEV_BYPASS: 'true' }).redisUrl).toBeUndefined();
+    expect(loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', REDIS_URL: 'redis://daemonet:pw@127.0.0.1:6379/4' }).redisUrl).toBe('redis://daemonet:pw@127.0.0.1:6379/4');
+    expect(() => loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', REDIS_URL: '' })).toThrow();
+  });
+
   it('reads and validates MAX_CONNECTIONS_PER_IP', () => {
     expect(loadConfig({ ...base, AUTH_DEV_BYPASS: 'true', MAX_CONNECTIONS_PER_IP: '128' }).maxConnectionsPerIp).toBe(128);
     for (const bad of ['0', '-1', '1.5', 'abc']) {

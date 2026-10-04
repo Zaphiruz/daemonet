@@ -1,3 +1,4 @@
+import { MemoryBus } from '@daemonet/bus';
 import { Command, type ServerMessage } from '@daemonet/shared';
 import { describe, expect, it } from 'vitest';
 import { World, type Intent, type IntentResult, type OperatorRecord } from '../src/core/index.js';
@@ -435,7 +436,7 @@ class GatedStore extends MemoryStore {
 function game(store: MemoryStore, extra: Partial<GameOptions> = {}) {
   const a = new World({ subnet: TEST_SUBNET, seed: 'a', seedId: 'aaaa0001', spawner: false, clock: () => FIXED_CLOCK });
   const b = new World({ subnet: TEST_SUBNET_B, seed: 'b', seedId: 'bbbb0002', spawner: false, clock: () => FIXED_CLOCK });
-  const g = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4, ...extra });
+  const g = new Game({ worlds: [a, b], store, verify: createDevVerifier('daemonet-users'), bus: new MemoryBus(), retryDelaysMs: [1, 1, 1], leaveAfterTicks: 4, ...extra });
   return { a, game: g };
 }
 

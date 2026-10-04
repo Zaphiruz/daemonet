@@ -139,6 +139,7 @@ export class World {
       ticketsDay: rec.ticketsDay,
       acceptedKeys: new Set(rec.acceptedToday),
       research: { ...rec.research },
+      mutedUntil: rec.mutedUntil,
     };
     this.operators.set(op.id, op);
     for (const d of [...rec.ram].sort((a, b) => a.slot - b.slot)) this.addOwned(op, d);
@@ -188,6 +189,7 @@ export class World {
       ticketsDay: op.ticketsDay,
       acceptedToday: [...op.acceptedKeys],
       research: { ...op.research },
+      mutedUntil: op.mutedUntil,
       ...(this.inventoryInFlight(op.id) ? { inventoryInFlight: true } : {}),
     };
   }

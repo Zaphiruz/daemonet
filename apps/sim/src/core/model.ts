@@ -80,6 +80,8 @@ export interface OperatorRecord {
   acceptedToday: string[];
   /** Codex research points per bestiary line. */
   research: Record<string, number>;
+  /** Chat mute (ISO) or null. */
+  mutedUntil: string | null;
   /**
    * Set on checkpoint records while an intent that rewrites the inventory in the store (buy, craft, decompile,
    * claimStarter) is in flight: the store must leave `inventory` alone so it can neither rewind a committed intent
@@ -191,6 +193,8 @@ export interface Operator {
   ticketsDay: string;
   acceptedKeys: Set<string>;
   research: Record<string, number>;
+  /** Chat mute as loaded with the record (the runtime's chat service owns the live value). */
+  mutedUntil: string | null;
 }
 
 export interface Capture {

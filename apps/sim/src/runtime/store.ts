@@ -12,6 +12,7 @@ import {
   getSpecies,
   recipeFragments,
   ticketKey,
+  type FilterTerm,
   type TicketKind,
   type TicketParams,
 } from '@daemonet/rules';
@@ -25,13 +26,36 @@ export interface IntentContext {
   storedDaemon?: OwnedDaemonRecord;
 }
 
+export interface ChatRow {
+  id: string;
+  channel: string;
+  operatorId: string;
+  /** For dm channels: the recipient. */
+  toId: string | null;
+  text: string;
+  at: string;
+}
+
+/** What the chat service persists (SP4 spec §5). Every method may throw on infrastructure failure. */
+export interface ChatStore {
+  appendChat(row: ChatRow): Promise<void>;
+  recordFilterHit(hit: { operatorId: string; channel: string; text: string; term: string }): Promise<void>;
+  setMute(operatorId: string, until: string | null): Promise<void>;
+  /** `blocker` has blocked `blocked`. */
+  isBlocked(blocker: string, blocked: string): Promise<boolean>;
+  /** An operator row with this id exists (DM targets must). */
+  operatorExists(operatorId: string): Promise<boolean>;
+  /** Admin-added filter terms (loaded at boot). */
+  listFilterTerms(): Promise<FilterTerm[]>;
+}
+
 /** Persistence used by the runtime. Every method may throw on infrastructure failure (the runtime retries intents). */
-export interface Store {
+export interface Store extends ChatStore {
   /** Registers this boot's world seed; the returned id (8 hex chars) prefixes every generated id. */
   createSeed(subnet: string): Promise<{ id: string; seed: string }>;
   /**
-   * Loads the operator with its open tickets (with progress), today's (UTC, store clock) accepted count and keys, and
-   * its Codex research.
+   * Loads the operator with its open tickets (with progress), today's (UTC, store clock) accepted count and keys, its
+   * Codex research and its chat mute.
    */
   loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord>;
   /**
@@ -302,6 +326,13 @@ export class MemoryStore implements Store {
   readonly tickets = new Map<string, TicketRow>();
   /** `${operatorId}:${line}` -> points */
   readonly research = new Map<string, number>();
+  readonly chat: ChatRow[] = [];
+  readonly filterHits: Array<{ operatorId: string; channel: string; text: string; term: string }> = [];
+  /** `${blockerId}:${blockedId}` */
+  readonly blocks = new Set<string>();
+  readonly filterTerms: FilterTerm[] = [];
+  /** operatorId -> mutedUntil (ISO) or null */
+  readonly mutes = new Map<string, string | null>();
   /** Wall clock for "today" (tests pin it). */
   now: () => string = () => new Date().toISOString();
   /** Tests set this to make the next N applyIntent calls throw. */
@@ -348,7 +379,34 @@ export class MemoryStore implements Store {
       diskSlots: mine.filter((d) => d.location === 'DISK').map((d) => d.slot).sort((a, b) => a - b),
       ...this.ticketStateOf(op.id),
       research: this.researchFor(op.id),
+      mutedUntil: this.mutes.get(op.id) ?? null,
     };
+  }
+
+  async appendChat(row: ChatRow): Promise<void> {
+    // Mirrors the ChatMessage primary key.
+    if (this.chat.some((c) => c.id === row.id)) throw new Error(`duplicate chat id ${row.id}`);
+    this.chat.push({ ...row });
+  }
+
+  async recordFilterHit(hit: { operatorId: string; channel: string; text: string; term: string }): Promise<void> {
+    this.filterHits.push({ ...hit });
+  }
+
+  async setMute(operatorId: string, until: string | null): Promise<void> {
+    this.mutes.set(operatorId, until);
+  }
+
+  async isBlocked(blocker: string, blocked: string): Promise<boolean> {
+    return this.blocks.has(`${blocker}:${blocked}`);
+  }
+
+  async operatorExists(operatorId: string): Promise<boolean> {
+    return this.operators.has(operatorId);
+  }
+
+  async listFilterTerms(): Promise<FilterTerm[]> {
+    return this.filterTerms.map((t) => ({ ...t }));
   }
 
   private ticketStateOf(operatorId: string) {

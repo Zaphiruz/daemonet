@@ -13,6 +13,7 @@
     "start": "node dist/runtime/main.js"
   },
   "dependencies": {
+    "@daemonet/bus": "workspace:*",
     "@daemonet/db": "workspace:*",
     "@daemonet/rules": "workspace:*",
     "@daemonet/shared": "workspace:*",

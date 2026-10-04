@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist" },
   "include": ["src"],
-  "references": [{ "path": "../../packages/rules" }, { "path": "../../packages/shared" }, { "path": "../../packages/db" }]
+  "references": [{ "path": "../../packages/rules" }, { "path": "../../packages/shared" }, { "path": "../../packages/db" }, { "path": "../../packages/bus" }]
 }

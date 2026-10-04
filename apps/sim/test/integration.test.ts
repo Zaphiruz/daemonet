@@ -1,3 +1,4 @@
+import { MemoryBus } from '@daemonet/bus';
 import { connect, devToken, type GameClient } from '@daemonet/sdk';
 import { afterEach, describe, expect, it } from 'vitest';
 import { World } from '../src/core/index.js';
@@ -27,7 +28,7 @@ async function boot(store: MemoryStore, seedId: string): Promise<Harness> {
   const discovered = await store.listDiscoveries();
   const world = new World({ subnet: TEST_SUBNET, seed: seedId, seedId, spawner: false, discovered });
   const worldB = new World({ subnet: TEST_SUBNET_B, seed: `${seedId}b`, seedId: `${seedId.slice(0, 7)}b`, spawner: false, discovered });
-  const game = new Game({ worlds: [world, worldB], store, verify: createDevVerifier('daemonet-users'), retryDelaysMs: [1, 1, 1] });
+  const game = new Game({ worlds: [world, worldB], store, verify: createDevVerifier('daemonet-users'), bus: new MemoryBus(), retryDelaysMs: [1, 1, 1] });
   const server = await startServer({ game, store, port: 0, host: '127.0.0.1', trustProxyHops: 0, maxConnectionsPerIp: 16, log: silent });
   // 16 ms ticks: fast tests, while the 64-tick resume window (~1 s) still outlasts the SDK's first reconnect backoff.
   const stopLoop = startLoop(() => game.tick(), 16);
@@ -35,7 +36,7 @@ async function boot(store: MemoryStore, seedId: string): Promise<Harness> {
     world, game, server, url: `ws://127.0.0.1:${server.port}/ws`,
     stop: async () => {
       stopLoop();
-      await gracefulShutdown({ server, game, store });
+      await gracefulShutdown({ server, game, store, bus: new MemoryBus() });
     },
   };
   running.push(h);
