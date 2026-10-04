@@ -198,6 +198,10 @@ export class Game {
           if (!s) return;
           for (const st of s.controller ? [s.controller, ...s.spectators] : [...s.spectators]) this.send(st, msg);
         },
+        // names are checked in the worlds (claimStarter) against the same filter as chat
+        filterChanged: (filter) => {
+          for (const w of this.worlds.values()) w.nameFilter = filter;
+        },
         now: () => Date.now(),
       },
       this.store,

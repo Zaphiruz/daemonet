@@ -10,7 +10,7 @@ import { hashToken } from '../src/auth/session.js';
 import { loadConfig } from '../src/config.js';
 import { ensureOperator } from '../src/auth/routes.js';
 import { loggerOptions } from '../src/log.js';
-import { nameAllowed, pruneChat } from '../src/routes/chat.js';
+import { pruneChat } from '../src/routes/chat.js';
 import { KEPT_VERSIONS, MAX_SCRIPT_BYTES } from '../src/routes/scripts.js';
 
 const csrf = { [CSRF_HEADER]: CSRF_VALUE };
@@ -446,8 +446,6 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect(term.statusCode).toBe(200);
     expect(bus.log.at(-1)).toMatchObject({ channel: 'admin', message: { kind: 'filter', terms: [{ pattern: 'banana', action: 'BLOCK' }] } });
     expect((await app.inject({ method: 'POST', url: '/api/admin/chat/filter', cookies: cb, headers: csrf, payload: { pattern: '(', kind: 'REGEX', action: 'BLOCK' } })).statusCode).toBe(400);
-    expect(await nameAllowed(prisma!, 'banana-man')).toBe(false);
-    expect(await nameAllowed(prisma!, 'alice')).toBe(true);
     expect(await pruneChat(prisma!, new Date('2026-09-30T12:00:00Z'))).toBe(1);
   });
 
@@ -599,8 +597,6 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect((await app.inject({ method: 'GET', url: '/api/admin/chat/filter', cookies: cb })).json().map((t: { id: string }) => t.id)).toEqual([kiwi.id, plum.id]);
     expect((await app.inject({ method: 'DELETE', url: `/api/admin/chat/filter/${kiwi.id}`, cookies: cb, headers: csrf })).json()).toEqual({ ok: true });
     expect(bus.log.at(-1)!.message).toEqual({ kind: 'filter', terms: [{ pattern: 'plum+', kind: 'REGEX', action: 'BLOCK' }] });
-    expect(await nameAllowed(prisma!, 'kiwi')).toBe(true);
-    expect(await nameAllowed(prisma!, 'plummm')).toBe(false);
 
     // the report queue carries the target's recent lines and filter hits; a report resolves exactly once
     await prisma!.chatMessage.create({ data: { id: 's1', channel: 'subnet:lo', operatorId: ben.id, text: 'buy gold', at: new Date() } });

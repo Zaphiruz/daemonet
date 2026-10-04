@@ -463,6 +463,29 @@ describe('chat through the Game', () => {
     await g.game.shutdown();
   });
 
+  it('applies admin filter terms to operator names: loaded from the store and added at runtime over the bus, in every world', async () => {
+    const g = setupGame();
+    g.store.filterTerms.push({ pattern: 'pineapple', kind: 'WORD', action: 'BLOCK' });
+    await g.game.loadChatTerms();
+    const newbie = await g.join('newbie');
+    let n = 0;
+    const claim = async (operatorName: string) => {
+      const reqId = `k${++n}`;
+      await g.game.message(newbie, JSON.stringify({ t: 'cmd', seq: 3, d: { reqId, cmd: 'claimStarter', actor: 'self', args: { species: 'pingling', operatorName } } }));
+      g.game.tick();
+      await g.game.flush();
+      g.game.tick();
+      return newbie.sent.filter((m) => (m.t === 'ack' || m.t === 'err') && m.d.reqId === reqId).at(-1);
+    };
+    expect(await claim('pineapple')).toMatchObject({ t: 'err', d: { code: 'E_INVALID', message: 'that name is not allowed' } });
+    // an admin adds a term at runtime: the api writes it and publishes the full list
+    await g.bus.publish('admin', { kind: 'filter', terms: [{ pattern: 'pineapple', kind: 'WORD', action: 'BLOCK' }, { pattern: 'kumquat', kind: 'WORD', action: 'MASK' }] });
+    expect(await claim('kumquat-fan')).toMatchObject({ t: 'err', d: { code: 'E_INVALID', message: 'that name is not allowed' } });
+    expect(g.b.nameFilter).toBe(g.a.nameFilter);
+    expect(await claim('plainname')).toMatchObject({ t: 'ack' });
+    await g.game.shutdown();
+  });
+
   it('stops listening to the bus on shutdown', async () => {
     const g = setupGame();
     const alice = await g.join('alice');

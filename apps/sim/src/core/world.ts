@@ -1,4 +1,5 @@
 import {
+  DEFAULT_FILTER,
   DEFAULT_ODDS,
   RAM_SLOTS,
   emptyMoveTypeUses,
@@ -10,6 +11,7 @@ import {
   statBlockFromArray,
   statBlockToArray,
   xpForLevel,
+  type CompiledFilter,
   type Rng,
   type SpawnOdds,
   type SpawnRoll,
@@ -82,6 +84,11 @@ export class World {
   readonly now: () => string;
   /** Whether a travel destination is hosted; the runtime sets it to the subnets of its worlds. */
   hosted: (subnet: string) => boolean;
+  /**
+   * The chat filter operator names must pass (defaults + admin terms): the runtime replaces it whenever the chat
+   * service's filter changes (boot load, `filter` admin messages, resyncs).
+   */
+  nameFilter: CompiledFilter = DEFAULT_FILTER;
   queuedUses: QueuedUse[] = [];
   private readonly pending = new Map<string, Intent>();
   private counter = 0;

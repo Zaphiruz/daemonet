@@ -28,6 +28,8 @@ export interface ChatHost {
   /** Cluster / org membership resolution (plans 2–3 fill these in; until then nobody is in one). */
   clusterOf?(operatorId: string): { id: string; members: Iterable<string> } | undefined;
   orgOf?(operatorId: string): { id: string; tag: string } | undefined;
+  /** The compiled filter (defaults + admin terms) changed: names are checked against it too (SP4 spec §5.1). */
+  filterChanged?(filter: CompiledFilter): void;
   now(): number;
 }
 
@@ -127,6 +129,12 @@ export class ChatService {
   /** Terms added by admins (loaded at boot, refreshed on the bus). */
   setExtraTerms(terms: readonly FilterTerm[]): void {
     this.filter = compileFilter([...DEFAULT_TERMS, ...terms]);
+    this.host.filterChanged?.(this.filter);
+  }
+
+  /** The filter in force (defaults + admin terms). */
+  get currentFilter(): CompiledFilter {
+    return this.filter;
   }
 
   /** Called when an operator's record is loaded (mute from the DB). */

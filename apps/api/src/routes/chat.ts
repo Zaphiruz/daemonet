@@ -5,8 +5,6 @@ import {
   DEFAULT_TERMS,
   FILTER_MAX_TERMS,
   REPORTS_PER_DAY,
-  compileFilter,
-  nameAllowedBy,
   validateFilterTerm,
   type FilterTerm,
 } from '@daemonet/rules';
@@ -239,12 +237,6 @@ export function registerChatRoutes(app: FastifyInstance, prisma: PrismaClient, b
     if (message) publish(message);
     return { ok: true };
   });
-}
-
-/** Names and org tags go through the same filter as chat (SP4 spec §5.1). */
-export async function nameAllowed(prisma: PrismaClient, name: string): Promise<boolean> {
-  const extra: FilterTerm[] = (await prisma.chatFilterTerm.findMany({ orderBy: [{ at: 'asc' }, { id: 'asc' }] })).map((r) => ({ pattern: r.pattern, kind: r.kind, action: r.action }));
-  return nameAllowedBy(compileFilter([...DEFAULT_TERMS, ...extra]), name);
 }
 
 /** Deletes chat older than CHAT_HISTORY_DAYS; the server runs it at boot and every 6 hours. */

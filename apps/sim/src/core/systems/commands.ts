@@ -1,5 +1,4 @@
 import {
-  DEFAULT_FILTER,
   GATEWAY_RADIUS,
   MAX_IV,
   RUNNING_MAX,
@@ -258,7 +257,7 @@ function claimStarter(world: World, op: Operator, c: Cmd<'claimStarter'>, input:
     throw new Rejection('E_INVALID', 'unknown species');
   }
   if (!species.starter) throw new Rejection('E_INVALID', `${species.name} is not a starter`);
-  if (!nameAllowedBy(DEFAULT_FILTER, c.args.operatorName)) throw new Rejection('E_INVALID', 'that name is not allowed');
+  if (!nameAllowedBy(world.nameFilter, c.args.operatorName)) throw new Rejection('E_INVALID', 'that name is not allowed');
   const roll = rollSpawn(world.rng, { clean: 0, signatureStep: 0 });
   op.pendingClaim = true;
   const daemon = {
