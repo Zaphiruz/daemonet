@@ -68,6 +68,7 @@ export function operatorRecord(id: string, overrides: Partial<OperatorRecord> = 
     x: 5.5,
     y: 5.5,
     bits: 0,
+    diskCapacity: 256,
     inventory: { sniff: 8, tap: 2, mirror: 2, dump: 2, restore: 2 },
     ram: [ownedRecord('pingling', 20, 0, `${id}-d0`), ownedRecord('glitchmite', 20, 1, `${id}-d1`)],
     diskSlots: [],

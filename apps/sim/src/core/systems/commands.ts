@@ -1,5 +1,4 @@
 import {
-  DISK_SLOTS,
   GATEWAY_RADIUS,
   MAX_IV,
   RUNNING_MAX,
@@ -20,6 +19,7 @@ import { Rejection, type Daemon, type Input, type Operator } from '../model.js';
 import type { Out } from '../out.js';
 import type { World } from '../world.js';
 import { startCapture, submitCapture } from './capture.js';
+import { buy, craft, decompile } from './economy.js';
 import { evolve } from './evolve.js';
 import { restoreDaemon } from './upkeep.js';
 
@@ -141,6 +141,15 @@ function handle(world: World, input: Input, out: Out): void {
       return evolve(world, op, ownedDaemon(world, op, c.args.daemonId), c.args.formId, input, out);
     case 'travel':
       return travel(world, op, c, input, out);
+    case 'buy':
+      requireAtHost(world, op);
+      return buy(world, op, c.args, input, out);
+    case 'craft':
+      requireAtHost(world, op);
+      return craft(world, op, c.args, input, out);
+    case 'decompile':
+      requireAtHost(world, op);
+      return decompile(world, op, ownedDaemon(world, op, c.args.daemonId), c.args.confirm, input, out);
     case 'restoreAll':
       requireAtHost(world, op);
       op.path = [];
@@ -286,7 +295,7 @@ function store(world: World, op: Operator, c: Cmd<'store'>, input: Input, out: O
   if (d.active) throw new Rejection('E_STATE', 'recall the daemon first');
   if (d.pending) throw new Rejection('E_STATE', 'already being stored');
   let slot = -1;
-  for (let s = 0; s < DISK_SLOTS; s++) {
+  for (let s = 0; s < op.diskCapacity; s++) {
     if (!op.diskSlots.has(s)) {
       slot = s;
       break;

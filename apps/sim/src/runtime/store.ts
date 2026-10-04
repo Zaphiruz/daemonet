@@ -1,4 +1,6 @@
-import type { Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
+import { DISK_BASE, DISK_EXPANSION_ITEM, DISK_STEP, diskExpansionPrice, getRecipe } from '@daemonet/rules';
+import type { EconomyIntent, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
+import { shopPrice } from '../core/systems/economy.js';
 
 export interface IntentContext {
   seedId: string;
@@ -13,11 +15,89 @@ export interface Store {
   loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord>;
   /** Idempotent by intent.id. Domain failures (name taken, not on Disk) resolve with ok: false. */
   applyIntent(intent: Intent, ctx: IntentContext): Promise<IntentResult>;
+  /**
+   * Writes position, inventory and RAM daemon state. Never writes `bits` or `diskCapacity` (only intents and
+   * `grantBits` change those, with a ledger row) and skips `inventory` on records marked `inventoryInFlight`.
+   */
   checkpoint(records: readonly OperatorRecord[]): Promise<void>;
   /** Form ids with a Discovery row (loaded once at boot into World.discovered). */
   listDiscoveries(): Promise<string[]>;
+  /**
+   * Credits (or, with a negative delta, debits) bits outside the sim's intents (admin grants, dev seeding, ticket
+   * payouts) with a ledger row in the same transaction. Throws on a non-integer or zero delta, an unknown operator, or
+   * a debit larger than the balance. A connected operator's world sees the new balance on its next connection.
+   */
+  grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<void>;
+  /** The operator's most recent `limit` ledger rows, oldest first. */
+  ledgerFor(operatorId: string, limit?: number): Promise<LedgerRow[]>;
   ping(): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface LedgerRow {
+  operatorId: string;
+  delta: number;
+  reason: string;
+  ref: string | null;
+  at: string;
+}
+
+/** Ledger reason of a bits-spending intent. */
+export function ledgerReason(intent: Extract<EconomyIntent, { kind: 'buy' | 'craft' }>): 'shop' | 'disk' | 'craft' {
+  if (intent.kind === 'craft') return 'craft';
+  return intent.itemId === DISK_EXPANSION_ITEM ? 'disk' : 'shop';
+}
+
+/**
+ * Domain check shared by both stores: what an economy intent costs must match the rules, so a world bug or a forged
+ * intent can never mint bits or items. Returns the failure reason, or null when the intent is well-formed.
+ * `diskCapacity` is the operator's committed capacity (Disk expansions are priced on it).
+ */
+export function economyIntentProblem(intent: EconomyIntent, diskCapacity: number): string | null {
+  const count = (n: number, min: number) => Number.isSafeInteger(n) && n >= min;
+  switch (intent.kind) {
+    case 'buy': {
+      if (!count(intent.qty, 1) || !count(intent.price, 0)) return 'invalid purchase';
+      if (intent.itemId === DISK_EXPANSION_ITEM) {
+        const price = diskExpansionPrice(diskCapacity);
+        if (price === null) return 'Disk is already at its maximum';
+        return intent.qty === 1 && intent.price === price ? null : 'price changed';
+      }
+      const unit = shopPrice(intent.itemId);
+      if (unit === undefined) return 'not for sale';
+      return intent.price === unit * intent.qty ? null : 'price changed';
+    }
+    case 'craft': {
+      let ok = count(intent.qty, 1) && count(intent.bits, 0) && count(intent.output.qty, 1);
+      try {
+        const r = getRecipe(intent.recipeId);
+        ok &&= intent.bits === r.bits * intent.qty && intent.output.item === r.output.item && intent.output.qty === r.output.qty * intent.qty;
+      } catch {
+        ok = false;
+      }
+      ok &&= Object.values(intent.fragments).every((n) => count(n, 1));
+      return ok ? null : 'invalid recipe';
+    }
+    case 'decompile':
+      return Object.values(intent.fragments).every((n) => count(n, 1)) ? null : 'invalid decompile';
+  }
+}
+
+/** Copy of `inv` with `items` added (sign 1) or removed (sign -1); counts that reach 0 are dropped. */
+export function withItems(inv: Readonly<Record<string, number>>, items: Readonly<Record<string, number>>, sign: 1 | -1): Record<string, number> {
+  const next = { ...inv };
+  for (const [id, n] of Object.entries(items)) {
+    const left = (next[id] ?? 0) + sign * n;
+    if (left <= 0) delete next[id];
+    else next[id] = left;
+  }
+  return next;
+}
+
+/** First item of `items` the inventory has too few of, or null. */
+export function missingItem(inv: Readonly<Record<string, number>>, items: Readonly<Record<string, number>>): string | null {
+  for (const [id, n] of Object.entries(items)) if ((inv[id] ?? 0) < n) return id;
+  return null;
 }
 
 export function randomHex(bytes: number): string {
@@ -45,6 +125,7 @@ interface MemOperator {
   name: string | null;
   starterClaimed: boolean;
   bits: number;
+  diskCapacity: number;
   subnet: string;
   x: number;
   y: number;
@@ -58,6 +139,8 @@ export class MemoryStore implements Store {
   readonly applied = new Set<string>();
   readonly seeds: Array<{ id: string; seed: string; subnet: string }> = [];
   readonly discoveries = new Map<string, { operatorId: string; discoveredAt: string }>();
+  readonly ledger: LedgerRow[] = [];
+  readonly archive = new Map<string, MemDaemon & { reason: string; archivedAt: string }>();
   /** Tests set this to make the next N applyIntent calls throw. */
   failNext = 0;
 
@@ -70,7 +153,7 @@ export class MemoryStore implements Store {
   async loadOrCreateOperator(sub: string, subnet: string, spawn: Point): Promise<OperatorRecord> {
     let op = [...this.operators.values()].find((o) => o.sub === sub);
     if (!op) {
-      op = { id: crypto.randomUUID(), sub, name: null, starterClaimed: false, bits: 0, subnet, x: spawn.x, y: spawn.y, inventory: {} };
+      op = { id: crypto.randomUUID(), sub, name: null, starterClaimed: false, bits: 0, diskCapacity: DISK_BASE, subnet, x: spawn.x, y: spawn.y, inventory: {} };
       this.operators.set(op.id, op);
     }
     const mine = [...this.daemons.values()].filter((d) => d.operatorId === op.id);
@@ -82,6 +165,7 @@ export class MemoryStore implements Store {
       x: op.x,
       y: op.y,
       bits: op.bits,
+      diskCapacity: op.diskCapacity,
       inventory: { ...op.inventory },
       ram: mine.filter((d) => d.location === 'RAM').sort((a, b) => a.slot - b.slot).map(({ operatorId: _o, location: _l, ...rec }) => ({ ...rec })),
       diskSlots: mine.filter((d) => d.location === 'DISK').map((d) => d.slot).sort((a, b) => a - b),
@@ -155,6 +239,37 @@ export class MemoryStore implements Store {
       case 'travel':
         Object.assign(op, { subnet: intent.to, x: intent.x, y: intent.y });
         break;
+      case 'buy': {
+        const problem = economyIntentProblem(intent, op.diskCapacity);
+        if (problem) return { ok: false, reason: problem };
+        if (op.bits < intent.price) return { ok: false, reason: 'not enough bits' };
+        op.bits -= intent.price;
+        if (intent.itemId === DISK_EXPANSION_ITEM) op.diskCapacity += DISK_STEP;
+        else op.inventory = withItems(op.inventory, { [intent.itemId]: intent.qty }, 1);
+        this.ledger.push({ operatorId: op.id, delta: -intent.price, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
+        break;
+      }
+      case 'craft': {
+        const problem = economyIntentProblem(intent, op.diskCapacity);
+        if (problem) return { ok: false, reason: problem };
+        if (op.bits < intent.bits) return { ok: false, reason: 'not enough bits' };
+        const missing = missingItem(op.inventory, intent.fragments);
+        if (missing) return { ok: false, reason: `not enough ${missing}` };
+        op.bits -= intent.bits;
+        op.inventory = withItems(withItems(op.inventory, intent.fragments, -1), { [intent.output.item]: intent.output.qty }, 1);
+        this.ledger.push({ operatorId: op.id, delta: -intent.bits, reason: ledgerReason(intent), ref: intent.id, at: new Date().toISOString() });
+        break;
+      }
+      case 'decompile': {
+        const problem = economyIntentProblem(intent, op.diskCapacity);
+        if (problem) return { ok: false, reason: problem };
+        const d = this.daemons.get(intent.daemonId);
+        if (!d || d.operatorId !== op.id || d.location !== 'RAM' || d.species !== intent.species) return { ok: false, reason: 'daemon not found' };
+        this.daemons.delete(d.id);
+        this.archive.set(d.id, { ...d, history: [...d.history, intent.history], reason: 'decompiled', archivedAt: new Date().toISOString() });
+        op.inventory = withItems(op.inventory, intent.fragments, 1);
+        break;
+      }
     }
     this.applied.add(intent.id);
     return { ok: true };
@@ -164,7 +279,8 @@ export class MemoryStore implements Store {
     for (const rec of records) {
       const op = this.operators.get(rec.id);
       if (!op) continue;
-      Object.assign(op, { subnet: rec.subnet, x: rec.x, y: rec.y, bits: rec.bits, inventory: { ...rec.inventory } });
+      // bits / diskCapacity move only through intents (the ledger); an inventory an intent is rewriting is left to it.
+      Object.assign(op, { subnet: rec.subnet, x: rec.x, y: rec.y }, rec.inventoryInFlight ? {} : { inventory: { ...rec.inventory } });
       for (const d of rec.ram) {
         const row = this.daemons.get(d.id);
         // A record taken before an evolve committed (other species) must not roll the evolved row back.
@@ -175,6 +291,22 @@ export class MemoryStore implements Store {
 
   async listDiscoveries(): Promise<string[]> {
     return [...this.discoveries.keys()];
+  }
+
+  async grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<void> {
+    if (!Number.isSafeInteger(delta) || delta === 0) throw new RangeError(`invalid bits delta ${delta}`);
+    const op = this.operators.get(operatorId);
+    if (!op) throw new Error(`unknown operator ${operatorId}`);
+    if (op.bits + delta < 0) throw new RangeError('not enough bits');
+    op.bits += delta;
+    this.ledger.push({ operatorId, delta, reason, ref: ref ?? null, at: new Date().toISOString() });
+  }
+
+  async ledgerFor(operatorId: string, limit = 64): Promise<LedgerRow[]> {
+    return this.ledger
+      .filter((l) => l.operatorId === operatorId)
+      .slice(-limit)
+      .map((l) => ({ ...l }));
   }
 
   async ping(): Promise<void> {}

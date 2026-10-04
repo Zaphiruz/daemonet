@@ -5,7 +5,7 @@ import type { Point } from './grid.js';
 /** One line of a daemon's life story (SP3a spec §7). `at` is an ISO timestamp. */
 export interface HistoryEntry {
   at: string;
-  kind: 'captured' | 'evolved' | 'clean' | 'signature' | 'patched';
+  kind: 'captured' | 'evolved' | 'clean' | 'signature' | 'patched' | 'decompiled';
   detail: string;
 }
 
@@ -48,10 +48,18 @@ export interface OperatorRecord {
   x: number;
   y: number;
   bits: number;
+  /** Disk slots owned (DISK_BASE + DISK_STEP per expansion). */
+  diskCapacity: number;
   inventory: Record<string, number>;
   ram: OwnedDaemonRecord[];
   /** Occupied Disk slots (0-255). */
   diskSlots: number[];
+  /**
+   * Set on checkpoint records while an intent that rewrites the inventory in the store (buy, craft, decompile,
+   * claimStarter) is in flight: the store must leave `inventory` alone so it can neither rewind a committed intent
+   * nor persist the world's not-yet-committed view of it. The next checkpoint after it settles writes it.
+   */
+  inventoryInFlight?: boolean;
 }
 
 export interface WildState {
@@ -98,7 +106,7 @@ export interface Daemon {
   cooldowns: Record<string, number>;
   statuses: Partial<Record<StatusId, number>>;
   lastCombatTick: number;
-  /** Owned daemon locked by a pending store or evolve intent. */
+  /** Owned daemon locked by a pending store, evolve or decompile intent. */
   pending: boolean;
   wild: WildState | null;
   /** Trait id (ROLE_TRAITS[species.role][traitSlot]). */
@@ -137,6 +145,7 @@ export interface Operator {
   y: number;
   path: Point[];
   bits: number;
+  diskCapacity: number;
   inventory: Record<string, number>;
   /** Daemon ids in RAM (owned daemons live in World.daemons). */
   ram: string[];
@@ -197,7 +206,30 @@ export type Intent =
       changes: EvolutionChange[];
       history: HistoryEntry[];
     }
-  | { id: string; kind: 'travel'; operatorId: string; reqId: string; gatewayId: string; from: string; to: string; x: number; y: number };
+  | { id: string; kind: 'travel'; operatorId: string; reqId: string; gatewayId: string; from: string; to: string; x: number; y: number }
+  /** Shop purchase (or a Disk expansion when itemId is 'diskExpansion'); `price` is the total in bits. */
+  | { id: string; kind: 'buy'; operatorId: string; reqId: string; itemId: string; qty: number; price: number }
+  | {
+      id: string;
+      kind: 'craft';
+      operatorId: string;
+      reqId: string;
+      recipeId: string;
+      qty: number;
+      bits: number;
+      fragments: Record<string, number>;
+      output: { item: string; qty: number };
+    }
+  /** `fragments` also carries the daemon's held item (it returns to the inventory). */
+  | { id: string; kind: 'decompile'; operatorId: string; reqId: string; daemonId: string; species: string; fragments: Record<string, number>; history: HistoryEntry };
+
+/** Intent kinds that spend bits or rewrite the operator's inventory in the store. */
+export const ECONOMY_INTENTS = ['buy', 'craft', 'decompile'] as const;
+export type EconomyIntent = Extract<Intent, { kind: (typeof ECONOMY_INTENTS)[number] }>;
+
+export function isEconomyIntent(intent: Intent): intent is EconomyIntent {
+  return (ECONOMY_INTENTS as readonly string[]).includes(intent.kind);
+}
 
 /** `discovered`: an evolve intent created the first Discovery row for its form. */
 export type IntentResult = { ok: true; daemon?: OwnedDaemonRecord; discovered?: boolean } | { ok: false; reason: string };

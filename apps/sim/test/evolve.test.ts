@@ -87,7 +87,7 @@ describe('evolve command', () => {
     expect(world.discovered.has('tracerat')).toBe(true);
     // the second evolution into the same form is not a discovery
     world.addOperator(operatorRecord('bob', { ram: [ownedRecord('echolet', 16, 0, 'bob-d0')] }));
-    store.operators.set('bob', { id: 'bob', sub: 'bob', name: 'bob', starterClaimed: true, bits: 0, subnet: 'test', x: 5, y: 5, inventory: {} });
+    store.operators.set('bob', { id: 'bob', sub: 'bob', name: 'bob', starterClaimed: true, bits: 0, diskCapacity: 256, subnet: 'test', x: 5, y: 5, inventory: {} });
     store.daemons.set('bob-d0', { ...world.checkpoint('bob').ram[0]!, operatorId: 'bob', location: 'RAM' });
     const r = step(world, input('bob', { cmd: 'evolve', actor: self, args: { daemonId: 'bob-d0', formId: 'tracerat' } }));
     const intent2 = r.intents[0]!;

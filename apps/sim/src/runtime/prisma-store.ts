@@ -1,6 +1,17 @@
 import { createPrisma, type Daemon as DaemonRow, type Prisma, type PrismaClient } from '@daemonet/db';
 import type { HistoryEntry, Intent, IntentResult, OperatorRecord, OwnedDaemonRecord, Point } from '../core/index.js';
-import { randomHex, stateFields as memStateFields, type IntentContext, type Store } from './store.js';
+import { DISK_EXPANSION_ITEM, DISK_STEP } from '@daemonet/rules';
+import {
+  economyIntentProblem,
+  ledgerReason,
+  missingItem,
+  randomHex,
+  stateFields as memStateFields,
+  withItems,
+  type IntentContext,
+  type LedgerRow,
+  type Store,
+} from './store.js';
 
 function toRecord(row: DaemonRow): OwnedDaemonRecord {
   return {
@@ -65,6 +76,22 @@ function violatedConstraint(err: unknown): string {
 /** Thrown inside a transaction to roll it back with a domain (non-retryable) reason. */
 class DomainFailure extends Error {}
 
+type Tx = Prisma.TransactionClient;
+
+/**
+ * Locks the operator row for the rest of the transaction and returns its economy columns. Every economy intent takes
+ * this lock first, so two of them for one operator (or one racing a checkpoint's update of the row) run one after the
+ * other: the balance check, the decrement and the inventory rewrite see each other's committed result.
+ */
+async function lockOperator(tx: Tx, id: string): Promise<{ bits: bigint; diskCapacity: number; inventory: Record<string, number> }> {
+  const rows = await tx.$queryRaw<Array<{ bits: bigint; diskCapacity: number; inventory: unknown }>>`
+    SELECT "bits", "diskCapacity", "inventory" FROM "Operator" WHERE "id" = ${id} FOR UPDATE`;
+  const row = rows[0];
+  if (!row) throw new Error(`unknown operator ${id}`);
+  const inventory = row.inventory && typeof row.inventory === 'object' && !Array.isArray(row.inventory) ? (row.inventory as Record<string, number>) : {};
+  return { bits: BigInt(row.bits), diskCapacity: Number(row.diskCapacity), inventory };
+}
+
 export class PrismaStore implements Store {
   constructor(readonly prisma: PrismaClient) {}
 
@@ -108,6 +135,7 @@ export class PrismaStore implements Store {
       x: op.x,
       y: op.y,
       bits: Number(op.bits),
+      diskCapacity: op.diskCapacity,
       inventory: (op.inventory ?? {}) as Record<string, number>,
       ram: op.daemons.filter((d) => d.location === 'RAM').map(toRecord),
       diskSlots: op.daemons.filter((d) => d.location === 'DISK').map((d) => d.slot),
@@ -203,6 +231,49 @@ export class PrismaStore implements Store {
             await tx.operator.update({ where: { id: intent.operatorId }, data: { subnet: intent.to, x: intent.x, y: intent.y } });
             return { ok: true } as const;
           }
+          case 'buy': {
+            const op = await lockOperator(tx, intent.operatorId);
+            const problem = economyIntentProblem(intent, op.diskCapacity);
+            if (problem) throw new DomainFailure(problem);
+            if (op.bits < BigInt(intent.price)) throw new DomainFailure('not enough bits');
+            const disk = intent.itemId === DISK_EXPANSION_ITEM;
+            await tx.operator.update({
+              where: { id: intent.operatorId },
+              data: {
+                bits: { decrement: BigInt(intent.price) },
+                ...(disk ? { diskCapacity: { increment: DISK_STEP } } : { inventory: withItems(op.inventory, { [intent.itemId]: intent.qty }, 1) }),
+              },
+            });
+            await tx.bitsLedger.create({ data: { operatorId: intent.operatorId, delta: BigInt(-intent.price), reason: ledgerReason(intent), ref: intent.id } });
+            return { ok: true } as const;
+          }
+          case 'craft': {
+            const op = await lockOperator(tx, intent.operatorId);
+            const problem = economyIntentProblem(intent, op.diskCapacity);
+            if (problem) throw new DomainFailure(problem);
+            if (op.bits < BigInt(intent.bits)) throw new DomainFailure('not enough bits');
+            const missing = missingItem(op.inventory, intent.fragments);
+            if (missing) throw new DomainFailure(`not enough ${missing}`);
+            const inventory = withItems(withItems(op.inventory, intent.fragments, -1), { [intent.output.item]: intent.output.qty }, 1);
+            await tx.operator.update({ where: { id: intent.operatorId }, data: { bits: { decrement: BigInt(intent.bits) }, inventory } });
+            await tx.bitsLedger.create({ data: { operatorId: intent.operatorId, delta: BigInt(-intent.bits), reason: ledgerReason(intent), ref: intent.id } });
+            return { ok: true } as const;
+          }
+          case 'decompile': {
+            const op = await lockOperator(tx, intent.operatorId);
+            const problem = economyIntentProblem(intent, op.diskCapacity);
+            if (problem) throw new DomainFailure(problem);
+            // Lock the daemon row too (operator first, then daemon: the same order as a checkpoint), so a concurrent
+            // store / evolve of it either committed before this read or waits and then finds nothing to move.
+            await tx.$queryRaw`SELECT 1 FROM "Daemon" WHERE "id" = ${intent.daemonId} FOR UPDATE`;
+            const row = await tx.daemon.findUnique({ where: { id: intent.daemonId } });
+            if (!row || row.operatorId !== intent.operatorId || row.location !== 'RAM' || row.species !== intent.species) throw new DomainFailure('daemon not found');
+            const { location: _l, slot: _s, hp: _h, energy: _e, crashed: _c, history: _hi, ...rest } = row;
+            await tx.daemonArchive.create({ data: { ...rest, history: json([...historyOf(row), intent.history]), reason: 'decompiled' } });
+            await tx.daemon.delete({ where: { id: intent.daemonId } });
+            await tx.operator.update({ where: { id: intent.operatorId }, data: { inventory: withItems(op.inventory, intent.fragments, 1) } });
+            return { ok: true } as const;
+          }
         }
       });
     } catch (err) {
@@ -236,7 +307,8 @@ export class PrismaStore implements Store {
       for (const rec of records) {
         await tx.operator.update({
           where: { id: rec.id },
-          data: { subnet: rec.subnet, x: rec.x, y: rec.y, bits: BigInt(rec.bits), inventory: rec.inventory, lastSeenAt: now },
+          // bits / diskCapacity move only through intents (the ledger); an inventory an intent is rewriting is left to it.
+          data: { subnet: rec.subnet, x: rec.x, y: rec.y, ...(rec.inventoryInFlight ? {} : { inventory: rec.inventory }), lastSeenAt: now },
         });
         for (const d of rec.ram) {
           // `species` guard: a record taken before an evolve committed must not roll the evolved row back.
@@ -249,6 +321,27 @@ export class PrismaStore implements Store {
   async listDiscoveries(): Promise<string[]> {
     const rows = await this.prisma.discovery.findMany({ select: { formId: true }, orderBy: { discoveredAt: 'asc' } });
     return rows.map((r) => r.formId);
+  }
+
+  async grantBits(operatorId: string, delta: number, reason: string, ref?: string): Promise<void> {
+    if (!Number.isSafeInteger(delta) || delta === 0) throw new RangeError(`invalid bits delta ${delta}`);
+    await this.prisma.$transaction(async (tx) => {
+      // A debit is conditional on the balance (row-locked by the update), so bits never go negative.
+      const res = await tx.operator.updateMany({
+        where: delta < 0 ? { id: operatorId, bits: { gte: BigInt(-delta) } } : { id: operatorId },
+        data: { bits: { increment: BigInt(delta) } },
+      });
+      if (res.count !== 1) {
+        if (delta < 0 && (await tx.operator.count({ where: { id: operatorId } })) === 1) throw new RangeError('not enough bits');
+        throw new Error(`unknown operator ${operatorId}`);
+      }
+      await tx.bitsLedger.create({ data: { operatorId, delta: BigInt(delta), reason, ref: ref ?? null } });
+    });
+  }
+
+  async ledgerFor(operatorId: string, limit = 64): Promise<LedgerRow[]> {
+    const rows = await this.prisma.bitsLedger.findMany({ where: { operatorId }, orderBy: [{ at: 'desc' }, { seq: 'desc' }], take: limit });
+    return rows.reverse().map((r) => ({ operatorId: r.operatorId, delta: Number(r.delta), reason: r.reason, ref: r.ref, at: r.at.toISOString() }));
   }
 
   async ping(): Promise<void> {

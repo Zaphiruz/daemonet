@@ -88,14 +88,14 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       expect(missing).toEqual({ ok: false, reason: 'not on Disk' });
     });
 
-    it('checkpoints position, inventory, bits and RAM daemon state', async () => {
+    it('checkpoints position, inventory and RAM daemon state (never bits)', async () => {
       const a = await store.loadOrCreateOperator('sub-e', 'lo', SPAWN);
       const d = ownedRecord('hashling', 5, 0, 'abcd1234-d6');
       await store.applyIntent(claim(a.id, 'erin', d), { seedId: 'abcd1234' });
       const rec = await store.loadOrCreateOperator('sub-e', 'lo', SPAWN);
       await store.checkpoint([{ ...rec, x: 40.25, y: 12.5, bits: 64, inventory: { sniff: 3 }, ram: [{ ...rec.ram[0]!, level: 7, hp: 3, crashed: true }] }]);
       const after = await store.loadOrCreateOperator('sub-e', 'lo', SPAWN);
-      expect(after).toMatchObject({ x: 40.25, y: 12.5, bits: 64, inventory: { sniff: 3 } });
+      expect(after).toMatchObject({ x: 40.25, y: 12.5, bits: 0, inventory: { sniff: 3 } });
       expect(after.ram[0]).toMatchObject({ level: 7, hp: 3, crashed: true });
     });
 
@@ -147,6 +147,150 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await store.checkpoint([{ ...rec, x: 7, y: 8 }]);
       expect(await store.applyIntent(intent, { seedId: 'abcd1234' })).toEqual({ ok: true });
       expect(await store.loadOrCreateOperator('sub-t2', 'lo', SPAWN)).toMatchObject({ subnet: 'lan', x: 7, y: 8 });
+    });
+
+    it('buys, expands Disk, crafts and decompiles through the ledger, refusing what the operator cannot afford', async () => {
+      const a = await store.loadOrCreateOperator('sub-e1', 'lo', SPAWN);
+      await store.applyIntent(claim(a.id, 'ezra', ownedRecord('tracerat', 20, 0, 'abcd1234-e1')), { seedId: 'abcd1234' });
+      const buy = (id: string, itemId: string, qty: number, price: number): Intent => ({ id, kind: 'buy', operatorId: a.id, reqId: 'r', itemId, qty, price });
+      expect(await store.applyIntent(buy('i-buy-0', 'sniff', 1, 32), { seedId: 'abcd1234' })).toEqual({ ok: false, reason: 'not enough bits' });
+      await store.grantBits(a.id, 10_000, 'admin');
+      expect(await store.applyIntent(buy('i-buy-1', 'sniff', 3, 96), { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect(await store.applyIntent(buy('i-buy-1', 'sniff', 3, 96), { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect(await store.applyIntent(buy('i-buy-2', 'diskExpansion', 1, 8192), { seedId: 'abcd1234' })).toEqual({ ok: true });
+      let rec = await store.loadOrCreateOperator('sub-e1', 'lo', SPAWN);
+      expect(rec).toMatchObject({ bits: 10_000 - 96 - 8192, diskCapacity: 288, inventory: { sniff: 11, restore: 2 } });
+      const craft: Intent = {
+        id: 'i-craft-1', kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'restore', qty: 1, bits: 16, fragments: { 'frag:packet': 2 }, output: { item: 'restore', qty: 1 },
+      };
+      expect(await store.applyIntent(craft, { seedId: 'abcd1234' })).toEqual({ ok: false, reason: 'not enough frag:packet' });
+      const decompile: Intent = {
+        id: 'i-dec-1', kind: 'decompile', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-e1', species: 'tracerat', fragments: { 'frag:packet': 9, 'frag:signal': 9 },
+        history: { at: '2026-09-30T00:00:00.000Z', kind: 'decompiled', detail: 'test' },
+      };
+      expect(await store.applyIntent(decompile, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect(await store.applyIntent(decompile, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      expect(await store.applyIntent({ ...decompile, id: 'i-dec-2' }, { seedId: 'abcd1234' })).toEqual({ ok: false, reason: 'daemon not found' });
+      expect(await store.applyIntent(craft, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      rec = await store.loadOrCreateOperator('sub-e1', 'lo', SPAWN);
+      expect(rec.ram).toEqual([]);
+      expect(rec).toMatchObject({ bits: 10_000 - 96 - 8192 - 16, inventory: { sniff: 11, restore: 3, 'frag:packet': 7, 'frag:signal': 9 } });
+      const ledger = await store.ledgerFor(a.id);
+      expect(ledger.map((l) => [l.delta, l.reason])).toEqual([
+        [10_000, 'admin'],
+        [-96, 'shop'],
+        [-8192, 'disk'],
+        [-16, 'craft'],
+      ]);
+      // checkpoints never write bits
+      await store.checkpoint([{ ...rec, bits: 1 }]);
+      expect((await store.loadOrCreateOperator('sub-e1', 'lo', SPAWN)).bits).toBe(10_000 - 96 - 8192 - 16);
+    });
+
+    it('the balance always equals the sum of the ledger, and a replayed intent writes no second row', async () => {
+      const a = await store.loadOrCreateOperator('sub-l1', 'lo', SPAWN);
+      await store.grantBits(a.id, 1000, 'admin', 'grant-1');
+      const buy: Intent = { id: 'i-l-buy', kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'tap', qty: 2, price: 256 };
+      for (let i = 0; i < 3; i++) expect(await store.applyIntent(buy, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      await store.grantBits(a.id, -100, 'admin');
+      const rec = await store.loadOrCreateOperator('sub-l1', 'lo', SPAWN);
+      const ledger = await store.ledgerFor(a.id);
+      expect(ledger).toEqual([
+        { operatorId: a.id, delta: 1000, reason: 'admin', ref: 'grant-1', at: expect.any(String) },
+        { operatorId: a.id, delta: -256, reason: 'shop', ref: 'i-l-buy', at: expect.any(String) },
+        { operatorId: a.id, delta: -100, reason: 'admin', ref: null, at: expect.any(String) },
+      ]);
+      expect(rec.bits).toBe(ledger.reduce((sum, l) => sum + l.delta, 0));
+      expect(rec.inventory).toEqual({ tap: 2 });
+      expect((await store.ledgerFor(a.id, 2)).map((l) => l.delta)).toEqual([-256, -100]);
+    });
+
+    it('grantBits refuses zero, fractional and overdrawing deltas and unknown operators', async () => {
+      const a = await store.loadOrCreateOperator('sub-l2', 'lo', SPAWN);
+      await store.grantBits(a.id, 50, 'admin');
+      await expect(store.grantBits(a.id, 0, 'admin')).rejects.toThrow();
+      await expect(store.grantBits(a.id, 1.5, 'admin')).rejects.toThrow();
+      await expect(store.grantBits(a.id, Number.MAX_SAFE_INTEGER + 2, 'admin')).rejects.toThrow();
+      await expect(store.grantBits(a.id, -51, 'admin')).rejects.toThrow('not enough bits');
+      await expect(store.grantBits('00000000-0000-0000-0000-000000000000', 5, 'admin')).rejects.toThrow();
+      expect((await store.loadOrCreateOperator('sub-l2', 'lo', SPAWN)).bits).toBe(50);
+      expect(await store.ledgerFor(a.id)).toHaveLength(1);
+    });
+
+    it('refuses economy intents that do not match the rules (no bits or items can be minted)', async () => {
+      const a = await store.loadOrCreateOperator('sub-l3', 'lo', SPAWN);
+      await store.grantBits(a.id, 1_000_000, 'admin');
+      const buy = (id: string, itemId: string, qty: number, price: number): Intent => ({ id, kind: 'buy', operatorId: a.id, reqId: 'r', itemId, qty, price });
+      const ctx = { seedId: 'abcd1234' };
+      expect(await store.applyIntent(buy('i-x1', 'sniff', 1, -32), ctx)).toEqual({ ok: false, reason: 'invalid purchase' });
+      expect(await store.applyIntent(buy('i-x2', 'sniff', 0, 0), ctx)).toEqual({ ok: false, reason: 'invalid purchase' });
+      expect(await store.applyIntent(buy('i-x3', 'sniff', 1.5, 48), ctx)).toEqual({ ok: false, reason: 'invalid purchase' });
+      expect(await store.applyIntent(buy('i-x4', 'sniff', 4, 32), ctx)).toEqual({ ok: false, reason: 'price changed' });
+      expect(await store.applyIntent(buy('i-x5', 'jumboframe', 1, 0), ctx)).toEqual({ ok: false, reason: 'not for sale' });
+      expect(await store.applyIntent(buy('i-x6', 'constructor', 1, 0), ctx)).toEqual({ ok: false, reason: 'not for sale' });
+      expect(await store.applyIntent(buy('i-x7', 'diskExpansion', 2, 8192), ctx)).toEqual({ ok: false, reason: 'price changed' });
+      const craft = (id: string, over: Partial<Extract<Intent, { kind: 'craft' }>>): Intent => ({
+        id, kind: 'craft', operatorId: a.id, reqId: 'r', recipeId: 'restore', qty: 1, bits: 16, fragments: { 'frag:packet': 2 }, output: { item: 'restore', qty: 1 }, ...over,
+      });
+      expect(await store.applyIntent(craft('i-x8', { output: { item: 'restore', qty: 64 } }), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
+      expect(await store.applyIntent(craft('i-x9', { bits: 0 }), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
+      expect(await store.applyIntent(craft('i-x10', { fragments: { 'frag:packet': -2 } }), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
+      expect(await store.applyIntent(craft('i-x11', { recipeId: 'nope' }), ctx)).toEqual({ ok: false, reason: 'invalid recipe' });
+      const rec = await store.loadOrCreateOperator('sub-l3', 'lo', SPAWN);
+      expect(rec).toMatchObject({ bits: 1_000_000, inventory: {}, diskCapacity: 256 });
+      expect(await store.ledgerFor(a.id)).toHaveLength(1);
+    });
+
+    it('Disk expansions double in price and stop at the cap; checkpoints never write the capacity', async () => {
+      const a = await store.loadOrCreateOperator('sub-l4', 'lo', SPAWN);
+      await store.grantBits(a.id, 8192 * 2 ** 8, 'admin');
+      const ctx = { seedId: 'abcd1234' };
+      let price = 8192;
+      for (let i = 0; i < 8; i++, price *= 2) {
+        expect(await store.applyIntent({ id: `i-d${i}`, kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'diskExpansion', qty: 1, price }, ctx)).toEqual({ ok: true });
+      }
+      expect(await store.applyIntent({ id: 'i-d8', kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'diskExpansion', qty: 1, price }, ctx)).toEqual({
+        ok: false,
+        reason: 'Disk is already at its maximum',
+      });
+      const rec = await store.loadOrCreateOperator('sub-l4', 'lo', SPAWN);
+      expect(rec).toMatchObject({ diskCapacity: 512, bits: 8192 * 2 ** 8 - 8192 * (2 ** 8 - 1) });
+      await store.checkpoint([{ ...rec, diskCapacity: 1024 }]);
+      expect((await store.loadOrCreateOperator('sub-l4', 'lo', SPAWN)).diskCapacity).toBe(512);
+    });
+
+    it('a checkpoint marked inventoryInFlight leaves the inventory to the intent', async () => {
+      const a = await store.loadOrCreateOperator('sub-l5', 'lo', SPAWN);
+      await store.grantBits(a.id, 1000, 'admin');
+      const before = await store.loadOrCreateOperator('sub-l5', 'lo', SPAWN); // taken while the buy is "pending"
+      expect(await store.applyIntent({ id: 'i-f1', kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'tap', qty: 1, price: 128 }, { seedId: 'abcd1234' })).toEqual({ ok: true });
+      await store.checkpoint([{ ...before, x: 7, inventory: {}, inventoryInFlight: true }]);
+      expect(await store.loadOrCreateOperator('sub-l5', 'lo', SPAWN)).toMatchObject({ x: 7, bits: 872, inventory: { tap: 1 } });
+      await store.checkpoint([{ ...before, x: 8, inventory: { tap: 1, sniff: 2 } }]);
+      expect(await store.loadOrCreateOperator('sub-l5', 'lo', SPAWN)).toMatchObject({ x: 8, bits: 872, inventory: { tap: 1, sniff: 2 } });
+    });
+
+    it('decompile refuses a daemon on Disk, of another operator, or whose species changed, and archives once', async () => {
+      const a = await store.loadOrCreateOperator('sub-l6', 'lo', SPAWN);
+      const b = await store.loadOrCreateOperator('sub-l7', 'lo', SPAWN);
+      await store.applyIntent(claim(a.id, 'lena', ownedRecord('echolet', 16, 0, 'abcd1234-f1')), { seedId: 'abcd1234' });
+      const dec = (id: string, operatorId: string, species = 'echolet'): Intent => ({
+        id, kind: 'decompile', operatorId, reqId: 'r', daemonId: 'abcd1234-f1', species, fragments: { 'frag:packet': 3 },
+        history: { at: '2026-09-30T00:00:00.000Z', kind: 'decompiled', detail: 'test' },
+      });
+      const ctx = { seedId: 'abcd1234' };
+      expect(await store.applyIntent(dec('i-g1', b.id), ctx)).toEqual({ ok: false, reason: 'daemon not found' });
+      expect(await store.applyIntent(dec('i-g2', a.id, 'tracerat'), ctx)).toEqual({ ok: false, reason: 'daemon not found' });
+      await store.applyIntent({ id: 'i-g3', kind: 'store', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-f1', diskSlot: 0 }, ctx);
+      expect(await store.applyIntent(dec('i-g4', a.id), ctx)).toEqual({ ok: false, reason: 'daemon not found' });
+      await store.applyIntent({ id: 'i-g5', kind: 'load', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-f1', ramSlot: 0 }, ctx);
+      expect(await store.applyIntent(dec('i-g6', a.id), ctx)).toEqual({ ok: true });
+      expect(await store.applyIntent({ id: 'i-g7', kind: 'load', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-f1', ramSlot: 0 }, ctx)).toEqual({ ok: false, reason: 'not on Disk' });
+      const rec = await store.loadOrCreateOperator('sub-l6', 'lo', SPAWN);
+      expect(rec).toMatchObject({ ram: [], diskSlots: [], inventory: { sniff: 8, restore: 2, 'frag:packet': 3 } });
+      // a stale checkpoint naming the decompiled daemon cannot bring it back
+      await store.checkpoint([{ ...rec, ram: [ownedRecord('echolet', 16, 0, 'abcd1234-f1')] }]);
+      expect((await store.loadOrCreateOperator('sub-l6', 'lo', SPAWN)).ram).toEqual([]);
     });
 
     it('applies evolve intents idempotently and records the first discovery of each form', async () => {
@@ -224,12 +368,12 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     'PrismaStore',
     async () => new PrismaStore(prisma!),
     async () => {
-      await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+      await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
     },
   );
 
   it('treats a concurrent duplicate of the same claim as applied, not as a name clash', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-race', 'lo', SPAWN);
     const d = ownedRecord('pingling', 5, 0, 'abcd1234-d8');
@@ -242,7 +386,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('concurrent first evolutions into one form: both apply, exactly one is the discoverer', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-ra', 'lo', SPAWN);
     const b = await store.loadOrCreateOperator('sub-rb', 'lo', SPAWN);
@@ -259,7 +403,7 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
   });
 
   it('a concurrent duplicate of one evolve intent applies it once', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
     const store = new PrismaStore(prisma!);
     const a = await store.loadOrCreateOperator('sub-rc', 'lo', SPAWN);
     await store.applyIntent(claim(a.id, 'ric', ownedRecord('echolet', 16, 0, 'abcd1234-e3')), { seedId: 'abcd1234' });
@@ -269,8 +413,53 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
     expect(row.history).toEqual(EVOLVED_HISTORY);
   });
 
+  it('concurrent purchases cannot overdraw: the operator row lock serializes the balance check', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-race-buy', 'lo', SPAWN);
+    await store.grantBits(a.id, 2048 * 3, 'admin');
+    const results = await Promise.all(
+      Array.from({ length: 6 }, (_, i) => store.applyIntent({ id: `i-rb-${i}`, kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'dump', qty: 1, price: 2048 }, { seedId: 'abcd1234' })),
+    );
+    expect(results.filter((r) => r.ok)).toHaveLength(3);
+    expect(results.filter((r) => !r.ok)).toEqual(Array.from({ length: 3 }, () => ({ ok: false, reason: 'not enough bits' })));
+    const rec = await store.loadOrCreateOperator('sub-race-buy', 'lo', SPAWN);
+    expect(rec).toMatchObject({ bits: 0, inventory: { dump: 3 } });
+    expect(await prisma!.bitsLedger.count({ where: { operatorId: a.id } })).toBe(4);
+  });
+
+  it('a concurrent duplicate of one buy applies it (and its ledger row) once', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-race-dup', 'lo', SPAWN);
+    await store.grantBits(a.id, 1000, 'admin');
+    const buy: Intent = { id: 'i-dup-buy', kind: 'buy', operatorId: a.id, reqId: 'r', itemId: 'tap', qty: 1, price: 128 };
+    const results = await Promise.all([0, 1, 2].map(() => store.applyIntent(buy, { seedId: 'abcd1234' })));
+    expect(results).toEqual([{ ok: true }, { ok: true }, { ok: true }]);
+    expect(await store.loadOrCreateOperator('sub-race-dup', 'lo', SPAWN)).toMatchObject({ bits: 872, inventory: { tap: 1 } });
+    expect(await prisma!.bitsLedger.count({ where: { operatorId: a.id } })).toBe(2);
+  });
+
+  it('two decompiles of one daemon: one archives it, the other finds nothing (no duplicate fragments)', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const a = await store.loadOrCreateOperator('sub-race-dec', 'lo', SPAWN);
+    await store.applyIntent(claim(a.id, 'rdec', { ...ownedRecord('pingling', 5, 0, 'abcd1234-e5'), heldItem: 'jumboframe' }), { seedId: 'abcd1234' });
+    const dec = (id: string): Intent => ({
+      id, kind: 'decompile', operatorId: a.id, reqId: 'r', daemonId: 'abcd1234-e5', species: 'pingling', fragments: { 'frag:packet': 1, jumboframe: 1 },
+      history: { at: '2026-09-30T00:00:00.000Z', kind: 'decompiled', detail: 'test' },
+    });
+    const results = await Promise.all([store.applyIntent(dec('i-rd-1'), { seedId: 'abcd1234' }), store.applyIntent(dec('i-rd-2'), { seedId: 'abcd1234' })]);
+    expect(results).toContainEqual({ ok: true });
+    expect(results).toContainEqual({ ok: false, reason: 'daemon not found' });
+    expect(await store.loadOrCreateOperator('sub-race-dec', 'lo', SPAWN)).toMatchObject({ ram: [], inventory: { sniff: 8, restore: 2, 'frag:packet': 1, jumboframe: 1 } });
+    const archived = await prisma!.daemonArchive.findUniqueOrThrow({ where: { id: 'abcd1234-e5' } });
+    expect(archived).toMatchObject({ operatorId: a.id, species: 'pingling', heldItem: 'jumboframe', reason: 'decompiled', captureTool: 'starter', spawnSeedId: 'abcd1234' });
+    expect((archived.history as Array<{ kind: string }>).at(-1)).toMatchObject({ kind: 'decompiled' });
+  });
+
   it('simultaneous first logins for one sub all get the same operator', async () => {
-    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Operator", "SubnetSeed", "AppliedAction", "Discovery" CASCADE');
     const store = new PrismaStore(prisma!);
     const recs = await Promise.all(Array.from({ length: 8 }, () => store.loadOrCreateOperator('sub-first', 'lo', SPAWN)));
     expect(new Set(recs.map((r) => r.id)).size).toBe(1);

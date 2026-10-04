@@ -8,7 +8,7 @@ import { createSandboxInit, LOG_BUDGET, MAX_SOURCE_BYTES, parseHostMessage, vali
 import { errorMessage, runWorker, type WorkerMessage } from '../src/worker-runtime.js';
 
 const self: OperatorSelf = {
-  id: 'op1', name: 'alice', starterClaimed: true, x: 5, y: 5, bits: 0, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
+  id: 'op1', name: 'alice', starterClaimed: true, x: 5, y: 5, bits: 0, diskCapacity: 256, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
 };
 const state = () => ({ operatorId: 'op1', role: 'controller' as const, tick: 40, subnet: 'lo', self, entities: [] });
 async function until(pred: () => boolean): Promise<void> {

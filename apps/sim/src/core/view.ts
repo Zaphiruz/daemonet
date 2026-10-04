@@ -80,6 +80,7 @@ export function toSelf(world: World, op: Operator): OperatorSelf {
     x: op.x,
     y: op.y,
     bits: op.bits,
+    diskCapacity: op.diskCapacity,
     ram: op.ram.map((id) => toRamDaemon(world, world.daemons.get(id)!)).sort((a, b) => a.slot - b.slot),
     running: [...op.running],
     inventory: { ...op.inventory },

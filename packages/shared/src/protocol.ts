@@ -1,4 +1,4 @@
-import { STATUS_IDS, TYPES } from '@daemonet/rules';
+import { BUY_MAX_QTY, CRAFT_MAX_QTY, STATUS_IDS, TYPES } from '@daemonet/rules';
 import { z } from 'zod';
 
 /** Upstream limits (UTF-8 bytes). submitCapture gets the larger limit. */
@@ -37,6 +37,13 @@ export const Command = z.discriminatedUnion('cmd', [
   z.object({ cmd: z.literal('hold'), actor: Self, args: z.object({ daemonId: Id, itemId: Id }) }),
   z.object({ cmd: z.literal('unhold'), actor: Self, args: z.object({ daemonId: Id }) }),
   z.object({ cmd: z.literal('travel'), actor: Self, args: z.object({ gatewayId: Id }) }),
+  z.object({ cmd: z.literal('buy'), actor: Self, args: z.object({ itemId: Id, qty: z.number().int().min(1).max(BUY_MAX_QTY).default(1) }) }),
+  z.object({
+    cmd: z.literal('craft'),
+    actor: Self,
+    args: z.object({ recipeId: Id, qty: z.number().int().min(1).max(CRAFT_MAX_QTY).default(1), using: TypeIdSchema.optional() }),
+  }),
+  z.object({ cmd: z.literal('decompile'), actor: Self, args: z.object({ daemonId: Id, confirm: z.boolean().default(false) }) }),
   z.object({ cmd: z.literal('restoreAll'), actor: Self, args: z.object({}) }),
   z.object({ cmd: z.literal('claimStarter'), actor: Self, args: z.object({ species: Id, operatorName: OperatorName }) }),
   z.object({ cmd: z.literal('store'), actor: Self, args: z.object({ daemonId: Id }) }),
@@ -160,6 +167,7 @@ export const OperatorSelf = z.object({
   x: Coord,
   y: Coord,
   bits: z.number().int(),
+  diskCapacity: z.number().int(),
   ram: z.array(RamDaemon).max(8),
   running: z.array(Id).max(2),
   inventory: z.record(z.string(), z.number().int().nonnegative()),
@@ -203,6 +211,8 @@ export const GameEvent = z.discriminatedUnion('e', [
   z.object({ e: z.literal('evolved'), daemon: Id, from: Id, to: Id, changes: z.array(z.unknown()) }),
   z.object({ e: z.literal('discovery'), form: Id, operator: Id, operatorName: z.string().nullable() }),
   z.object({ e: z.literal('travelled'), from: z.string(), to: z.string() }),
+  z.object({ e: z.literal('bits'), delta: z.number().int(), reason: z.string(), balance: z.number().int() }),
+  z.object({ e: z.literal('decompiled'), daemon: Id, species: z.string(), fragments: z.record(z.string(), z.number().int()) }),
 ]);
 export type GameEvent = z.infer<typeof GameEvent>;
 

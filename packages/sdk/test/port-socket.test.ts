@@ -123,7 +123,7 @@ describe('PortSocket', () => {
 
 describe('GameClient over PortSocket', () => {
   const self = {
-    id: 'op1', name: 'x', starterClaimed: true, x: 0, y: 0, bits: 0, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
+    id: 'op1', name: 'x', starterClaimed: true, x: 0, y: 0, bits: 0, diskCapacity: 256, ram: [], running: [], inventory: {}, swapReadyTick: 0, capture: null,
   };
 
   it('connect() resolves once the host relays the snapshot', async () => {

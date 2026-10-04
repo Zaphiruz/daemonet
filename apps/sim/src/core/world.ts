@@ -16,12 +16,13 @@ import {
   type SubnetDef,
 } from '@daemonet/rules';
 import { Grid, type Point } from './grid.js';
-import { freshEngagement, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
+import { freshEngagement, isEconomyIntent, type Capture, type Daemon, type Input, type Intent, type IntentResult, type Operator, type OperatorRecord, type OwnedDaemonRecord, type ScopedEvent, type StepResult } from './model.js';
 import { Out } from './out.js';
 import { planWild } from './systems/ai.js';
 import { executeQueuedUses, type QueuedUse } from './systems/combat.js';
 import { handleCommands } from './systems/commands.js';
 import { completeCaptureIntent, progressCaptures } from './systems/capture.js';
+import { completeEconomyIntent } from './systems/economy.js';
 import { completeEvolveIntent } from './systems/evolve.js';
 import { moveAll } from './systems/movement.js';
 import { resolveDefeats } from './systems/progress.js';
@@ -107,6 +108,7 @@ export class World {
       y: pos.y,
       path: [],
       bits: rec.bits,
+      diskCapacity: rec.diskCapacity,
       inventory: { ...rec.inventory },
       ram: [],
       running: [],
@@ -157,10 +159,18 @@ export class World {
       x: op.x,
       y: op.y,
       bits: op.bits,
+      diskCapacity: op.diskCapacity,
       inventory: { ...op.inventory },
       ram: op.ram.map((id) => this.toRecord(this.daemons.get(id)!)),
       diskSlots: [...op.diskSlots].sort((a, b) => a - b),
+      ...(this.inventoryInFlight(op.id) ? { inventoryInFlight: true } : {}),
     };
+  }
+
+  /** True while an intent that rewrites the operator's inventory in the store is pending (see OperatorRecord). */
+  inventoryInFlight(operatorId: string): boolean {
+    for (const i of this.pending.values()) if (i.operatorId === operatorId && (isEconomyIntent(i) || i.kind === 'claimStarter')) return true;
+    return false;
   }
 
   // ---- daemons ----
@@ -194,7 +204,7 @@ export class World {
       cooldowns: {},
       statuses: {},
       lastCombatTick: -Infinity,
-      // A reload while a store / evolve is in flight must not unlock the daemon (its from-form would still be actable).
+      // A reload while a store / evolve / decompile is in flight must not unlock the daemon (its from-form would still be actable).
       pending: this.hasPendingLock(rec.id),
       wild: null,
       heldItem: rec.heldItem,
@@ -211,7 +221,7 @@ export class World {
   }
 
   private hasPendingLock(daemonId: string): boolean {
-    for (const i of this.pending.values()) if ((i.kind === 'store' || i.kind === 'evolve') && i.daemonId === daemonId) return true;
+    for (const i of this.pending.values()) if ((i.kind === 'store' || i.kind === 'evolve' || i.kind === 'decompile') && i.daemonId === daemonId) return true;
     return false;
   }
 
@@ -354,6 +364,17 @@ export class World {
     return false;
   }
 
+  /** Intents of `operatorId` still waiting for the store. */
+  pendingIntents(operatorId: string): Intent[] {
+    return [...this.pending.values()].filter((i) => i.operatorId === operatorId);
+  }
+
+  /** True while a buy / craft / decompile of `operatorId` is waiting for the store. */
+  hasEconomyPending(operatorId: string): boolean {
+    for (const i of this.pending.values()) if (i.operatorId === operatorId && isEconomyIntent(i)) return true;
+    return false;
+  }
+
   /** Queue an event for the next step (the runtime uses it when it hands an operator over between worlds). */
   emitCarry(event: ScopedEvent['event'], scope: { to: string } | { at: Point | null }): void {
     this.carry.emit(event, scope);
@@ -402,6 +423,10 @@ export class World {
         op.travelling = false;
         if (!result.ok) return out.fail(intent, 'E_STATE', result.reason);
         return out.ok(intent, { subnet: intent.to });
+      case 'buy':
+      case 'craft':
+      case 'decompile':
+        return completeEconomyIntent(this, op, intent, result, out);
     }
   }
 

@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { COMMANDS_PER_TICK, RESUME_TICKS, parseClientMessage, type ClientMessage, type Entity, type ErrorCode, type ServerMessage } from '@daemonet/shared';
-import { INTEREST_RADIUS, distance, entitiesNear, toSelf, type Input, type Intent, type IntentResult, type OperatorRecord, type World } from '../core/index.js';
+import { INTEREST_RADIUS, distance, entitiesNear, isEconomyIntent, toSelf, type Input, type Intent, type IntentResult, type OperatorRecord, type World } from '../core/index.js';
 import type { TokenVerifier } from './auth.js';
 import { diffEntities } from './interest.js';
 import { randomHex, type Store } from './store.js';
@@ -123,7 +123,7 @@ export class Game {
   private readonly loads = new Map<string, Set<{ stale: boolean }>>();
   private readonly inflight = new Set<Promise<void>>();
   private inputs: Input[] = [];
-  /** Tail of the serialized store writes: every checkpoint and every travel intent, across all worlds (never rejects). */
+  /** Tail of the serialized store writes: every checkpoint, travel and economy intent, across all worlds (never rejects). */
   private writeChain: Promise<void> = Promise.resolve();
   /**
    * Pending command replies keyed `conn.id:reqId` (the key is the reqId the world sees), so a later connection that
@@ -418,7 +418,10 @@ export class Game {
     if (this.ticks % this.checkpointEvery === 0) this.checkpointAll();
     for (const session of [...this.sessions.values()]) {
       // A travelling operator leaves once the hand-off has settled (from whichever world it ends up in).
-      if (!session.controller && session.leaveAtTick !== null && session.leaveAtTick <= this.ticks && !this.travelling(session)) this.leave(session);
+      // A pending buy / craft / decompile settles first too: the leave checkpoint then carries its outcome.
+      if (!session.controller && session.leaveAtTick !== null && session.leaveAtTick <= this.ticks && !this.travelling(session) && !this.economyPending(session)) {
+        this.leave(session);
+      }
     }
 
     const ms = performance.now() - t0;
@@ -478,6 +481,10 @@ export class Game {
 
   private travelling(session: Session): boolean {
     return session.world.operators.get(session.operatorId)?.travelling === true;
+  }
+
+  private economyPending(session: Session): boolean {
+    return session.world.hasEconomyPending(session.operatorId);
   }
 
   private leave(session: Session): void {
@@ -562,8 +569,10 @@ export class Game {
   private persist(world: World, intent: Intent): void {
     const stored = intent.kind === 'store' ? world.daemons.get(intent.daemonId) : undefined;
     const ctx = { seedId: world.seedId, ...(stored ? { storedDaemon: world.toRecord(stored) } : {}) };
-    // A travel rewrites the operator's subnet and position: it must commit after every checkpoint taken before it.
-    const apply = () => (intent.kind === 'travel' ? this.serialized(() => this.store.applyIntent(intent, ctx)) : this.store.applyIntent(intent, ctx));
+    // A travel rewrites the operator's subnet and position, and an economy intent its inventory: each must commit
+    // after every checkpoint taken before it (a checkpoint taken while it is pending leaves the inventory alone).
+    const ordered = intent.kind === 'travel' || isEconomyIntent(intent);
+    const apply = () => (ordered ? this.serialized(() => this.store.applyIntent(intent, ctx)) : this.store.applyIntent(intent, ctx));
     const run = async () => {
       let result: IntentResult = { ok: false, reason: 'persist failed' };
       for (let attempt = 0; attempt <= this.retryDelays.length; attempt++) {

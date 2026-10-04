@@ -1,5 +1,4 @@
 import {
-  DISK_SLOTS,
   HARDENED_MS,
   RAM_SLOTS,
   TAG_WINDOW_MS,
@@ -30,7 +29,7 @@ export function startCapture(world: World, op: Operator, args: { targetId: strin
   if (!target || !target.wild || !target.active || target.hp <= 0) throw new Rejection('E_STATE', 'not a wild daemon');
   if (target.wild.tagOwner !== null && target.wild.tagOwner !== op.id) throw new Rejection('E_STATE', 'tagged by another operator');
   if (distance(op, target) > tool.range) throw new Rejection('E_RANGE', 'target out of tool range');
-  if (op.ram.length + op.reservedSlots.size >= RAM_SLOTS && op.diskSlots.size >= DISK_SLOTS) {
+  if (op.ram.length + op.reservedSlots.size >= RAM_SLOTS && op.diskSlots.size >= op.diskCapacity) {
     throw new Rejection('E_STATE', 'RAM and Disk are full');
   }
 

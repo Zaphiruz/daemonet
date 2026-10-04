@@ -1,4 +1,4 @@
-import { getMove, getSubnet, typeMultiplier, type GatewayDef, type StatKey, type ToolId } from '@daemonet/rules';
+import { getMove, getSubnet, typeMultiplier, type GatewayDef, type StatKey, type ToolId, type TypeId } from '@daemonet/rules';
 import {
   COMMANDS_PER_TICK,
   HEARTBEAT_MS,
@@ -236,6 +236,18 @@ export class OperatorApi {
   }
   restoreAll() {
     return this.client.command({ cmd: 'restoreAll', actor: 'self', args: {} });
+  }
+  /** NPC shop at a host: `itemId` from SHOP or 'diskExpansion'. */
+  buy(itemId: string, qty = 1) {
+    return this.client.command({ cmd: 'buy', actor: 'self', args: { itemId, qty } });
+  }
+  /** Craft at a host; `using` picks the fragment type for recipes with an `any` slot. */
+  craft(recipeId: string, qty = 1, using?: TypeId) {
+    return this.client.command({ cmd: 'craft', actor: 'self', args: using ? { recipeId, qty, using } : { recipeId, qty } });
+  }
+  /** Destroy a RAM daemon at a host for fragments; clean / signature daemons need `confirm`. */
+  decompile(daemonId: string, confirm = false) {
+    return this.client.command({ cmd: 'decompile', actor: 'self', args: { daemonId, confirm } });
   }
   /** Travel through a gateway you are standing on; resolves when the new subnet's snapshot has arrived. */
   travel(gatewayId: string) {
