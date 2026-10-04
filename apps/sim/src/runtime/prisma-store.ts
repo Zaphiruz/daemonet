@@ -156,7 +156,8 @@ async function lockOperator(tx: Tx, id: string): Promise<{ bits: bigint; diskCap
   const rows = await tx.$queryRaw<Array<{ bits: bigint; diskCapacity: number; inventory: unknown }>>`
     SELECT "bits", "diskCapacity", "inventory" FROM "Operator" WHERE "id" = ${id} FOR NO KEY UPDATE`;
   const row = rows[0];
-  if (!row) throw new Error(`unknown operator ${id}`);
+  // definitive (`definitiveStoreError`): retrying cannot create the operator
+  if (!row) throw new RangeError(`unknown operator ${id}`);
   const inventory = row.inventory && typeof row.inventory === 'object' && !Array.isArray(row.inventory) ? (row.inventory as Record<string, number>) : {};
   return { bits: BigInt(row.bits), diskCapacity: Number(row.diskCapacity), inventory };
 }
@@ -629,6 +630,8 @@ export class PrismaStore implements Store {
           const row = await tx.arenaRating.findUnique({ where: key });
           if (row) return row;
           const previous = await tx.arenaRating.findUnique({ where: { operatorId_seasonId: { operatorId, seasonId: previousSeasonId(seasonId) } } });
+          // a closed season gets no new rating rows (its ladder and payouts are final): the seed values only
+          if (seasonClosed) return { ...seedRating(previous), wins: 0, losses: 0, draws: 0 };
           await tx.arenaRating.createMany({ data: [{ operatorId, seasonId, ...seedRating(previous) }], skipDuplicates: true });
           return tx.arenaRating.findUniqueOrThrow({ where: key });
         };

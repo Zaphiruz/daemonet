@@ -543,6 +543,21 @@ describe('ArenaService', () => {
     expect(definitiveStoreError(prisma('PrismaClientKnownRequestError', 'P2003'))).toBe(true);
     for (const code of ['P1001', 'P1017', 'P2024', 'P2028', 'P2034']) expect(definitiveStoreError(prisma('PrismaClientKnownRequestError', code))).toBe(false);
     expect(definitiveStoreError(prisma('PrismaClientInitializationError'))).toBe(false);
+    // database errors wrapped by the driver adapter (P2010 raw query, P2039 other): transient by cause kind or SQLSTATE
+    const wrapped = (code: string, cause: object) => Object.assign(prisma('PrismaClientKnownRequestError', code), { meta: { driverAdapterError: { name: 'DriverAdapterError', cause } } });
+    // the exact shape of an induced deadlock on recordArenaResult's lockOperator (store.test.ts reproduces it)
+    expect(definitiveStoreError(wrapped('P2010', { originalCode: '40P01', originalMessage: 'deadlock detected', kind: 'TransactionWriteConflict' }))).toBe(false);
+    for (const kind of ['TransactionWriteConflict', 'ConnectionClosed', 'DatabaseNotReachable', 'SocketTimeout', 'TooManyConnections', 'TlsConnectionError', 'TransactionAlreadyClosed']) {
+      expect(definitiveStoreError(wrapped('P2010', { kind }))).toBe(false);
+    }
+    for (const originalCode of ['40001', '40P01', '08006', '57P01', '57014', '53300', '55P03']) {
+      expect(definitiveStoreError(wrapped('P2010', { kind: 'postgres', originalCode }))).toBe(false);
+      expect(definitiveStoreError(wrapped('P2039', { kind: 'postgres', originalCode }))).toBe(false);
+    }
+    expect(definitiveStoreError(wrapped('P2010', { kind: 'postgres', code: '40001' }))).toBe(false);
+    for (const originalCode of ['23505', '22P02', '42P01', '55000']) expect(definitiveStoreError(wrapped('P2010', { kind: 'postgres', originalCode }))).toBe(true);
+    expect(definitiveStoreError(wrapped('P2010', { kind: 'UniqueConstraintViolation', originalCode: '23505' }))).toBe(true);
+    expect(definitiveStoreError(prisma('PrismaClientKnownRequestError', 'P2010'))).toBe(true); // no cause: nothing says transient
     expect(definitiveStoreError(new Error('connection reset'))).toBe(false);
   });
 

@@ -230,11 +230,38 @@ export function arenaResultProblem(input: ArenaResultInput): string | null {
 
 /** Prisma error codes that say nothing about the request itself (connection, pool, transaction conflict / timeout). */
 const TRANSIENT_PRISMA_CODES: ReadonlySet<string> = new Set(['P2024', 'P2028', 'P2034']);
+/**
+ * Prisma codes that wrap a database error reported by the driver adapter (`meta.driverAdapterError.cause`): P2010 a
+ * raw query (`$queryRaw`, e.g. `lockOperator`), P2039 any other query. Whether they are transient depends on the cause.
+ */
+const ADAPTER_WRAPPED_CODES: ReadonlySet<string> = new Set(['P2010', 'P2039']);
+/** Driver adapter error kinds (`@prisma/driver-adapter-utils` MappedError) that a retry can get past. */
+const TRANSIENT_ADAPTER_KINDS: ReadonlySet<string> = new Set([
+  'TransactionWriteConflict',
+  'TransactionAlreadyClosed',
+  'DatabaseNotReachable',
+  'ConnectionClosed',
+  'TlsConnectionError',
+  'TooManyConnections',
+  'SocketTimeout',
+]);
 
 /**
- * True for a store error that retrying the same write can never fix: a RangeError (malformed input), a Prisma
- * validation error, or a Prisma known-request error other than a connection (P1xxx), pool timeout, transaction
- * timeout or serialization conflict. Checked by name and code, so the sim needs no Prisma import here.
+ * A transient SQLSTATE: class 40 (transaction rollback: serialization failure 40001, deadlock 40P01), 08 (connection
+ * exception), 57 (operator intervention: admin shutdown, query canceled), 53 (insufficient resources), or 55P03
+ * (lock not available).
+ */
+function transientSqlState(code: string): boolean {
+  return /^(40|08|57|53)/.test(code) || code === '55P03';
+}
+
+/**
+ * True for a store error that retrying the same write can never fix: a RangeError (malformed input, an unknown
+ * operator), a Prisma validation error, or a Prisma known-request error other than a connection (P1xxx), pool
+ * timeout, transaction timeout or serialization conflict. A database error wrapped by the driver adapter (P2010 /
+ * P2039, e.g. an induced deadlock: P2010 with cause `{ kind: 'TransactionWriteConflict', originalCode: '40P01' }`) is
+ * transient when its cause kind or SQLSTATE says so, definitive otherwise. Checked by name, code and meta, so the sim
+ * needs no Prisma import here.
  */
 export function definitiveStoreError(err: unknown): boolean {
   if (err instanceof RangeError) return true;
@@ -242,7 +269,14 @@ export function definitiveStoreError(err: unknown): boolean {
   if (name === 'PrismaClientValidationError') return true;
   if (name !== 'PrismaClientKnownRequestError') return false;
   const code = (err as { code?: unknown }).code;
-  return typeof code === 'string' && !code.startsWith('P1') && !TRANSIENT_PRISMA_CODES.has(code);
+  if (typeof code !== 'string') return false;
+  if (ADAPTER_WRAPPED_CODES.has(code)) {
+    const cause = (err as { meta?: { driverAdapterError?: { cause?: { kind?: unknown; originalCode?: unknown; code?: unknown } } } }).meta?.driverAdapterError?.cause;
+    if (typeof cause?.kind === 'string' && TRANSIENT_ADAPTER_KINDS.has(cause.kind)) return false;
+    const sqlState = typeof cause?.originalCode === 'string' ? cause.originalCode : cause?.kind === 'postgres' && typeof cause.code === 'string' ? cause.code : null;
+    return !(sqlState !== null && transientSqlState(sqlState));
+  }
+  return !code.startsWith('P1') && !TRANSIENT_PRISMA_CODES.has(code);
 }
 
 /** The UTC day `[gte, lt)` an instant falls in (the arena caps are per UTC day). */
@@ -801,7 +835,8 @@ export class MemoryStore implements Store {
       return { ok: true };
     }
     const op = this.operators.get(intent.operatorId);
-    if (!op) throw new Error(`unknown operator ${intent.operatorId}`);
+    // Mirrors PrismaStore's lockOperator: definitive (RangeError)
+    if (!op) throw new RangeError(`unknown operator ${intent.operatorId}`);
     switch (intent.kind) {
       case 'claimStarter': {
         // Mirrors PrismaStore's conditional update (where starterClaimed = false).
@@ -975,10 +1010,13 @@ export class MemoryStore implements Store {
     return i < 0 ? null : this.ledgerKeys[i]!.seq;
   }
 
-  private arenaRow(operatorId: string, seasonId: string): Glicko & { wins: number; losses: number; draws: number } {
+  /** The operator's row of the season, created from the soft reset unless `create` is false (a closed season). */
+  private arenaRow(operatorId: string, seasonId: string, create = true): Glicko & { wins: number; losses: number; draws: number } {
     const key = `${operatorId}:${seasonId}`;
     let row = this.arenaRatings.get(key);
-    if (!row) this.arenaRatings.set(key, (row = { ...seedRating(this.arenaRatings.get(`${operatorId}:${previousSeasonId(seasonId)}`)), wins: 0, losses: 0, draws: 0 }));
+    if (row) return row;
+    row = { ...seedRating(this.arenaRatings.get(`${operatorId}:${previousSeasonId(seasonId)}`)), wins: 0, losses: 0, draws: 0 };
+    if (create) this.arenaRatings.set(key, row);
     return row;
   }
 
@@ -993,7 +1031,7 @@ export class MemoryStore implements Store {
     // Mirrors PrismaStore: the stored match row answers a replay.
     const done = this.arenaMatches.get(input.matchId);
     if (done) return structuredClone(done.settlement);
-    for (const id of [input.aId, input.bId]) if (!this.operators.has(id)) throw new Error(`unknown operator ${id}`);
+    for (const id of [input.aId, input.bId]) if (!this.operators.has(id)) throw new RangeError(`unknown operator ${id}`);
     const endedAt = new Date(input.endedAt);
     const season = seasonIdOf(endedAt);
     const day = utcDayOf(endedAt);
@@ -1001,8 +1039,9 @@ export class MemoryStore implements Store {
     if (!this.arenaSeasons.has(season)) this.arenaSeasons.set(season, { closedAt: null });
     // Mirrors PrismaStore: a season already closed takes no more counted results.
     const seasonClosed = this.arenaSeasons.get(season)!.closedAt !== null;
-    const a = this.arenaRow(input.aId, season);
-    const b = this.arenaRow(input.bId, season);
+    // a closed season gets no new rating rows: its ladder and payouts are final
+    const a = this.arenaRow(input.aId, season, !seasonClosed);
+    const b = this.arenaRow(input.bId, season, !seasonClosed);
     const samePair = (m: ArenaResultInput) => (m.aId === input.aId && m.bId === input.bId) || (m.aId === input.bId && m.bId === input.aId);
     const pairCountedToday = [...this.arenaMatches.values()].filter((m) => m.settlement.counted && today(m.input.endedAt) && samePair(m.input)).length;
     const w = input.winnerId;

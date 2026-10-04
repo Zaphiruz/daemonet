@@ -3,7 +3,7 @@ import { KERNEL_DAEMONS, TICKETS_PER_DAY, dayKey, decompileYield, fragmentId, ge
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { DISK_SLOT_TAKEN, incidentParticipants, incidentRewardId, type Intent, type OwnedDaemonRecord } from '../src/core/index.js';
 import { PrismaStore } from '../src/runtime/prisma-store.js';
-import { DEPOSIT_NOT_SAVED, MemoryStore, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type ArenaResultInput, type LiveOperatorState, type Store } from '../src/runtime/store.js';
+import { DEPOSIT_NOT_SAVED, MemoryStore, definitiveStoreError, SIM_INTENT_LEDGER_REASONS, SIM_LEDGER_REASONS, type ArenaResultInput, type LiveOperatorState, type Store } from '../src/runtime/store.js';
 import { ownedRecord } from './helpers.js';
 
 const SPAWN = { x: 18.5, y: 16.5 };
@@ -50,8 +50,10 @@ function incidentRewards(incidentId: string, damage: Record<string, number>): Re
 
 /** Marks an arena season closed the way each store sees it (the api's season close sets `ArenaSeason.closedAt`). */
 type CloseSeason = (store: Store, seasonId: string) => Promise<void>;
+/** How many ArenaRating rows a season has, as each store holds them. */
+type RatingRows = (store: Store, seasonId: string) => Promise<number>;
 
-function contract(name: string, make: () => Promise<Store>, reset: () => Promise<void>, closeSeason: CloseSeason) {
+function contract(name: string, make: () => Promise<Store>, reset: () => Promise<void>, closeSeason: CloseSeason, ratingRows: RatingRows) {
   describe(`${name} contract`, () => {
     let store: Store;
     beforeEach(async () => {
@@ -892,6 +894,8 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await expect(store.recordArenaResult({ ...base, matchId: 'ag-3', bId: hal.id })).rejects.toThrow(RangeError);
       await expect(store.recordArenaResult({ ...base, matchId: 'ag-4', winnerId: 'someone-else' })).rejects.toThrow(RangeError);
       await expect(store.recordArenaResult({ ...base, matchId: 'ag-5', endedAt: 'not a date' })).rejects.toThrow(RangeError);
+      // an unknown operator is definitive too (a RangeError: the sim does not retry it until the cap)
+      await expect(store.recordArenaResult({ ...base, matchId: 'ag-6', aId: 'no-such-operator' })).rejects.toThrow(RangeError);
     });
 
     it('arena: a match whose season is already closed is recorded but never counted', async () => {
@@ -907,6 +911,8 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
       await closeSeason(store, '2026-09');
       const unchanged = { before: 1500, after: 1500, reward: 0, arenaWins: [] };
       expect(await store.recordArenaResult(late)).toEqual({ counted: false, a: unchanged, b: unchanged });
+      // the closed season's ladder is final: no rating rows are seeded in it
+      expect(await ratingRows(store, '2026-09')).toBe(0);
       expect(await store.recordArenaResult(late)).toEqual({ counted: false, a: unchanged, b: unchanged }); // a replay reports the same
       const ivyNow = await store.loadOrCreateOperator('sub-ac-ivy', 'lo', SPAWN);
       expect(ivyNow.bits).toBe(0);
@@ -919,9 +925,15 @@ function contract(name: string, make: () => Promise<Store>, reset: () => Promise
   });
 }
 
-contract('MemoryStore', async () => new MemoryStore(), async () => {}, async (store, seasonId) => {
-  (store as MemoryStore).arenaSeasons.set(seasonId, { closedAt: new Date().toISOString() });
-});
+contract(
+  'MemoryStore',
+  async () => new MemoryStore(),
+  async () => {},
+  async (store, seasonId) => {
+    (store as MemoryStore).arenaSeasons.set(seasonId, { closedAt: new Date().toISOString() });
+  },
+  async (store, seasonId) => [...(store as MemoryStore).arenaRatings.keys()].filter((k) => k.endsWith(`:${seasonId}`)).length,
+);
 
 describe('SIM_LEDGER_REASONS', () => {
   it('is exactly the reasons the store intents write (one source of truth)', () => {
@@ -988,7 +1000,43 @@ describe.skipIf(!url)('PrismaStore (needs DATABASE_URL)', () => {
       const { startsAt, endsAt } = seasonBounds(seasonId);
       await prisma!.arenaSeason.upsert({ where: { id: seasonId }, create: { id: seasonId, startsAt, endsAt, closedAt: new Date() }, update: { closedAt: new Date() } });
     },
+    async (_store, seasonId) => prisma!.arenaRating.count({ where: { seasonId } }),
   );
+
+  it('a deadlock on recordArenaResult surfaces as a transient error (retried), and the retry records the match', async () => {
+    await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');
+    const store = new PrismaStore(prisma!);
+    const x = await store.loadOrCreateOperator('sub-dl-x', 'lo', SPAWN);
+    const y = await store.loadOrCreateOperator('sub-dl-y', 'lo', SPAWN);
+    const [lo, hi] = [x.id, y.id].sort() as [string, string];
+    const input: ArenaResultInput = { matchId: 'dl-1', mode: 'ranked', aId: lo, bId: hi, winnerId: lo, reason: 'forfeit', durationMs: 1000, endedAt: new Date().toISOString(), dealt: {} };
+    // the result locks lo then hi (sorted); this transaction holds hi and then asks for lo: a lock cycle. The result
+    // waits first, so its deadlock check runs first and Postgres aborts it (40P01).
+    let holding!: () => void;
+    const held = new Promise<void>((r) => (holding = r));
+    const blocker = prisma!.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT 1 FROM "Operator" WHERE "id" = ${hi} FOR UPDATE`;
+        holding();
+        await new Promise((r) => setTimeout(r, 300));
+        await tx.$queryRaw`SELECT 1 FROM "Operator" WHERE "id" = ${lo} FOR UPDATE`;
+      },
+      { timeout: 20_000, maxWait: 5_000 },
+    );
+    await held;
+    const failed = await store.recordArenaResult(input).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    await blocker;
+    expect(failed).not.toBeNull();
+    expect(failed).toMatchObject({ name: 'PrismaClientKnownRequestError', code: 'P2010', meta: { driverAdapterError: { cause: { originalCode: '40P01', kind: 'TransactionWriteConflict' } } } });
+    expect(definitiveStoreError(failed)).toBe(false);
+    expect(await prisma!.arenaMatch.count()).toBe(0);
+    // what the sim's retry does: the same idempotent write, now through
+    expect(await store.recordArenaResult(input)).toMatchObject({ counted: true, a: { reward: 32 } });
+    expect(await prisma!.arenaMatch.count()).toBe(1);
+  }, 20_000);
 
   it('treats a concurrent duplicate of the same claim as applied, not as a name clash', async () => {
     await prisma!.$executeRawUnsafe('TRUNCATE "Daemon", "DaemonArchive", "BitsLedger", "Ticket", "Research", "Operator", "SubnetSeed", "AppliedAction", "Discovery", "Incident", "ExchangeVault", "ArenaMatch", "ArenaRating", "ArenaSeason" CASCADE');

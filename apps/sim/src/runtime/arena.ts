@@ -115,7 +115,12 @@ export class ArenaService {
   private readonly challenges = new Map<string, Challenge>();
   /** Challenger -> send times (ms) within the last minute. */
   private readonly sentChallenges = new Map<string, number[]>();
-  /** `<a>|<b>:<utc day>` → ranked matches started that day between the two (in memory; the store re-counts committed rows). */
+  /**
+   * `<a>|<b>:<utc day>` → ranked matches STARTED that day between the two (in memory, per process). Conservative: a
+   * match that ends uncounted (countdown, store unreachable, closed season) still counts here, so the pair may be
+   * switched to unranked early; it never lets a fifth counted match through. The store is authoritative: it counts
+   * the pair's committed counted ArenaMatch rows of the match's UTC day and records an over-cap match uncounted.
+   */
   private readonly pairCounts = new Map<string, number>();
   private ticks = 0;
 
