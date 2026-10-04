@@ -114,7 +114,7 @@ export async function openTrade(
     if (await tx.trade.findFirst({ where: { status: 'OPEN', OR: [{ aId, bId }, { aId: bId, bId: aId }] } })) throw badRequest('you already have an open trade with that operator');
     if ((await openCount(tx, aId)) >= MAX_OPEN_TRADES) throw badRequest(`at most ${MAX_OPEN_TRADES} open trades`);
     if ((await openCount(tx, bId)) >= MAX_OPEN_TRADES) throw badRequest('that operator has too many open trades');
-    return tx.trade.create({ data: { id: crypto.randomUUID(), aId, bId, aOffer: { ...EMPTY }, bOffer: { ...EMPTY }, createdAt: at, updatedAt: at } });
+    return tx.trade.create({ data: { id: crypto.randomUUID(), aId, bId, aOffer: { ...EMPTY } as unknown as Prisma.InputJsonValue, bOffer: { ...EMPTY } as unknown as Prisma.InputJsonValue, createdAt: at, updatedAt: at } });
   }, TX_OPTIONS);
   publish(bus, log, trade);
   return trade;
