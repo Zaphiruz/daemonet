@@ -297,3 +297,120 @@ describe('clusters', () => {
     client.close();
   });
 });
+
+describe('arena', () => {
+  async function online() {
+    FakeWs.instances = [];
+    const p = connect({ url: 'ws://x', auth, WebSocket: Ws });
+    await tick();
+    const ws = last();
+    snapshot(ws);
+    return { client: await p, ws };
+  }
+  const cmds = (ws: FakeWs) => ws.sent.map((s) => JSON.parse(s)).filter((m) => m.t === 'cmd');
+  const wild = (id: string, x: number, taggedBy: string | null = null) => ({
+    kind: 'daemon', id, species: 'sprite', types: ['packet'], level: 5, hp: 10, maxHp: 10, owner: null, taggedBy, clean: true, signature: 0, statuses: [], hardened: false, x, y: 0,
+  });
+  const owned = (id: string, owner: string, x: number) => ({ ...wild(id, x), owner });
+
+  it('sends the five arena commands and resolves with the result', async () => {
+    const { client, ws } = await online();
+    const calls = [client.arena.queue('ranked'), client.arena.leave(), client.arena.challenge('op2'), client.arena.challenge('op3', 'ranked'), client.arena.accept('ch1'), client.arena.forfeit()];
+    expect(cmds(ws).map((m) => [m.d.cmd, m.d.actor, m.d.args])).toEqual([
+      ['arenaQueue', 'self', { mode: 'ranked' }],
+      ['arenaLeave', 'self', {}],
+      ['arenaChallenge', 'self', { operatorId: 'op2', mode: 'unranked' }],
+      ['arenaChallenge', 'self', { operatorId: 'op3', mode: 'ranked' }],
+      ['arenaAccept', 'self', { challengeId: 'ch1' }],
+      ['arenaForfeit', 'self', {}],
+    ]);
+    ws.serverSend({ t: 'ack', seq: 4, d: { reqId: cmds(ws)[0].d.reqId, result: { queued: true } } });
+    await expect(calls[0]).resolves.toEqual({ queued: true });
+    ws.serverSend({ t: 'err', seq: 5, d: { reqId: cmds(ws)[1].d.reqId, code: 'E_STATE', message: 'not queued' } });
+    await expect(calls[1]).rejects.toMatchObject({ code: 'E_STATE' });
+    client.close();
+  });
+
+  it('does not use the per-tick command budget (the sim runs arena commands outside the tick)', async () => {
+    const { client, ws } = await online();
+    for (let i = 0; i < 8; i++) void client.operator.stop();
+    await expect(client.operator.stop()).rejects.toMatchObject({ code: 'E_RATE' });
+    void client.arena.queue('unranked');
+    void client.arena.forfeit();
+    expect(cmds(ws).filter((m) => m.d.cmd.startsWith('arena'))).toHaveLength(2);
+    // and they do not eat the budget either
+    ws.serverSend({ t: 'delta', seq: 6, d: { tick: 2, upserts: [], removes: [], events: [] } });
+    for (let i = 0; i < 6; i++) void client.arena.accept('c');
+    void client.operator.stop();
+    expect(cmds(ws).filter((m) => m.d.cmd === 'stop')).toHaveLength(9);
+    client.close();
+  });
+
+  it('emits arenaChallenge and the arena game events', async () => {
+    const { client, ws } = await online();
+    const got: unknown[] = [];
+    client.on('arenaChallenge', (d) => got.push(['challenge', d.challengeId, d.mode]));
+    client.on('arenaQueued', (d) => got.push(['queued', d.mode]));
+    client.on('arenaMatch', (d) => got.push(['match', d.id]));
+    client.on('arenaResult', (d) => got.push(['result', d.outcome]));
+    ws.serverSend({ t: 'arenaChallenge', seq: 3, d: { challengeId: 'ch1', from: 'op2', name: 'bob', mode: 'ranked', expiresAt: '2026-10-04T00:01:00.000Z' } });
+    ws.serverSend({
+      t: 'delta',
+      seq: 4,
+      d: {
+        tick: 2,
+        upserts: [],
+        removes: [],
+        events: [
+          { e: 'arenaQueued', mode: 'ranked' },
+          { e: 'arenaMatch', id: 'm1', mode: 'ranked', opponent: { id: 'op2', name: 'bob', tag: null, rating: 1000 }, startsAtTick: 10, endsAtTick: 100 },
+          { e: 'arenaResult', id: 'm1', mode: 'ranked', outcome: 'win', reason: 'wipeout', ratingBefore: 1000, ratingAfter: 1000, reward: 0, counted: false },
+        ],
+      },
+    });
+    expect(got).toEqual([['challenge', 'ch1', 'ranked'], ['queued', 'ranked'], ['match', 'm1'], ['result', 'win']]);
+    client.close();
+  });
+
+  it('exposes the current match as client.arena.match', async () => {
+    const { client, ws } = await online();
+    expect(client.arena.match).toBeNull();
+    const arena = {
+      id: 'm1', mode: 'unranked', phase: 'live', liveAtTick: 5, endsAtTick: 50, result: null,
+      opponent: { id: 'op2', name: 'bob', tag: null, rating: 1000, team: [] },
+    };
+    ws.serverSend({ t: 'delta', seq: 4, d: { tick: 2, upserts: [], removes: [], events: [], self: { ...self, arena } } });
+    expect(client.arena.match).toEqual(arena);
+    client.close();
+  });
+
+  it('daemon scripts see the opponent daemons as enemies in a match, wild ones otherwise', async () => {
+    const { client, ws } = await online();
+    const seen: string[][] = [];
+    client.daemons.script(({ enemies }) => seen.push(enemies.all().map((d) => d.id).sort()));
+    const arena = { id: 'm1', mode: 'unranked', phase: 'live', liveAtTick: 5, endsAtTick: 50, result: null, opponent: { id: 'op2', name: 'bob', tag: null, rating: 1000, team: [] } };
+    const entities = [wild('w1', 2), wild('w2', 3, 'op2'), owned('mine', 'op1', 1), owned('theirs', 'op2', 4), owned('theirs2', 'op2', 5)];
+    // outside a match: untagged wild daemons and my own tags only
+    ws.serverSend({ t: 'delta', seq: 4, d: { tick: 2, upserts: entities, removes: [], events: [], self: { ...self, running: ['mine'] } } });
+    expect(seen.at(-1)).toEqual(['w1']);
+    // in a match: the opponent's daemons, never mine and never wild ones
+    ws.serverSend({ t: 'delta', seq: 5, d: { tick: 3, upserts: [], removes: [], events: [], self: { ...self, running: ['mine'], arena } } });
+    expect(seen.at(-1)).toEqual(['theirs', 'theirs2']);
+    client.close();
+  });
+
+  it('a mid-session snapshot (match entry or return) is a full reset: entities, self, tick and command budget', async () => {
+    const { client, ws } = await online();
+    ws.serverSend({ t: 'delta', seq: 3, d: { tick: 2, upserts: [wild('w1', 2)], removes: [], events: [] } });
+    expect(client.entities.has('w1')).toBe(true);
+    for (let i = 0; i < 8; i++) void client.operator.stop();
+    const arena = { id: 'm1', mode: 'unranked', phase: 'countdown', liveAtTick: 5, endsAtTick: 50, result: null, opponent: { id: 'op2', name: 'bob', tag: null, rating: 1000, team: [] } };
+    ws.serverSend({ t: 'snapshot', seq: 4, d: { tick: 0, subnet: 's1', self: { ...self, arena }, entities: [owned('theirs', 'op2', 4)] } });
+    expect([...client.entities.keys()]).toEqual(['theirs']);
+    expect(client.tick).toBe(0);
+    expect(client.arena.match?.id).toBe('m1');
+    void client.operator.stop();
+    expect(cmds(ws).filter((m) => m.d.cmd === 'stop')).toHaveLength(9);
+    client.close();
+  });
+});

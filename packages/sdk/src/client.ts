@@ -55,6 +55,8 @@ type ClientEvents = {
   muted: Extract<ServerMessage, { t: 'muted' }>['d'];
   /** Clusters (SP4): someone invites you; answer with `client.cluster.accept(clusterId)` before `expiresAt`. */
   clusterInvite: Extract<ServerMessage, { t: 'clusterInvite' }>['d'];
+  /** Arena (SP6): someone challenges you; answer with `client.arena.accept(challengeId)` within 60 s. */
+  arenaChallenge: Extract<ServerMessage, { t: 'arenaChallenge' }>['d'];
 };
 
 export interface Target extends Positioned {
@@ -73,7 +75,7 @@ export interface OperatorScriptContext {
 export interface DaemonScriptContext {
   client: GameClient;
   self: DaemonHandle;
-  /** Wild daemons you may attack (untagged or tagged by you) within 16 tiles of this daemon. */
+  /** Daemons you may attack within 16 tiles of this daemon: wild ones (untagged or tagged by you), or in an arena match the opponent's. */
   enemies: Query<DaemonView>;
   world: WorldView;
   tick: number;
@@ -312,8 +314,9 @@ export class DaemonsApi {
       const me = this.client.self;
       for (const id of me.running) {
         const self = new DaemonHandle(this.client, id);
+        // Match worlds hold no wild daemons: the enemies are the opponent's daemons (never your own copies).
         const enemies = new Query(
-          this.client.world.wild.all().filter((d) => d.taggedBy === null || d.taggedBy === me.id),
+          me.arena ? this.client.world.daemons.all().filter((d) => d.owner !== null && d.owner !== me.id) : this.client.world.wild.all().filter((d) => d.taggedBy === null || d.taggedBy === me.id),
           self,
         ).within(ENEMY_RADIUS);
         fn({ client: this.client, self, enemies, world: this.client.world, tick: this.client.tick });
@@ -349,6 +352,30 @@ export class ClusterApi {
   /** Leader only. */
   kick(operatorId: string) {
     return this.client.command({ cmd: 'clusterKick', actor: 'self', args: { operatorId } });
+  }
+}
+
+/** Arena (SP6): instanced PvP. Your RAM daemons fight as copies; nothing is lost. `match` is the current match or null. */
+export class ArenaApi {
+  constructor(private readonly client: GameClient) {}
+  get match(): OperatorSelf['arena'] {
+    return this.client.self.arena;
+  }
+  /** Wait for an opponent. Needs two non-crashed daemons in RAM, nothing running. An `arenaMatch` event announces the match. */
+  queue(mode: 'ranked' | 'unranked') {
+    return this.client.command({ cmd: 'arenaQueue', actor: 'self', args: { mode } });
+  }
+  leave() {
+    return this.client.command({ cmd: 'arenaLeave', actor: 'self', args: {} });
+  }
+  challenge(operatorId: string, mode: 'ranked' | 'unranked' = 'unranked') {
+    return this.client.command({ cmd: 'arenaChallenge', actor: 'self', args: { operatorId, mode } });
+  }
+  accept(challengeId: string) {
+    return this.client.command({ cmd: 'arenaAccept', actor: 'self', args: { challengeId } });
+  }
+  forfeit() {
+    return this.client.command({ cmd: 'arenaForfeit', actor: 'self', args: {} });
   }
 }
 
@@ -444,6 +471,7 @@ export class GameClient {
   readonly daemons = new DaemonsApi(this);
   readonly chat = new ChatApi(this);
   readonly cluster = new ClusterApi(this);
+  readonly arena = new ArenaApi(this);
 
   private ws: WebSocketLike | null = null;
   private readonly Ws: WebSocketCtor;
@@ -495,8 +523,9 @@ export class GameClient {
   /** Sends a command; resolves with the ack result or rejects with a DaemonetError. */
   command(command: Command): Promise<unknown> {
     const promise = new Promise<unknown>((resolve, reject) => {
-      // Chat has its own limit (one line per 2 s, queued by ChatApi) and does not use the per-tick budget.
-      const chat = command.cmd === 'chat';
+      // Chat has its own limit (one line per 2 s, queued by ChatApi) and arena commands are handled by the sim outside
+      // the tick with their own limits: neither uses the per-tick budget.
+      const chat = command.cmd === 'chat' || command.cmd.startsWith('arena');
       if (!chat && this.sentThisTick >= COMMANDS_PER_TICK) {
         reject(new DaemonetError('E_RATE', `at most ${COMMANDS_PER_TICK} commands per tick`));
         return;
@@ -641,6 +670,8 @@ export class GameClient {
         this.self = msg.d.self;
         this.entities.clear();
         for (const e of msg.d.entities) this.entities.set(e.id, e);
+        // A mid-session snapshot (travel, arena entry or return) is a full reset into a new world with a new tick count.
+        this.sentThisTick = 0;
         this.hasState = true;
         this.ready.resolve();
         this.emit('ready', undefined);
@@ -707,6 +738,9 @@ export class GameClient {
         return;
       case 'clusterInvite':
         this.emit('clusterInvite', msg.d);
+        return;
+      case 'arenaChallenge':
+        this.emit('arenaChallenge', msg.d);
         return;
     }
   }

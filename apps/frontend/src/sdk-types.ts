@@ -23,12 +23,20 @@ declare module '@daemonet/sdk' {
   export interface OpenTicket { id: string; day: string; subnet: string; index: number; kind: 'clear' | 'capture' | 'deliver' | 'evolve'; params: unknown; target: number; reward: number; progress: number; title: string }
   export interface ClusterMember { id: string; name: string | null; subnet: string | null; away: boolean }
   export interface ClusterView { id: string; code: string; leaderId: string; members: ClusterMember[] }
+  export interface ArenaTeamMember { id: string; species: string; level: number; hp: number; maxHp: number; crashed: boolean; running: boolean }
+  export interface ArenaMatch {
+    id: string; mode: 'ranked' | 'unranked'; phase: 'countdown' | 'live' | 'over'; liveAtTick: number; endsAtTick: number;
+    opponent: { id: string; name: string | null; tag: string | null; rating: number; team: ArenaTeamMember[] };
+    result: { winner: string | null; reason: 'wipeout' | 'timeout' | 'forfeit' | 'disconnect' } | null;
+  }
   export interface OperatorSelf extends Positioned {
     id: string; name: string | null; starterClaimed: boolean; bits: number; diskCapacity: number; ram: RamDaemon[]; running: string[];
     tickets: OpenTicket[]; ticketsToday: number; ticketsDay?: string; research: Record<string, number>;
     inventory: Record<string, number>; swapReadyTick: number; capture: { captureId: string; targetId: string; deadlineTick: number } | null;
     /** The cluster you are in (join code, leader, members; away = not in your subnet), or null. */
     cluster: ClusterView | null;
+    /** The arena match you are in (your RAM holds the copies while it lasts), or null. */
+    arena: ArenaMatch | null;
     /** The org you are in (id, name, 4-character tag, your rank), or null. */
     org: { id: string; name: string; tag: string; rank: 'OWNER' | 'OFFICER' | 'MEMBER' } | null;
   }
@@ -81,9 +89,21 @@ declare module '@daemonet/sdk' {
     /** Leader only; the join code changes so the member cannot come back with the old one. */
     kick(operatorId: string): Promise<unknown>;
   }
+  /** Arena: instanced PvP with copies of your RAM daemons (nothing is lost). In a match, daemons.script's enemies are the opponent's daemons. */
+  export class ArenaApi {
+    /** The current match or null (same as client.self.arena). */
+    readonly match: ArenaMatch | null;
+    /** Wait for an opponent: needs two non-crashed daemons in RAM and none running. An arenaMatch event announces the match. */
+    queue(mode: 'ranked' | 'unranked'): Promise<unknown>;
+    leave(): Promise<unknown>;
+    /** Challenge an operator within reach; they answer with accept(challengeId) within 60 s. */
+    challenge(operatorId: string, mode?: 'ranked' | 'unranked'): Promise<unknown>;
+    accept(challengeId: string): Promise<unknown>;
+    forfeit(): Promise<unknown>;
+  }
   export interface IncidentEvent { phase: 'open' | 'fighting' | 'shield' | 'unshield' | 'cleared' | 'expired'; id: string; n: number; species: string; endsAt: string; bossId: string | null; participants?: Array<{ operatorId: string; name: string | null; damage: number; share: number; reward: number }> }
   export class GameClient {
-    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, Entity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi; readonly chat: ChatApi; readonly cluster: ClusterApi;
+    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, Entity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi; readonly chat: ChatApi; readonly cluster: ClusterApi; readonly arena: ArenaApi;
     on(name: 'captureStart', handler: (ev: CaptureStartEvent) => void): () => void;
     on(name: 'captureResult', handler: (ev: { captureId: string; ok: boolean; reason?: string }) => void): () => void;
     on(name: 'tick', handler: (tick: number) => void): () => void;
@@ -108,6 +128,13 @@ declare module '@daemonet/sdk' {
     on(name: 'muted', handler: (ev: { until: string | null }) => void): () => void;
     /** Someone invites you to a cluster: accept with client.cluster.accept(clusterId) before expiresAt (ISO time). */
     on(name: 'clusterInvite', handler: (ev: { clusterId: string; from: string; name: string | null; expiresAt: string }) => void): () => void;
+    /** Someone challenges you to an arena match: accept with client.arena.accept(challengeId) before expiresAt (ISO time). */
+    on(name: 'arenaChallenge', handler: (ev: { challengeId: string; from: string; name: string | null; mode: 'ranked' | 'unranked'; expiresAt: string }) => void): () => void;
+    /** Arena queue state (mode null: no longer waiting, reason says why). */
+    on(name: 'arenaQueued', handler: (ev: { mode: 'ranked' | 'unranked' | null; reason?: string }) => void): () => void;
+    /** A match starts (ticks are the match's own; a fresh snapshot follows). */
+    on(name: 'arenaMatch', handler: (ev: { id: string; mode: 'ranked' | 'unranked'; opponent: { id: string; name: string | null; tag: string | null; rating: number }; startsAtTick: number; endsAtTick: number }) => void): () => void;
+    on(name: 'arenaResult', handler: (ev: { id: string; mode: 'ranked' | 'unranked'; outcome: 'win' | 'loss' | 'draw'; reason: 'wipeout' | 'timeout' | 'forfeit' | 'disconnect'; ratingBefore: number; ratingAfter: number; reward: number; counted: boolean }) => void): () => void;
     on(name: string, handler: (value: any) => void): () => void;
   }
 }
