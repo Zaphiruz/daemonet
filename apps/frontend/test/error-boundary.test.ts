@@ -27,7 +27,7 @@ afterEach(() => {
 
 describe('ErrorBoundary', () => {
   it('shows a fallback, logs once, and the reset button re-mounts the child', () => {
-    render(createElement(ErrorBoundary, { label: 'test panel' }, createElement(Child)));
+    render(createElement(ErrorBoundary, { label: 'test panel', children: createElement(Child) }));
     expect(screen.getByRole('alert').textContent).toContain('This panel crashed');
     const errors = log.get().filter((e) => e.kind === 'error');
     expect(errors).toHaveLength(1);

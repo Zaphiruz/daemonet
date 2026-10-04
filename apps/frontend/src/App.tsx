@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useMeQuery } from './api.ts';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { TopBar } from './components/TopBar.tsx';
@@ -9,7 +9,9 @@ import { DiskPanel } from './panels/DiskPanel.tsx';
 import { LogPanel } from './panels/LogPanel.tsx';
 import { PlayPanel } from './panels/PlayPanel.tsx';
 import { RamPanel } from './panels/RamPanel.tsx';
-import { ScriptPanel } from './panels/ScriptPanel.tsx';
+
+// Monaco is big: load it (and its workers) only when the Script tab is first opened, never on the login page.
+const ScriptPanel = lazy(() => import('./panels/ScriptPanel.tsx'));
 
 const TABS = ['play', 'ram', 'disk', 'items', 'codex', 'script', 'log'] as const;
 type Tab = (typeof TABS)[number];
@@ -95,7 +97,11 @@ export function App() {
             {tab === 'disk' && client?.self && <DiskPanel client={client} />}
             {tab === 'items' && client?.self && <ItemsPanel inventory={client.self.inventory} />}
             {tab === 'codex' && <CodexPanel />}
-            {tab === 'script' && <ScriptPanel client={client} />}
+            {tab === 'script' && (
+                <Suspense fallback={<p className="p-3 text-sm text-neutral-500">loading editor…</p>}>
+                  <ScriptPanel client={client} />
+                </Suspense>
+              )}
             {tab === 'log' && <LogPanel />}
             </ErrorBoundary>
           </div>

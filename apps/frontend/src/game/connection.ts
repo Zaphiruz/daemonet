@@ -1,4 +1,4 @@
-import { GameClient, type ConnectOptions, type TokenSource } from '@daemonet/sdk';
+import { GameClient, TRANSIENT_KICKS, type ConnectOptions, type TokenSource } from '@daemonet/sdk';
 import { useSyncExternalStore } from 'react';
 import { fetchTicket as fetchTicketFromApi, TicketError } from '../api.ts';
 import { capture as appCapture, type CaptureStore } from './capture.ts';
@@ -43,9 +43,7 @@ export const RETRY_MAX_MS = 30_000;
  * SDK's own TRANSIENT_KICKS plus `unavailable` (the store was down) and `unauthorized` (e.g. a ticket
  * that expired in flight; a gone session shows up as a 401 from the ticket endpoint instead).
  */
-const RETRYABLE_KICKS: ReadonlySet<string> = new Set(['idle', 'auth timeout', 'server shutting down', 'unavailable', 'unauthorized']);
-/** Kicks after which the SDK reconnects an established connection by itself (its TRANSIENT_KICKS). */
-const TRANSIENT_KICKS: ReadonlySet<string> = new Set(['idle', 'auth timeout', 'server shutting down']);
+const RETRYABLE_KICKS: ReadonlySet<string> = new Set([...TRANSIENT_KICKS, 'unavailable', 'unauthorized']);
 const SIGNED_OUT = 'session expired: sign in again';
 /** Consecutive `unauthorized` kicks before the first snapshot after which the store gives up. */
 export const MAX_UNAUTHORIZED_RETRIES = 5;

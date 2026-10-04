@@ -1,4 +1,4 @@
-import { getMove, getSpecies, type ToolId } from '@daemonet/rules';
+import { getMove, getSpecies, TICK_HZ, type ToolId } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { useState } from 'react';
 import { run } from '../components/WorldCanvas.tsx';
@@ -134,7 +134,7 @@ export function CapturePanel({ client }: { client: GameClient }) {
   const [error, setError] = useState<string | null>(null);
   const cap = client.self.capture;
   if (!cap) return null;
-  const left = Math.max(0, cap.deadlineTick - client.tick) / 16;
+  const left = Math.max(0, cap.deadlineTick - client.tick) / TICK_HZ;
   const submit = () => {
     const parsed = parseAnswer(answer);
     if (!parsed.ok) return setError(parsed.error);

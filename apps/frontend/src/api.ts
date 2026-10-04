@@ -82,13 +82,16 @@ export class TicketError extends Error {
   }
 }
 
+/** A ticket request that takes longer than this fails (a timeout is retried like any other connect failure). */
+export const TICKET_TIMEOUT_MS = 10_000;
+
 /**
  * Mints a fresh single-use WebSocket ticket (`ticket:<value>`) outside React, for the connection
  * manager. Call it once per connection attempt: a ticket is consumed by the socket's `auth` and is
  * never reused, cached or sent in `reauth`.
  */
 export async function fetchTicket(): Promise<string> {
-  const res = await fetch('/api/ws/ticket', { method: 'POST', credentials: 'same-origin', headers: { 'x-requested-with': 'daemonet' } });
+  const res = await fetch('/api/ws/ticket', { method: 'POST', credentials: 'same-origin', headers: { 'x-requested-with': 'daemonet' }, signal: AbortSignal.timeout(TICKET_TIMEOUT_MS) });
   if (!res.ok) throw new TicketError(res.status);
   return ((await res.json()) as { ticket: string }).ticket;
 }

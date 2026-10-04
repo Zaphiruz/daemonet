@@ -7,6 +7,7 @@ import {
   createBrowserSandboxEnv,
   createSandboxRunner,
   LOG_LINES_PER_SECOND,
+  START_NOTICE_MS,
   type SandboxClient,
   type SandboxEnv,
   type SandboxFrame,
@@ -205,6 +206,30 @@ describe('sandbox runner', () => {
     await until(() => sb.frames().length >= 3);
     await new Promise((r) => setTimeout(r, 20));
     expect(sb.frames().slice(2).map((f) => f.d.reqId)).toEqual(['r1']);
+  });
+
+  it('logs a one-shot hint when no started arrives after init, without stopping anything', async () => {
+    const t = (current = setup());
+    await t.runner.start(t.asClient, 'x');
+    const f = t.frames[0]!;
+    f.load();
+    t.advance(START_NOTICE_MS - 1);
+    expect(t.texts().some((x) => x.includes('sandbox did not start'))).toBe(false);
+    t.advance(1);
+    t.advance(60_000);
+    expect(t.texts().filter((x) => x === 'system:sandbox did not start — is /sandbox.html served?')).toHaveLength(1);
+    expect(f.removed).toBe(false);
+    expect(t.runner.getStatus()).toBe('starting');
+  });
+
+  it('does not log the hint once started arrived', async () => {
+    const t = (current = setup());
+    await t.runner.start(t.asClient, 'x');
+    const f = t.frames[0]!;
+    f.load();
+    t.fromFrame(f.contentWindow, { type: 'started' });
+    t.advance(START_NOTICE_MS * 2);
+    expect(t.texts().some((x) => x.includes('sandbox did not start'))).toBe(false);
   });
 
   it('accepts only validated messages from the frame window and renders logs as text', async () => {

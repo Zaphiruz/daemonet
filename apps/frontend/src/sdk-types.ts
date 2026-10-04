@@ -2,11 +2,13 @@
 export const SDK_TYPES = `
 declare module '@daemonet/sdk' {
   export interface Positioned { x: number; y: number }
-  export interface DaemonView extends Positioned {
-    id: string; species: string; types: string[]; level: number; hp: number; maxHp: number; hpPct: number;
+  export interface DaemonEntity extends Positioned {
+    kind: 'daemon'; id: string; species: string; types: string[]; level: number; hp: number; maxHp: number;
     owner: string | null; taggedBy: string | null; clean: boolean; signature: number; statuses: string[]; hardened: boolean;
   }
-  export interface OperatorEntity extends Positioned { id: string; name: string | null }
+  export interface DaemonView extends DaemonEntity { hpPct: number }
+  export interface OperatorEntity extends Positioned { kind: 'operator'; id: string; name: string | null }
+  export type Entity = OperatorEntity | DaemonEntity;
   export interface RamDaemon {
     id: string; species: string; level: number; xp: number; ivs: number[]; bonus: number[]; clean: boolean; signature: number;
     hp: number; maxHp: number; energy: number; moves: string[]; crashed: boolean; slot: number; cooldowns: Record<string, number>;
@@ -38,7 +40,7 @@ declare module '@daemonet/sdk' {
   export class DaemonsApi { get(id: string): DaemonHandle; script(fn: (ctx: DaemonScriptContext) => void): () => void }
   export interface CaptureStartEvent { captureId: string; targetId: string; challenge: { kind: 'single' | 'chain'; families: string[]; params: unknown; payload: unknown }; deadlineTick: number }
   export class GameClient {
-    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, DaemonView | OperatorEntity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi;
+    tick: number; operatorId: string; role: 'controller' | 'spectator'; subnet: string; entities: Map<string, Entity>; self: OperatorSelf; readonly world: WorldView; readonly operator: OperatorApi; readonly daemons: DaemonsApi;
     on(name: 'captureStart', handler: (ev: CaptureStartEvent) => void): () => void;
     on(name: 'captureResult', handler: (ev: { captureId: string; ok: boolean; reason?: string }) => void): () => void;
     on(name: 'tick', handler: (tick: number) => void): () => void;

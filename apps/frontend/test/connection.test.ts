@@ -255,12 +255,24 @@ describe('fetchTicket', () => {
   it('POSTs /api/ws/ticket with the CSRF header and returns the ticket', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ticket: 'ticket:abc', expiresAt: 'x' }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
     await expect(fetchTicket()).resolves.toBe('ticket:abc');
     expect(fetchMock).toHaveBeenCalledWith('/api/ws/ticket', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'x-requested-with': 'daemonet' },
+      signal: expect.any(AbortSignal),
     });
+    // a hung ticket request gives up after 10 s
+    expect(timeout).toHaveBeenCalledWith(10_000);
+    timeout.mockRestore();
+  });
+
+  it('a timed-out ticket request is a plain error (retryable), not a signed-out TicketError', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'))));
+    const err = await fetchTicket().catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(TicketError);
+    expect((err as DOMException).name).toBe('TimeoutError');
   });
 
   it('throws a TicketError carrying the status', async () => {

@@ -74,7 +74,7 @@ afterEach(() => {
 
 async function mount() {
   const store = configureStore({ reducer: { [api.reducerPath]: api.reducer }, middleware: (gdm) => gdm().concat(api.middleware) });
-  render(createElement(Provider, { store }, createElement(ScriptPanel, { client: null })));
+  render(createElement(Provider, { store, children: createElement(ScriptPanel, { client: null }) }));
   await screen.findByTestId('ed');
 }
 

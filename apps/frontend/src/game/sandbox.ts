@@ -31,6 +31,8 @@ export const LOG_LINES_PER_SECOND = 20;
 const VIOLATION_NOTICE_MS = 5_000;
 /** The script's share of the per-connection command budget (the bridge's default; the host keeps 2 of 8). */
 const SCRIPT_COMMANDS_PER_TICK = 6;
+/** How long after posting `init` the runner waits for the sandbox's `started` before it logs a hint. */
+export const START_NOTICE_MS = 10_000;
 
 /** The window inside the sandbox iframe, as far as the host uses it. */
 export interface SandboxWindow {
@@ -118,6 +120,8 @@ interface Run {
   frame: SandboxFrame;
   bridge: Bridge;
   posted: boolean;
+  /** Cancels the pending "sandbox did not start" notice. */
+  cancelStartNotice: (() => void) | null;
 }
 
 /** One `start()` until it ends: survives host reconnects (each restarts the script in a new Run). */
@@ -187,6 +191,8 @@ export function createSandboxRunner(env: SandboxEnv) {
     if (!run) return;
     const r = run;
     run = null;
+    r.cancelStartNotice?.();
+    r.cancelStartNotice = null;
     r.bridge.close();
     r.frame.remove();
   };
@@ -221,7 +227,7 @@ export function createSandboxRunner(env: SandboxEnv) {
 
   const buildRun = (s: Session) => {
     const channel = env.createChannel();
-    const r = { posted: false } as Run;
+    const r = { posted: false, cancelStartNotice: null } as Run;
     r.bridge = createBridge({
       port: channel.port1,
       send: (raw) => s.client.sendFrame(raw),
@@ -235,6 +241,11 @@ export function createSandboxRunner(env: SandboxEnv) {
       if (run !== r || r.posted) return;
       r.posted = true;
       r.frame.contentWindow?.postMessage(s.init, '*', [channel.port2]);
+      // a missing /sandbox.html (or a blocked frame) never answers: say so once, but kill nothing
+      r.cancelStartNotice = env.setTimer(() => {
+        r.cancelStartNotice = null;
+        if (run === r) env.log.push('system', 'sandbox did not start — is /sandbox.html served?');
+      }, START_NOTICE_MS);
     });
     run = r;
   };
@@ -267,6 +278,8 @@ export function createSandboxRunner(env: SandboxEnv) {
     if (!m) return;
     switch (m.type) {
       case 'started':
+        run.cancelStartNotice?.();
+        run.cancelStartNotice = null;
         set('running');
         return;
       case 'log':

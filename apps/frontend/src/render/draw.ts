@@ -1,4 +1,4 @@
-import { getSubnet, type SubnetDef } from '@daemonet/rules';
+import { getSubnet, TICK_HZ, type SubnetDef } from '@daemonet/rules';
 import type { GameClient } from '@daemonet/sdk';
 import { signatureColor, spriteFor, SPRITE_SIZE } from '@daemonet/sprites';
 import type { Controls } from '../game/controls.ts';
@@ -163,7 +163,7 @@ export function drawWorld({ ctx, cam, client, controls, hover }: DrawInput): voi
       ctx.setLineDash([]);
       const left = Math.max(0, capture.deadlineTick - client.tick);
       ctx.fillStyle = COLORS.link;
-      ctx.fillText(`${(left / 16).toFixed(1)}s`, p.sx + size / 2, p.sy + size / 2 + 12);
+      ctx.fillText(`${(left / TICK_HZ).toFixed(1)}s`, p.sx + size / 2, p.sy + size / 2 + 12);
     }
   }
   if (hover) {
