@@ -9,6 +9,7 @@ import { HistoryLines } from './ListingsPanel.tsx';
 import { nearHost, SpriteImg } from './RamPanel.tsx';
 
 const LISTING_LOCK = 'listing:';
+const TRADE_LOCK = 'trade:';
 const LISTING_DAYS = Math.round(LISTING_TTL_MS / 86_400_000);
 const PRICE_RANGE = `price must be a whole number from 1 to ${MAX_PRICE}`;
 
@@ -92,6 +93,7 @@ export function DiskPanel({ client }: { client: GameClient }) {
       {rows.map((d) => {
         const sp = getSpecies(d.species);
         const listingId = d.lockedBy?.startsWith(LISTING_LOCK) ? d.lockedBy.slice(LISTING_LOCK.length) : null;
+        const inTrade = !!d.lockedBy?.startsWith(TRADE_LOCK);
         const price = pricing?.id === d.id ? parsePrice(pricing.text) : null;
         return (
           <div key={d.id} className="flex gap-2 rounded border border-neutral-800 p-2">
@@ -102,7 +104,11 @@ export function DiskPanel({ client }: { client: GameClient }) {
                 {d.clean && <span className="ml-1 text-white">clean</span>}
                 {d.signature > 0 && <span className="ml-1 text-fuchsia-300">T{d.signature}</span>}
                 {d.patched && <span className="ml-1 text-amber-300">patched</span>}
-                {!!d.lockedBy && <span className="ml-1 text-sky-300">on the Exchange</span>}
+                {!!d.lockedBy && (
+                  <span className="ml-1 text-sky-300" data-testid={`lock-${d.id}`}>
+                    {inTrade ? 'in a trade' : 'on the Exchange'}
+                  </span>
+                )}
                 {d.heldItem && <span className="mono ml-1 text-xs text-neutral-400">holds {d.heldItem}</span>}
               </div>
               <div className="mono text-xs text-neutral-500">
@@ -111,7 +117,7 @@ export function DiskPanel({ client }: { client: GameClient }) {
               <button
                 className="mt-1 text-xs text-neutral-300 hover:text-white disabled:opacity-40"
                 disabled={!manual || !atHost || me.ram.length >= RAM_SLOTS || !!d.lockedBy}
-                title={d.lockedBy ? (listingId ? 'locked on the Exchange: unlist it first' : 'locked on the Exchange: cancel the order first') : undefined}
+                title={d.lockedBy ? (inTrade ? 'in a trade: cancel the trade or take it off the table first' : listingId ? 'locked on the Exchange: unlist it first' : 'locked on the Exchange: cancel the order first') : undefined}
                 onClick={() => run(client.operator.load(d.id).then(() => disk.refetch()), 'load')}
               >
                 load into RAM
@@ -119,6 +125,11 @@ export function DiskPanel({ client }: { client: GameClient }) {
               {listingId !== null && (
                 <button className="ml-3 mt-1 text-xs text-neutral-300 hover:text-white disabled:opacity-40" disabled={unlisting.has(listingId)} onClick={() => void unlistOne(listingId)} data-testid={`unlist-${d.id}`}>
                   unlist
+                </button>
+              )}
+              {inTrade && (
+                <button className="ml-3 mt-1 text-xs text-neutral-300 disabled:opacity-40" disabled title="in a trade: cancel the trade or take it off the table first" data-testid={`list-${d.id}`}>
+                  list
                 </button>
               )}
               {!d.lockedBy && pricing?.id !== d.id && (

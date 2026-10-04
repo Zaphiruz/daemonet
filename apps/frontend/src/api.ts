@@ -1,7 +1,7 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
 import { chatStore } from './game/chat.ts';
 import { clusterStore } from './game/clusters.ts';
-import { exchangeStore, listingStore, type Book } from './game/exchange.ts';
+import { exchangeStore, listingStore, tradeStore, type Book } from './game/exchange.ts';
 import { incidentStore } from './game/incident.ts';
 import type { CodexBestiaryRow, ItemDef, MoveDef, NatureDef, SpeciesDef, TraitDef, TypeId } from './types.ts';
 
@@ -226,6 +226,45 @@ export function describeListingError(err: unknown, action: 'buy' | 'list' | 'unl
   return describeApiError(err);
 }
 
+export interface TradeSide {
+  id: string;
+  name: string | null;
+  confirmed: boolean;
+  offer: { bits: number; items: Record<string, number>; daemons: ListedDaemon[] };
+}
+export interface Trade {
+  id: string;
+  status: 'OPEN' | 'DONE' | 'CANCELLED';
+  /** bumped by every offer change; quoted when confirming */
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  me: TradeSide;
+  them: TradeSide;
+}
+export interface TradeOfferBody {
+  bits: number;
+  items: Record<string, number>;
+  daemonIds: string[];
+}
+
+/**
+ * A readable message for a failed trade call. A stale confirmation (409 `stale_offer`) says to look at the new offer; any
+ * other 409 (a Disk slot taken at the moment of the swap) moved nothing and is worth a retry; a 402 says the balance
+ * is short (a failed confirm leaves the trade open and unconfirmed by this operator); the api's own short reasons show as they are.
+ */
+export function describeTradeError(err: unknown, action: 'open' | 'offer' | 'confirm' | 'cancel'): string {
+  const e = err as { status?: unknown; data?: { error?: unknown; message?: unknown } } | null | undefined;
+  if (e === null || typeof e !== 'object') return 'request failed';
+  const code = typeof e.data?.error === 'string' ? e.data.error : '';
+  const message = typeof e.data?.message === 'string' ? e.data.message : '';
+  if (e.status === 402 || code === 'insufficient_bits') return `not enough bits${message ? `: ${message}` : ''}${action === 'confirm' ? ' (the trade is still open, nothing moved)' : ''}`;
+  if (code === 'stale_offer') return 'the offers changed: review the new offer, then confirm again';
+  if (e.status === 409 || code === 'conflict') return `${message || 'conflict, try again'}${action === 'confirm' ? ' (nothing moved)' : ''}`;
+  if ((e.status === 400 || e.status === 403 || e.status === 404) && message) return message;
+  return describeApiError(err);
+}
+
 /** One operator's line in an Incident's history: names are live, there are no ids. `you` marks the caller. */
 export interface IncidentParticipant {
   name: string | null;
@@ -345,7 +384,7 @@ export const api = createApi({
       return headers;
     },
   }),
-  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault', 'Orders', 'Book', 'Listings', 'Ledger'],
+  tagTypes: ['Me', 'Script', 'Disk', 'Codex', 'Tickets', 'Reports', 'Filter', 'Org', 'Incidents', 'Vault', 'Orders', 'Book', 'Listings', 'Ledger', 'Trades'],
   endpoints: (b) => ({
     me: b.query<Me, void>({ query: () => '/me', providesTags: ['Me'] }),
     codex: b.query<Codex, void>({ query: () => '/codex', providesTags: ['Codex'] }),
@@ -378,6 +417,17 @@ export const api = createApi({
       query: (id) => ({ url: `/exchange/listings/${encodeURIComponent(id)}/buy`, method: 'POST' }),
       invalidatesTags: ['Listings', 'Disk', 'Ledger'],
     }),
+    trades: b.query<Trade[], void>({ query: () => '/exchange/trades', providesTags: ['Trades'] }),
+    openTrade: b.mutation<Trade, { withId?: string; withName?: string }>({ query: (body) => ({ url: '/exchange/trades', method: 'POST', body }), invalidatesTags: ['Trades'] }),
+    setOffer: b.mutation<Trade, { id: string; offer: TradeOfferBody }>({
+      query: ({ id, offer }) => ({ url: `/exchange/trades/${encodeURIComponent(id)}/offer`, method: 'PUT', body: offer }),
+      invalidatesTags: ['Trades', 'Disk'],
+    }),
+    confirmTrade: b.mutation<Trade, { id: string; version: number }>({
+      query: ({ id, version }) => ({ url: `/exchange/trades/${encodeURIComponent(id)}/confirm`, method: 'POST', body: { version } }),
+      invalidatesTags: ['Trades', 'Disk', 'Vault', 'Ledger'],
+    }),
+    cancelTrade: b.mutation<Trade, string>({ query: (id) => ({ url: `/exchange/trades/${encodeURIComponent(id)}/cancel`, method: 'POST', body: {} }), invalidatesTags: ['Trades', 'Disk'] }),
     board: b.query<{ day: string; subnet: string; tickets: BoardTicket[]; acceptedToday: number }, string>({ query: (subnet) => `/tickets/board?subnet=${encodeURIComponent(subnet)}`, providesTags: ['Tickets'] }),
     ticketHistory: b.query<TicketHistory[], void>({ query: () => '/tickets', providesTags: ['Tickets'] }),
     chatHistory: b.query<ChatHistoryLine[], ChatHistoryArgs>({ query: chatHistoryUrl }),
@@ -428,6 +478,7 @@ export const api = createApi({
           incidentStore.reset();
           exchangeStore.clear();
           listingStore.clear();
+          tradeStore.clear();
         } catch {
           // a failed logout keeps the session and its caches
         }
@@ -464,6 +515,11 @@ export const {
   useListDaemonMutation,
   useUnlistMutation,
   useBuyListingMutation,
+  useTradesQuery,
+  useOpenTradeMutation,
+  useSetOfferMutation,
+  useConfirmTradeMutation,
+  useCancelTradeMutation,
   useMeQuery, useCodexQuery, useDiskQuery, useLedgerQuery, useVaultQuery, useBoardQuery, useTicketHistoryQuery, useScriptQuery, useVersionsQuery, useLazyVersionQuery, useSaveScriptMutation, useLogoutMutation } = api;
 
 /** A failed ticket request; `status` 401/403 means the web session is gone (sign in again). */

@@ -6,7 +6,7 @@ import { capture as appCapture, type CaptureStore } from './capture.ts';
 import { chatStore, setMe, type ChatStore } from './chat.ts';
 import { clusterStore, type ClusterStore } from './clusters.ts';
 import { getControls, setControls } from './controls.ts';
-import { describeFill, exchangeStore, listingStore, parseFill, parseSale, type ExchangeStore, type ListingStore } from './exchange.ts';
+import { describeFill, exchangeStore, listingStore, tradeStore, parseFill, parseSale, parseTradeNote, type ExchangeStore, type ListingStore, type TradeStore } from './exchange.ts';
 import { describeIncidentEvent, incidentStore, type IncidentStore } from './incident.ts';
 import { log as appLog, type Log } from './log.ts';
 import { setConnectionProbe, stop as stopSandbox } from './sandbox.ts';
@@ -57,6 +57,10 @@ export interface ConnectionDeps {
   listings?: ListingStore;
   /** Refetches the listings, Disk and ledger queries (a daemon changed hands; also after a reconnect). Optional. */
   invalidateListings?(): void;
+  /** Holds the operator's latest direct-trade changes (they arrive before any panel mounts). Optional. */
+  trades?: TradeStore;
+  /** Refetches the trades, Disk, vault and ledger queries (a trade changed; also after a reconnect). Optional. */
+  invalidateTrades?(): void;
   /** Refetches /api/incidents (after a reconnect, when an Incident ended): the API re-seeds the store. Optional. */
   invalidateIncidents?(): void;
 }
@@ -136,6 +140,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.clusters?.clear();
     deps.exchange?.clear();
     deps.listings?.clear();
+    deps.trades?.clear();
     deps.incident?.resync();
     client.close();
     set({ status, kickReason: reason, client: null });
@@ -213,6 +218,7 @@ export function createConnection(deps: ConnectionDeps) {
       deps.invalidateIncidents?.();
       deps.invalidateExchange?.();
       deps.invalidateListings?.();
+      deps.invalidateTrades?.();
       set({ status: 'online' });
       deps.log.push('system', 'reconnected');
     });
@@ -239,6 +245,18 @@ export function createConnection(deps: ConnectionDeps) {
           if (sale.role === 'seller') deps.log.push('event', `Exchange: your ${sale.species} sold for ${sale.price} bits (${sale.price - sale.fee} after the fee)`);
         } else deps.log.push('event', `Exchange: ${e.kind}`);
         deps.invalidateListings?.();
+        return;
+      }
+      if (e.kind === 'trade') {
+        // captured here too: a trade changes whether or not the Exchange tab is open (every change refetches
+        // trades, Disk, vault and ledger: offers lock daemons, a completed trade moves items, bits and daemons)
+        const note = parseTradeNote(e.detail);
+        if (note) {
+          deps.trades?.push(note);
+          if (note.status === 'DONE') deps.log.push('event', 'Exchange: trade completed');
+          else if (note.status === 'CANCELLED') deps.log.push('event', 'Exchange: trade cancelled');
+        } else deps.log.push('event', `Exchange: ${e.kind}`);
+        deps.invalidateTrades?.();
         return;
       }
       const fill = e.kind === 'fill' ? parseFill(e.detail) : null;
@@ -347,6 +365,7 @@ export function createConnection(deps: ConnectionDeps) {
     deps.clusters?.clear();
     deps.exchange?.clear();
     deps.listings?.clear();
+    deps.trades?.clear();
     deps.incident?.resync();
     state.client?.close();
     set({ status: 'idle', client: null, kickReason: null });
@@ -378,12 +397,14 @@ const connection = createConnection({
   incident: incidentStore,
   exchange: exchangeStore,
   listings: listingStore,
+  trades: tradeStore,
   stopSandbox,
   invalidateCodex: () => store.dispatch(api.util.invalidateTags(['Codex'])),
   invalidateTickets: () => store.dispatch(api.util.invalidateTags(['Tickets'])),
   invalidateIncidents: () => store.dispatch(api.util.invalidateTags(['Incidents'])),
   invalidateExchange: () => store.dispatch(api.util.invalidateTags(['Orders', 'Book', 'Vault'])),
   invalidateListings: () => store.dispatch(api.util.invalidateTags(['Listings', 'Disk', 'Ledger'])),
+  invalidateTrades: () => store.dispatch(api.util.invalidateTags(['Trades', 'Disk', 'Vault', 'Ledger'])),
 });
 
 // the sandbox only starts a script on a live socket

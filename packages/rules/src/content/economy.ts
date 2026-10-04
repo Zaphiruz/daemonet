@@ -29,6 +29,16 @@ export const FEE_DIVISOR = 16;
 export const MAX_ACTIVE_LISTINGS = 16;
 export const LISTING_TTL_MS = 7 * 86_400_000;
 
+/**
+ * Direct trades (SP5 spec §7): at most this many open per operator (one per pair), an offer holds at most this many
+ * daemons and kinds of item, and bits up to `MAX_TRADE_BITS`; a trade nobody touches for an hour is cancelled.
+ */
+export const MAX_OPEN_TRADES = 4;
+export const TRADE_IDLE_MS = 3_600_000;
+export const MAX_TRADE_DAEMONS = 8;
+export const MAX_TRADE_ITEMS = 16;
+export const MAX_TRADE_BITS = MAX_PRICE * 16;
+
 /** The fee on a fill worth `bits`: 1/16, floored. The seller pays it out of the proceeds; it is destroyed. */
 export const feeOn = (bits: number): number => Math.floor(bits / FEE_DIVISOR);
 

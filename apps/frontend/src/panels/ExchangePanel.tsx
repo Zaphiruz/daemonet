@@ -5,6 +5,7 @@ import { describeApiError, useBookQuery, useCancelOrderMutation, useExchangeItem
 import { describeFill, orderPreview, simulateOrder, spread, useExchangeFills } from '../game/exchange.ts';
 import { log } from '../game/log.ts';
 import { ListingsPanel } from './ListingsPanel.tsx';
+import { TradesPanel } from './TradesPanel.tsx';
 
 /**
  * Background refresh only: a fill reaches the player as a sim `exchange` event (the connection invalidates the orders,
@@ -15,19 +16,21 @@ const POLL_MS = 16_000;
 const ITEMS_POLL_MS = 60_000;
 const clamp = (raw: string, max: number) => Math.max(1, Math.min(max, Math.trunc(Number(raw)) || 1));
 
-/** The Exchange (SP5): the item market and the daemon listings. */
+/** The Exchange (SP5): the item market, the daemon listings and direct trades. */
 export function ExchangePanel({ client }: { client: GameClient }) {
-  const [view, setView] = useState<'items' | 'daemons'>('items');
+  const [view, setView] = useState<'items' | 'daemons' | 'trades'>('items');
   return (
     <div className="space-y-3 p-3 text-sm" data-testid="exchange">
       <div className="flex gap-1 text-xs">
-        {(['items', 'daemons'] as const).map((v) => (
+        {(['items', 'daemons', 'trades'] as const).map((v) => (
           <button key={v} className={`rounded px-2 py-0.5 ${view === v ? 'bg-neutral-700' : 'bg-neutral-900 text-neutral-400'}`} onClick={() => setView(v)} data-testid={`exchange-${v}`}>
             {v}
           </button>
         ))}
       </div>
-      {view === 'items' ? <ItemMarket client={client} /> : <ListingsPanel client={client} />}
+      {view === 'items' && <ItemMarket client={client} />}
+      {view === 'daemons' && <ListingsPanel client={client} />}
+      {view === 'trades' && <TradesPanel client={client} />}
     </div>
   );
 }

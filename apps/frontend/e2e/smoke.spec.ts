@@ -249,6 +249,31 @@ test('two operators chat in subnet:lo; the filter masks and blocks; a line can b
   await pb.getByTestId('tab-disk').click();
   await expect(pb.getByTestId('unlist-' + listed.id)).toHaveCount(0, { timeout: 10_000 });
 
+  // Direct trade: A pays 32 bits for B's last two heap fragments; both confirm
+  await pa.getByTestId('tab-exchange').click();
+  await pa.getByTestId('exchange-trades').click();
+  await pa.getByTestId('trade-with').fill(`${name}cb`);
+  await pa.getByTestId('trade-open').click();
+  const cardA = pa.getByTestId(`trade-${name}cb`);
+  await cardA.getByTestId('trade-bits').fill('32');
+  await cardA.getByTestId('trade-offer').click();
+  await pb.getByTestId('tab-exchange').click();
+  await pb.getByTestId('exchange-trades').click();
+  const cardB = pb.getByTestId(`trade-${name}ca`);
+  await expect(cardB).toContainText('you receive 30 after the fee', { timeout: 10_000 });
+  await cardB.getByTestId('trade-item-frag:heap').fill('2');
+  await cardB.getByTestId('trade-offer').click();
+  await expect(cardA).toContainText('frag:heap ×2', { timeout: 10_000 });
+  // their offer changed under A: the new offer is shown and A reviews it before confirming
+  await cardA.getByTestId('trade-review').click();
+  await cardA.getByTestId('trade-confirm').click();
+  await expect(cardB).toContainText('they confirmed', { timeout: 10_000 });
+  await cardB.getByTestId('trade-confirm').click();
+  await expect(pa.getByTestId(`trade-closed-${name}cb`)).toContainText('done', { timeout: 10_000 });
+  await pa.getByTestId('exchange-items').click();
+  await pa.getByTestId('exchange-item').selectOption('frag:heap');
+  await expect(pa.getByTestId('exchange-vault')).toContainText('vault ×5', { timeout: 10_000 });
+
   // Incidents: an admin starts one; every connected operator sees the banner and the Incidents tab lists it
   const adm = await browser.newContext({ baseURL: 'http://127.0.0.1:4173' });
   expect((await adm.request.get(`/api/auth/dev?name=${name}adm&admin=true`, { maxRedirects: 0 })).status()).toBe(302);

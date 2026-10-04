@@ -1,18 +1,14 @@
 import { consoleBusLogger, type Bus } from '@daemonet/bus';
 import type { Daemon, Prisma, PrismaClient, Trade } from '@daemonet/db';
-import { isTradable } from '@daemonet/rules';
+import { MAX_OPEN_TRADES, MAX_TRADE_BITS, MAX_TRADE_DAEMONS, MAX_TRADE_ITEMS, TRADE_IDLE_MS, isTradable } from '@daemonet/rules';
 import { AppError, badRequest, conflict, forbidden, notFound } from '../errors.js';
 import { publishSafely, type PublishLog } from '../publish.js';
 import { Outbox, announce, credit, debit, freeDiskSlot, isSlotTaken, lockOperators, type Tx } from './ledger.js';
 import { daemonView } from './listings.js';
-import { MAX_PRICE, MAX_QTY, feeOn, vaultAdd, vaultTake } from './orders.js';
+import { MAX_QTY, feeOn, vaultAdd, vaultTake } from './orders.js';
 
 /** Direct trades (SP5 spec §7): two operators put bits, vault items and Disk daemons on the table and both confirm. */
-export const MAX_OPEN_TRADES = 4;
-export const TRADE_IDLE_MS = 3_600_000;
-export const MAX_TRADE_DAEMONS = 8;
-export const MAX_TRADE_ITEMS = 16;
-export const MAX_TRADE_BITS = MAX_PRICE * 16;
+export { MAX_OPEN_TRADES, MAX_TRADE_BITS, MAX_TRADE_DAEMONS, MAX_TRADE_ITEMS, TRADE_IDLE_MS };
 
 /**
  * The ledger reason of every bits row a trade writes (`ref` = the trade id), one debit and one net credit per side that

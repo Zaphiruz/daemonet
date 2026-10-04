@@ -249,6 +249,63 @@ export const listingStore = createListingStore();
 /** Fired when one of this operator's daemons changed hands on the Exchange, so open panels can refetch. */
 export const listingSold = listingStore;
 
+/** A change to one of this operator's direct trades, as the sim reports it (`exchange { kind: 'trade' }`). */
+export interface TradeNote {
+  tradeId: string;
+  status: 'OPEN' | 'DONE' | 'CANCELLED';
+}
+
+export const TRADE_NOTES_KEPT = 16;
+
+/**
+ * The operator's latest trade changes, newest first. They arrive whether or not the Exchange tab is open, so the
+ * connection feeds this store; `emit()` tells subscribers to refetch without a new change.
+ */
+export function createTradeStore() {
+  let notes: TradeNote[] = [];
+  const listeners = new Set<() => void>();
+  let snapshot = { notes };
+  const notify = () => {
+    snapshot = { notes };
+    listeners.forEach((l) => l());
+  };
+  return {
+    push(n: TradeNote) {
+      notes = [n, ...notes].slice(0, TRADE_NOTES_KEPT);
+      notify();
+    },
+    emit: notify,
+    clear() {
+      if (notes.length === 0) return;
+      notes = [];
+      notify();
+    },
+    get: () => snapshot,
+    subscribe(l: () => void) {
+      listeners.add(l);
+      return () => void listeners.delete(l);
+    },
+  };
+}
+
+export type TradeStore = ReturnType<typeof createTradeStore>;
+export const tradeStore = createTradeStore();
+/** Fired when one of this operator's direct trades changed (opened, offer, confirmation, done, cancelled). */
+export const tradeChanged = tradeStore;
+
+export function useTradeNotes(): TradeNote[] {
+  return useSyncExternalStore(tradeStore.subscribe, tradeStore.get, tradeStore.get).notes;
+}
+
+/** Reads the detail of a sim `exchange` trade event (untrusted): null unless it names a trade and a known status. */
+export function parseTradeNote(detail: unknown): TradeNote | null {
+  const d = detail as Record<string, unknown> | null;
+  if (d === null || typeof d !== 'object') return null;
+  const { tradeId, status } = d;
+  if (typeof tradeId !== 'string' || (status !== 'OPEN' && status !== 'DONE' && status !== 'CANCELLED')) return null;
+  return { tradeId, status };
+}
+
 export function useListingSales(): SaleNote[] {
   return useSyncExternalStore(listingStore.subscribe, listingStore.get, listingStore.get).sales;
 }
