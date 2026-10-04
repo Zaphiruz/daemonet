@@ -470,6 +470,11 @@ export class Game {
         // returns to backbone's spawn instead when it is full (with no Incident running, eviction sends it there).
         if (world?.subnet.id === INCIDENT_SUBNET && world.incident && !world.operators.has(rec.id) && !this.incidentRoom(INCIDENT_SUBNET)) {
           world = this.worlds.get(EVICT_TO);
+          if (world) {
+            rec.subnet = world.subnet.id;
+            rec.x = world.subnet.spawn.x;
+            rec.y = world.subnet.spawn.y;
+          }
         }
         if (!world) {
           world = this.defaultWorld;
