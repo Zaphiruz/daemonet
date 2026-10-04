@@ -137,14 +137,9 @@ export const LO: SubnetDef = deepFreeze<SubnetDef>({
   gateways: [gate('lo-lan', CORNER_SE, 'lan', ARRIVE_NW, 8)],
 });
 
-const bands = (start: number): [number, number][] => [
-  [start, start + 6],
-  [start + 4, start + 10],
-  [start + 8, start + 14],
-  [start + 10, start + 16],
-];
+type Bands = readonly [readonly [number, number], readonly [number, number], readonly [number, number], readonly [number, number]];
 
-function subnet(id: string, tier: number, types: readonly TypeId[], stages: readonly number[], start: number, gateways: GatewayDef[]): SubnetDef {
+function subnet(id: string, tier: number, types: readonly TypeId[], stages: readonly number[], levels: Bands, gateways: GatewayDef[]): SubnetDef {
   const lower = stages.length > 1 ? stages.slice(0, -1) : stages;
   return deepFreeze<SubnetDef>({
     id,
@@ -154,26 +149,31 @@ function subnet(id: string, tier: number, types: readonly TypeId[], stages: read
     walls: BARS,
     host: { x: 16.5, y: 16.5 },
     spawn: { x: 18.5, y: 16.5 },
-    regions: quadrants([spawnTable(types, lower), spawnTable(types, stages), spawnTable(types, stages), spawnTable(types, stages)], bands(start)),
+    regions: quadrants([spawnTable(types, lower), spawnTable(types, stages), spawnTable(types, stages), spawnTable(types, stages)], levels),
     gateways,
   });
 }
 
-export const LAN = subnet('lan', 1, ['kernel', 'packet', 'socket', 'thread'], [0, 1], 8, [
+// Region level bands are the SP3b spec table (4.1) verbatim: lobby · uplink · cache · core.
+export const LAN = subnet('lan', 1, ['kernel', 'packet', 'socket', 'thread'], [0, 1], [[8, 14], [12, 18], [16, 22], [18, 24]], [
   gate('lan-lo', CORNER_NW, 'lo', ARRIVE_SE, 0),
   gate('lan-dmz', CORNER_SE, 'dmz', ARRIVE_NW, 16),
 ]);
-export const DMZ = subnet('dmz', 2, ['crypto', 'root', 'shell', 'proxy'], [1, 2], 16, [
+export const DMZ = subnet('dmz', 2, ['crypto', 'root', 'shell', 'proxy'], [1, 2], [[16, 22], [20, 26], [24, 30], [28, 34]], [
   gate('dmz-lan', CORNER_NW, 'lan', ARRIVE_SE, 0),
   gate('dmz-backbone', CORNER_SE, 'backbone', ARRIVE_NW, 24),
 ]);
-export const BACKBONE = subnet('backbone', 3, ['packet', 'socket', 'cloud', 'buffer'], [1, 2], 24, [
+export const BACKBONE = subnet('backbone', 3, ['packet', 'socket', 'cloud', 'buffer'], [1, 2], [[24, 30], [28, 34], [32, 38], [36, 42]], [
   gate('backbone-dmz', CORNER_NW, 'dmz', ARRIVE_SE, 0),
   gate('backbone-darknet', CORNER_NE, 'darknet', ARRIVE_NW, 32),
   gate('backbone-cloudnet', CORNER_SE, 'cloudnet', ARRIVE_NW, 40),
 ]);
-export const DARKNET = subnet('darknet', 4, ['null', 'glitch', 'proxy', 'crypto'], [2, 3], 32, [gate('darknet-backbone', CORNER_NW, 'backbone', ARRIVE_NE, 0)]);
-export const CLOUDNET = subnet('cloudnet', 4, ['cloud', 'cache', 'heap', 'stack'], [2, 3], 40, [gate('cloudnet-backbone', CORNER_NW, 'backbone', ARRIVE_SE, 0)]);
+export const DARKNET = subnet('darknet', 4, ['null', 'glitch', 'proxy', 'crypto'], [2, 3], [[32, 38], [36, 42], [40, 46], [44, 50]], [
+  gate('darknet-backbone', CORNER_NW, 'backbone', ARRIVE_NE, 0),
+]);
+export const CLOUDNET = subnet('cloudnet', 4, ['cloud', 'cache', 'heap', 'stack'], [2, 3], [[40, 46], [44, 50], [48, 54], [52, 58]], [
+  gate('cloudnet-backbone', CORNER_NW, 'backbone', ARRIVE_SE, 0),
+]);
 
 export const SUBNETS: readonly SubnetDef[] = deepFreeze([LO, LAN, DMZ, BACKBONE, DARKNET, CLOUDNET]);
 /** The subnets one sim process hosts by default (sandbox and kernelspace come with SP6 / SP4). */

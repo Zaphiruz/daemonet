@@ -27,6 +27,20 @@ describe('subnets', () => {
     for (const wall of LO.walls) expect(rectInside(wall, LO.width, LO.height)).toBe(true);
   });
 
+  it('region level bands match the SP3b spec table (4.1) for every subnet', () => {
+    const SPEC: Record<string, Array<[number, number]>> = {
+      lo: [[2, 6], [5, 10], [9, 16], [14, 24]],
+      lan: [[8, 14], [12, 18], [16, 22], [18, 24]],
+      dmz: [[16, 22], [20, 26], [24, 30], [28, 34]],
+      backbone: [[24, 30], [28, 34], [32, 38], [36, 42]],
+      darknet: [[32, 38], [36, 42], [40, 46], [44, 50]],
+      cloudnet: [[40, 46], [44, 50], [48, 54], [52, 58]],
+    };
+    expect(Object.keys(SPEC)).toEqual([...OPEN_SUBNET_IDS]);
+    for (const s of SUBNETS) expect(s.regions.map((r) => r.levels), s.id).toEqual(SPEC[s.id]);
+    for (const s of SUBNETS) expect(Object.isFrozen(s.regions[3]!.levels), s.id).toBe(true);
+  });
+
   it('every gateway leads to a hosted subnet that has a way back, with points inside the map and off the walls', () => {
     for (const s of SUBNETS) {
       for (const p of [s.host, s.spawn]) {
