@@ -267,3 +267,15 @@ Fixed before merge: reload kick on unknown arena results; deadlocks (P2010/40P01
 - T3: arenaResult arrives after the store answers (spec §5 says on `over`; brief-mandated)
 - T4: late-lock branch breaks sort order (grace-protected; comment); new-season seed can come from a non-final rating (lazy-seed deviation); sweep cost at scale (batch lock); a rating row for a missing operator blocks the close
 Task F: minor (deferred): results are memory-only until commit (sim crash loses an unsettled match — nothing owed); arenaResult may arrive long after return (plan 3 UI: "result pending", reconcile from history)
+
+## 2026-10-02-daemonet-sp6-plan3-arena-client
+
+Fixed before merge: capped pending-result poll with 'could not be recorded' wording; forfeit logs refusals, guards double clicks, confirms ranked; rule text from @daemonet/rules; reconnect clears stale challenges; e2e timeouts; a11y (status regions, visible disabled reasons)
+
+- T1: forfeit button shown during countdown (spec allows? check in final review)
+- T2: ladder shows only the first 32 (no paging / your-rank line); no test that the pending poll stops
+- T3: ticket rate limit margin thin for e2e (8 of 10/min); leftover queued operators on a reused local sim can pair
+- T3: ladder shows first 32 rows only — add paging and a "your rank" line
+- T3: re-queue after a sub-second reconnect can miss the waiting row (no arenaQueued emitted for an already-queued operator); consider queueUp always emitting
+- T3: pending-result give-up state lives in ArenaPanel, so a remount restarts the ~2 min poll
+- T3: a ranked forfeit during countdown is not counted — the HUD could say so
