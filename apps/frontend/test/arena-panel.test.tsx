@@ -21,7 +21,7 @@ vi.mock('../src/render/draw.ts', async (importOriginal) => ({ ...(await importOr
 
 import { arenaStore, type ArenaResultInfo } from '../src/game/arena.ts';
 import { log } from '../src/game/log.ts';
-import { ArenaPanel } from '../src/panels/ArenaPanel.tsx';
+import { ArenaPanel, PENDING_POLL_DELAYS_MS } from '../src/panels/ArenaPanel.tsx';
 import { RamPanel } from '../src/panels/RamPanel.tsx';
 import { drawWorld } from '../src/render/draw.ts';
 
@@ -147,12 +147,18 @@ describe('ArenaPanel challenges', () => {
     expect(screen.queryByTestId('arena-challenge')).toBeNull();
   });
 
+  it('does not render a challenge past its 60 seconds, even before the next prune', () => {
+    rendered(fakeClient().client);
+    act(() => arenaStore.onChallenge({ ...challenge, expiresAt: new Date(Date.now() - 1000).toISOString() }));
+    expect(screen.queryByTestId('arena-challenge')).toBeNull();
+  });
+
   it('does not accept while blocked, and ignore dismisses', () => {
     const { client } = fakeClient({ running: ['a'] });
     rendered(client);
     act(() => arenaStore.onChallenge(challenge));
     expect((screen.getByText('accept') as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(screen.getByText('ignore'));
+    fireEvent.click(screen.getByTestId('arena-ignore-c1'));
     expect(screen.queryByTestId('arena-challenge')).toBeNull();
   });
 
@@ -225,6 +231,35 @@ describe('ArenaPanel last result, reconciled with the match list', () => {
     act(() => arenaStore.onResult(last));
     act(() => void vi.advanceTimersByTime(31_000));
     expect(q.refetchMatches).toHaveBeenCalled();
+  });
+
+  it('stops polling once the row appears', async () => {
+    vi.useFakeTimers();
+    q.matches = [];
+    q.refetchMatches.mockClear();
+    const view = rendered(fakeClient().client);
+    act(() => arenaStore.onResult(last));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(11_000)));
+    expect(q.refetchMatches).toHaveBeenCalledTimes(1);
+    q.matches = [row(true)];
+    view.rerender(<ArenaPanel client={fakeClient().client} />);
+    expect(screen.getByTestId('arena-last').textContent).not.toContain('pending');
+    await act(async () => void (await vi.advanceTimersByTimeAsync(300_000)));
+    expect(q.refetchMatches).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up at the cap: not counted, rating unchanged (could not be recorded)', async () => {
+    vi.useFakeTimers();
+    q.matches = [];
+    q.refetchMatches.mockClear();
+    rendered(fakeClient().client);
+    act(() => arenaStore.onResult(last));
+    await act(async () => void (await vi.advanceTimersByTimeAsync(PENDING_POLL_DELAYS_MS.reduce((a, b) => a + b, 0) + 1000)));
+    expect(q.refetchMatches).toHaveBeenCalledTimes(PENDING_POLL_DELAYS_MS.length);
+    expect(screen.getByTestId('arena-last').textContent).toContain('not counted · rating unchanged (could not be recorded)');
+    expect(screen.getByTestId('arena-last').textContent).not.toContain('pending');
+    await act(async () => void (await vi.advanceTimersByTimeAsync(300_000)));
+    expect(q.refetchMatches).toHaveBeenCalledTimes(PENDING_POLL_DELAYS_MS.length);
   });
 });
 

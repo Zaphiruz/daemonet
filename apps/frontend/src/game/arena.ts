@@ -38,7 +38,7 @@ export interface ArenaSnapshot {
 }
 
 /** One predicate for pruning: a malformed `expiresAt` is not live. */
-function challengeLive(c: ArenaChallenge, now: number): boolean {
+export function challengeLive(c: ArenaChallenge, now: number): boolean {
   return Date.parse(c.expiresAt) > now;
 }
 
@@ -80,7 +80,11 @@ export function createArenaStore() {
       const live = snapshot.challenges.filter((c) => challengeLive(c, now));
       if (live.length !== snapshot.challenges.length) set({ challenges: live });
     },
-    /** Logout, a failed or closed connection, a mid-session snapshot: forget everything. */
+    /** The connection came back: a queue entry may not have survived and a challenge may have expired, so forget those (the last result stays). */
+    onReconnect() {
+      set({ queued: null, note: null, challenges: [] });
+    },
+    /** Logout, a kick or failed connection, close, a new open: forget everything. (Not called on the sandbox snapshot nor on a reconnect.) */
     clear() {
       stale = false;
       set({ ...EMPTY });
@@ -134,12 +138,33 @@ export function reconcileResult(
   last: ArenaResultInfo,
   rows: ReadonlyArray<{ id: string; counted: boolean; a: { id: string; before: number; after: number; reward: number }; b: { id: string; before: number; after: number; reward: number } }> | undefined,
   selfId: string,
+  gaveUp = false,
 ): { text: string; pending: boolean } {
   const row = rows?.find((r) => r.id === last.id);
   if (row) {
     const mine = row.a.id === selfId ? row.a : row.b;
     return { text: resultText({ ...last, counted: row.counted, ratingBefore: row.counted ? mine.before : last.ratingBefore, ratingAfter: row.counted ? mine.after : last.ratingAfter, reward: mine.reward }), pending: false };
   }
+  if (last.mode === 'ranked' && !last.counted && gaveUp) return { text: `${resultText({ ...last, mode: 'unranked' })} · not counted · rating unchanged (could not be recorded)`, pending: false };
   if (last.mode === 'ranked' && !last.counted) return { text: `${resultText({ ...last, mode: 'unranked' })} · result pending`, pending: true };
   return { text: resultText(last), pending: false };
+}
+
+/**
+ * The HUD's forfeit button: one command at a time (a double click sends once), refusals are logged through `run`, and a
+ * ranked match asks first. The server decides whether the forfeit is accepted; this only mirrors that it is possible.
+ */
+export function createForfeit(run: (p: Promise<unknown>, label: string) => void, confirmFn: (message: string) => boolean) {
+  let busy = false;
+  return (client: { self: { arena: { mode: ArenaMode } | null }; arena: { forfeit(): Promise<unknown> } }): void => {
+    if (busy) return;
+    if (client.self.arena?.mode === 'ranked' && !confirmFn('Forfeit this ranked match? It counts as a loss.')) return;
+    busy = true;
+    const p = client.arena.forfeit();
+    run(p, 'arena forfeit');
+    const done = () => {
+      busy = false;
+    };
+    void p.then(done, done);
+  };
 }

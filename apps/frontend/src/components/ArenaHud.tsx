@@ -57,8 +57,8 @@ export function ArenaHud({ self, tick, result, onForfeit }: { self: OperatorSelf
           </div>
         )}
         {over && (
-          <div className="mono text-sm text-amber-200" data-testid="arena-result">
-            {shown ? resultText(shown) : arena.result?.winner === null ? 'draw' : arena.result?.winner === self.id ? 'you won' : 'you lost'}
+          <div className="mono text-sm text-amber-200" data-testid="arena-result" role="status" aria-live="polite">
+            {shown ? resultText(shown) : arena.result == null ? '' : arena.result.winner === null ? 'draw' : arena.result.winner === self.id ? 'you won' : 'you lost'}
           </div>
         )}
         {!over && onForfeit && (

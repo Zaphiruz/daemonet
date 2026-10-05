@@ -2,10 +2,11 @@ import type { GameClient } from '@daemonet/sdk';
 import { useEffect, useRef, useState } from 'react';
 import { useArenaMatchesQuery, useArenaMeQuery, useLadderQuery } from '../api.ts';
 import { run } from '../components/WorldCanvas.tsx';
-import { arenaStore, clockText, reconcileResult, useArena, type ArenaMode } from '../game/arena.ts';
+import { ARENA_LEVEL, ARENA_MATCH_MS, ARENA_MIN_DAEMONS, ARENA_SEASON_MIN_MATCHES, ARENA_START_RATING, RUNNING_MAX } from '@daemonet/rules';
+import { arenaStore, challengeLive, clockText, reconcileResult, useArena, type ArenaMode } from '../game/arena.ts';
 
-/** How often the match list is re-read while a ranked result has not been settled yet. */
-const PENDING_POLL_MS = 15_000;
+/** Waits before each re-read of the match list while a ranked result has not been settled yet (about 2 minutes in all). */
+export const PENDING_POLL_DELAYS_MS = [10_000, 20_000, 30_000, 30_000, 30_000];
 
 /** Arena (SP6): queue or challenge, your standing this season, the ladder and your match history. Names are plain text. */
 export function ArenaPanel({ client }: { client: GameClient }) {
@@ -23,14 +24,31 @@ export function ArenaPanel({ client }: { client: GameClient }) {
   }, []);
   // A finished match refetches all three views from the connection store (it also does after a reconnect). Here only a
   // result the sim could not settle yet (pending) is polled for until the match list shows it.
-  const last = arena.lastResult ? reconcileResult(arena.lastResult, matches.data, client.operatorId) : null;
+  // After the last attempt the result is worded as not counted: the store failed and no match row will ever appear.
+  const [gaveUpOn, setGaveUpOn] = useState<string | null>(null);
+  const lastId = arena.lastResult?.id ?? null;
+  const last = arena.lastResult ? reconcileResult(arena.lastResult, matches.data, client.operatorId, gaveUpOn === lastId) : null;
   const pending = last?.pending === true;
   const { refetch: refetchMatches } = matches;
   useEffect(() => {
     if (!pending) return;
-    const t = setInterval(() => void refetchMatches(), PENDING_POLL_MS);
-    return () => clearInterval(t);
-  }, [pending, refetchMatches]);
+    let i = 0;
+    let t: ReturnType<typeof setTimeout>;
+    let live = true;
+    const step = () => {
+      t = setTimeout(() => {
+        const read = Promise.resolve(refetchMatches()).catch(() => {});
+        i += 1;
+        if (i < PENDING_POLL_DELAYS_MS.length) step();
+        else void read.then(() => live && setGaveUpOn(lastId));
+      }, PENDING_POLL_DELAYS_MS[i]);
+    };
+    step();
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [pending, lastId, refetchMatches]);
 
   // One command at a time: the buttons stay disabled until the server answers (accepted or refused; refusals are logged).
   const [inFlight, setInFlight] = useState(false);
@@ -65,14 +83,15 @@ export function ArenaPanel({ client }: { client: GameClient }) {
       ? 'you are in a match'
       : !self.starterClaimed
         ? 'claim a starter first'
-        : ready < 2
-          ? 'you need 2 daemons in RAM that have not crashed'
+        : ready < ARENA_MIN_DAEMONS
+          ? `you need ${ARENA_MIN_DAEMONS} daemons in RAM that have not crashed`
           : self.running.length > 0
             ? 'recall your running daemons first'
             : self.capture
               ? 'a capture is in progress'
               : null;
   const disabled = !!blocked || inFlight;
+  const blockedId = 'arena-blocked';
   const queue = (mode: ArenaMode) => send(() => client.arena.queue(mode), 'arena queue');
   const nearby = client.world.operators.all().filter((o) => o.id !== client.operatorId);
 
@@ -80,7 +99,7 @@ export function ArenaPanel({ client }: { client: GameClient }) {
     <div className="space-y-3 p-3 text-sm" data-testid="arena">
       <section className="space-y-1 rounded border border-neutral-800 p-2 text-xs">
         {arena.queued ? (
-          <div className="flex items-center justify-between" data-testid="arena-waiting">
+          <div className="flex items-center justify-between" data-testid="arena-waiting" role="status" aria-live="polite">
             <span>
               waiting for a {arena.queued.mode} match · <span className="mono">{clockText(Math.max(0, Math.floor((now - arena.queued.since) / 1000)))}</span>
             </span>
@@ -90,38 +109,48 @@ export function ArenaPanel({ client }: { client: GameClient }) {
           </div>
         ) : (
           <div className="flex items-center gap-2">
-            <button className="rounded bg-sky-800 px-2 py-0.5 hover:bg-sky-700 disabled:opacity-40" disabled={disabled} onClick={() => queue('ranked')} data-testid="arena-queue-ranked">
+            <button className="rounded bg-sky-800 px-2 py-0.5 hover:bg-sky-700 disabled:opacity-40" disabled={disabled} aria-describedby={blockedId} onClick={() => queue('ranked')} data-testid="arena-queue-ranked">
               queue ranked
             </button>
-            <button className="rounded bg-neutral-700 px-2 py-0.5 hover:bg-neutral-600 disabled:opacity-40" disabled={disabled} onClick={() => queue('unranked')} data-testid="arena-queue-unranked">
+            <button className="rounded bg-neutral-700 px-2 py-0.5 hover:bg-neutral-600 disabled:opacity-40" disabled={disabled} aria-describedby={blockedId} onClick={() => queue('unranked')} data-testid="arena-queue-unranked">
               queue unranked
             </button>
-            <span className="text-neutral-500">{blocked ?? arena.note ?? 'ranked: level 64, rating on the line · unranked: as you are'}</span>
+            <span className="text-neutral-500" id={blockedId}>
+              {blocked ?? arena.note ?? `ranked: level ${ARENA_LEVEL}, rating on the line · unranked: as you are`}
+            </span>
           </div>
         )}
-        <p className="text-neutral-600">Your daemons fight as copies: no XP, no crashes, nothing lost. Two run at a time; four minutes on the clock.</p>
+        <p className="text-neutral-600">Your daemons fight as copies: no XP, no crashes, nothing lost. {RUNNING_MAX} run at a time; {ARENA_MATCH_MS / 60_000} minutes on the clock.</p>
       </section>
 
-      {arena.challenges.map((c) => (
+      <div role="status" aria-live="polite" className="space-y-3" data-testid="arena-challenges">
+      {arena.challenges.filter((c) => challengeLive(c, now)).map((c) => (
         <div key={c.challengeId} className="flex items-center justify-between rounded border border-amber-900 p-2 text-xs" data-testid="arena-challenge">
           <span>
             {c.name ?? 'an operator'} challenges you ({c.mode})
+            {blocked && (
+              <span className="ml-1 text-neutral-500" id={`${blockedId}-${c.challengeId}`}>
+                · {blocked}
+              </span>
+            )}
           </span>
           <span className="flex gap-2">
             <button
               className="rounded bg-emerald-800 px-2 py-0.5 hover:bg-emerald-700 disabled:opacity-40"
               disabled={disabled}
               title={blocked ?? undefined}
+              aria-describedby={blocked ? `${blockedId}-${c.challengeId}` : undefined}
               onClick={() => send(() => client.arena.accept(c.challengeId), 'arena accept', () => arenaStore.dismiss(c.challengeId))}
             >
               accept
             </button>
-            <button className="text-neutral-500 hover:text-neutral-200" onClick={() => arenaStore.dismiss(c.challengeId)}>
+            <button className="text-neutral-500 hover:text-neutral-200" onClick={() => arenaStore.dismiss(c.challengeId)} data-testid={`arena-ignore-${c.challengeId}`}>
               ignore
             </button>
           </span>
         </div>
       ))}
+      </div>
 
       {last && (
         <p className="mono text-xs text-amber-200" data-testid="arena-last">
@@ -138,13 +167,20 @@ export function ArenaPanel({ client }: { client: GameClient }) {
           <p className="text-neutral-400">
             season payout {me.data.band.payout} bits{me.data.payoutEligible ? '' : ` (after ${me.data.matchesForPayout} ranked matches)`} · wins paid today {me.data.rewardedWinsToday}/{me.data.dailyWins} × {me.data.winBits} bits
           </p>
-          <p className="text-neutral-600">ends {new Date(me.data.seasonEndsAt).toLocaleDateString()}; ratings then move halfway back to 1500</p>
+          <p className="text-neutral-600">ends {new Date(me.data.seasonEndsAt).toLocaleString()}; ratings then move halfway back to {ARENA_START_RATING}</p>
         </section>
       )}
 
       {nearby.length > 0 && !inMatch && (
         <section className="text-xs">
-          <h3 className="mb-1 uppercase tracking-wide text-neutral-500">challenge someone nearby</h3>
+          <h3 className="mb-1 uppercase tracking-wide text-neutral-500">
+            challenge someone nearby
+            {blocked && (
+              <span className="ml-1 normal-case text-neutral-600" id={`${blockedId}-nearby`}>
+                · {blocked}
+              </span>
+            )}
+          </h3>
           {nearby.slice(0, 8).map((o) => (
             <div key={o.id} className="flex items-center justify-between border-b border-neutral-900 py-0.5">
               <span>{o.name ?? o.id.slice(0, 8)}</span>
@@ -155,6 +191,7 @@ export function ArenaPanel({ client }: { client: GameClient }) {
                     className="text-neutral-400 hover:text-white disabled:opacity-40"
                     disabled={disabled}
                     title={blocked ?? undefined}
+                    aria-describedby={blocked ? `${blockedId}-nearby` : undefined}
                     onClick={() => send(() => client.arena.challenge(o.id, mode), 'arena challenge')}
                     data-testid={`arena-challenge-${o.id}-${mode}`}
                   >
@@ -169,7 +206,7 @@ export function ArenaPanel({ client }: { client: GameClient }) {
 
       <section className="text-xs" data-testid="arena-ladder">
         <h3 className="mb-1 uppercase tracking-wide text-neutral-500">ladder</h3>
-        {ladder.data?.rows.length === 0 && <p className="text-neutral-600">nobody has played 8 ranked matches yet</p>}
+        {ladder.data?.rows.length === 0 && <p className="text-neutral-600">nobody has played {ARENA_SEASON_MIN_MATCHES} ranked matches yet</p>}
         {ladder.data?.rows.map((r) => (
           <div key={r.operatorId} className={`mono flex justify-between border-b border-neutral-900 py-0.5 ${r.operatorId === client.operatorId ? 'text-sky-300' : ''}`}>
             <span>

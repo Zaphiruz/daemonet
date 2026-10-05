@@ -92,6 +92,17 @@ describe('arena events in the connection (captured before any panel mounts)', ()
     expect(t.arena.get().lastResult?.id).toBe('m1');
   });
 
+  it('forgets challenges and the note after a reconnect, keeping the result', async () => {
+    const t = setup();
+    await t.conn.open('controller');
+    const c = t.clients[0]!;
+    c.emit('arenaChallenge', challenge());
+    c.emit('arenaResult', result);
+    c.emit('reconnect');
+    expect(t.arena.get().challenges).toEqual([]);
+    expect(t.arena.get().lastResult?.id).toBe('m1');
+  });
+
   it('keeps the result across the sandbox snapshot, and clears on a terminal kick, close and a new open', async () => {
     const t = setup();
     await t.conn.open('controller');

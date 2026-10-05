@@ -226,7 +226,7 @@ export function createConnection(deps: ConnectionDeps) {
       deps.invalidateListings?.();
       deps.invalidateTrades?.();
       // a queue entry may not have survived the outage; a result or challenge may have been missed
-      deps.arena?.onQueued(null, undefined, Date.now());
+      deps.arena?.onReconnect();
       deps.invalidateArena?.();
       set({ status: 'online' });
       deps.log.push('system', 'reconnected');

@@ -1,10 +1,10 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useMeQuery } from './api.ts';
 import { ArenaHud } from './components/ArenaHud.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { TopBar } from './components/TopBar.tsx';
-import { WorldCanvas } from './components/WorldCanvas.tsx';
-import { useArena } from './game/arena.ts';
+import { run, WorldCanvas } from './components/WorldCanvas.tsx';
+import { createForfeit, useArena } from './game/arena.ts';
 import { open, useConnection } from './game/connection.ts';
 import { CodexPanel, ItemsPanel } from './panels/CodexPanel.tsx';
 import { IncidentsPanel } from './panels/IncidentsPanel.tsx';
@@ -60,6 +60,7 @@ export function App() {
   const conn = useConnection();
   const [tab, setTab] = useState<Tab>('play');
   const arena = useArena();
+  const forfeit = useMemo(() => createForfeit(run, (m) => window.confirm(m)), []);
   // auto-open only from `idle`: kicked / failed are terminal and must not loop
   useEffect(() => {
     if (me.data && conn.status === 'idle') void open('controller').catch(() => {});
@@ -95,7 +96,7 @@ export function App() {
           )}
           {client?.self?.arena && (
             <ErrorBoundary label="arena hud">
-              <ArenaHud self={client.self} tick={client.tick} result={arena.lastResult} onForfeit={client.role === 'controller' ? () => void client.arena.forfeit().catch(() => {}) : null} />
+              <ArenaHud self={client.self} tick={client.tick} result={arena.lastResult} onForfeit={client.role === 'controller' ? () => forfeit(client) : null} />
             </ErrorBoundary>
           )}
         </div>

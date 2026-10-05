@@ -4,7 +4,7 @@ import type { OperatorSelf } from '@daemonet/sdk';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArenaHud } from '../src/components/ArenaHud.tsx';
-import { arenaClock, clockText, createArenaStore, hpPercent, resultText, type ArenaResultInfo } from '../src/game/arena.ts';
+import { arenaClock, clockText, createArenaStore, createForfeit, hpPercent, resultText, type ArenaResultInfo } from '../src/game/arena.ts';
 
 afterEach(cleanup);
 
@@ -117,6 +117,29 @@ describe('ArenaHud', () => {
     expect(screen.getByTestId('arena-theirs').textContent).toContain('[ROOT] bob · 1612');
     fireEvent.click(screen.getByTestId('arena-forfeit'));
     expect(forfeit).toHaveBeenCalledOnce();
+  });
+
+  it('forfeits once at a time, logs refusals, and asks first in a ranked match', async () => {
+    let reject!: (e: Error) => void;
+    const forfeit = vi.fn(() => new Promise((_, rej) => (reject = rej)));
+    const run = vi.fn((p: Promise<unknown>) => void p.catch(() => {}));
+    const confirmFn = vi.fn(() => false);
+    const go = createForfeit(run, confirmFn);
+    const unranked = { self: { arena: { mode: 'unranked' as const } }, arena: { forfeit } };
+    go(unranked);
+    go(unranked);
+    expect(forfeit).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith(expect.anything(), 'arena forfeit');
+    expect(confirmFn).not.toHaveBeenCalled();
+    reject(new Error('no'));
+    await new Promise((r) => setTimeout(r, 0));
+    const ranked = { self: { arena: { mode: 'ranked' as const } }, arena: { forfeit } };
+    go(ranked);
+    expect(confirmFn).toHaveBeenCalledTimes(1);
+    expect(forfeit).toHaveBeenCalledTimes(1); // declined
+    confirmFn.mockReturnValue(true);
+    go(ranked);
+    expect(forfeit).toHaveBeenCalledTimes(2);
   });
 
   it('shows the settled result when the match is over, and nothing outside a match', () => {
