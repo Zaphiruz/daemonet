@@ -16,16 +16,20 @@ Before merging the branch `feat/sp1-plan4-infra-deploy` to `main`:
 
 Before registering the runner (OPERATIONS Step 2, "Before registering the runner"):
 
-- [ ] `gh run list --workflow deploy.yml --repo Zaphiruz/daemonet` and cancel every queued or waiting run with
-      `gh run cancel <id> --repo Zaphiruz/daemonet`.
+- [x] ~~Cancel queued Deploy runs~~ — not needed: checked 2026-10-05, every Deploy run completes as `skipped` because
+      `DAEMONET_DEPLOY_ENABLED` is unset; nothing is queued waiting for a runner.
 - [ ] After the runner is registered and the `production` environment is configured, set the repository variable
       `DAEMONET_DEPLOY_ENABLED` to `true` (GitHub → Settings → Secrets and variables → Actions → Variables, or
       `gh variable set DAEMONET_DEPLOY_ENABLED --body true --repo Zaphiruz/daemonet`); until then deploys are skipped.
 
 Then, in order:
 
-- [ ] Task 2: S1 baseline incl. the Vault reachability probe, runner user `.ssh` setup, deploy key, clone, runner
-      registration (OPERATIONS Steps 1, 2, 2b).
+- [x] Task 2a: S1 baseline (Step 1) — verified 2026-10-05: `server1`, `192.168.40.21`, Docker 29.1.3, `runner` in
+      `docker`, 41 GB free, `vault.wispy-nook.casa` resolves. **Gap:** `curl` is not installed on S1, so the Vault
+      HTTP probe could not run; install it (`apt install curl`) and re-run the probe.
+- [ ] Task 2b: runner user `.ssh` setup, deploy key, clone, runner registration (Steps 2, 2b). Checked 2026-10-05:
+      none present yet (no `/home/runner/.ssh`, `/opt/daemonet`, `/opt/actions-runner-daemonet`; GitHub has no deploy
+      key, runner, `production` environment or `DAEMONET_DEPLOY_ENABLED` variable).
 - [ ] Task 3: PostgreSQL user, database and LAN-only publishing on S2 with the `DOCKER-USER` rule (Step 3). Do it at a
       quiet time: it briefly restarts the shared database.
 - [ ] Task 4: Authentik public client `daemonet-bot` with the device flow, groups `daemonet-users`/`daemonet-admins`
