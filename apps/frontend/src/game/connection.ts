@@ -281,7 +281,7 @@ export function createConnection(deps: ConnectionDeps) {
       if (!e.mode && e.reason) deps.log.push('event', `Arena: left the queue (${e.reason})`);
     });
     on('arenaMatch', (e) => {
-      deps.arena?.onMatch();
+      deps.arena?.onMatch(e.id);
       deps.log.push('event', `Arena: ${e.mode} match against ${e.opponent.name ?? 'an operator'} (${Math.round(e.opponent.rating)})`);
     });
     on('arenaResult', (e) => {

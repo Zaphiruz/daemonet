@@ -48,7 +48,7 @@ describe('arena helpers', () => {
     s.prune(45_000);
     expect(s.get().challenges.map((c) => c.challengeId)).toEqual(['c2']);
     s.onQueued('unranked', undefined, 3000);
-    s.onMatch();
+    s.onMatch('m1');
     expect(s.get()).toMatchObject({ queued: null, challenges: [] });
     s.onResult(result);
     expect(s.get().lastResult).toBe(result);
@@ -56,7 +56,7 @@ describe('arena helpers', () => {
 
   it('keeps the result past the match, takes the next match result, and clears on logout', () => {
     const s = createArenaStore();
-    s.onMatch();
+    s.onMatch('m1');
     s.onResult(uncounted);
     s.onQueued('ranked', undefined, 10); // back home, queueing again
     expect(s.get().lastResult).toBe(uncounted);
@@ -64,7 +64,7 @@ describe('arena helpers', () => {
     expect(s.get().lastResult).toBe(uncounted);
     s.onResult({ ...uncounted, counted: true }); // same match: replaced
     expect(s.get().lastResult?.counted).toBe(true);
-    s.onMatch(); // the next match starting does not wipe it...
+    s.onMatch('m2'); // the next match starting does not wipe it...
     expect(s.get().lastResult?.id).toBe('m1');
     s.onResult({ ...result, id: 'm2' }); // ...but its own result replaces it
     expect(s.get().lastResult?.id).toBe('m2');
@@ -73,6 +73,30 @@ describe('arena helpers', () => {
     s.clear();
     expect(s.get()).toEqual({ queued: null, note: null, challenges: [], lastResult: null });
     expect(listener).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the current match result when an older match result arrives late during it', () => {
+    const s = createArenaStore();
+    s.onMatch('m1'); // m1 ends; its ranked result is still being recorded
+    s.onMatch('m2'); // queued again, m2 starts
+    s.onResult(uncounted); // m1's result lands ~minutes later, during m2: older than the match in progress
+    expect(s.get().lastResult).toBeNull();
+    s.onResult({ ...result, id: 'm2' }); // m2's own result is kept
+    expect(s.get().lastResult?.id).toBe('m2');
+    s.onResult(uncounted); // and a late m1 result after it does not replace it
+    expect(s.get().lastResult?.id).toBe('m2');
+  });
+
+  it('takes any result when no match was seen since a clear or a reconnect', () => {
+    const s = createArenaStore();
+    s.onMatch('m1');
+    s.onReconnect(); // a match may have started while we were away
+    s.onResult({ ...result, id: 'm2' });
+    expect(s.get().lastResult?.id).toBe('m2');
+    s.onMatch('m3');
+    s.clear();
+    s.onResult(uncounted);
+    expect(s.get().lastResult?.id).toBe('m1');
   });
 
   it('treats a malformed expiry as expired', () => {

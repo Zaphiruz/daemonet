@@ -77,6 +77,11 @@ describe('arena events in the connection (captured before any panel mounts)', ()
     expect(t.arena.get().lastResult?.id).toBe('m1');
     expect(t.texts()).toContain('event:Arena: you won by wipe-out · 1500 → 1532 · +16 bits');
     expect(t.invalidateArena).toHaveBeenCalledTimes(1); // standing, ladder and history changed (possibly after the return home)
+    c.emit('arenaMatch', { id: 'm2', mode: 'ranked', opponent: { id: 'bob', name: 'bob', tag: null, rating: 1611.6 }, startsAtTick: 1, endsAtTick: 2 });
+    c.emit('arenaResult', { ...result, id: 'm0' }); // an older match's late result during m2: not the last result
+    expect(t.arena.get().lastResult?.id).toBe('m1');
+    c.emit('arenaResult', { ...result, id: 'm2' });
+    expect(t.arena.get().lastResult?.id).toBe('m2');
   });
 
   it('refetches the arena queries and forgets a stale queue after a reconnect', async () => {

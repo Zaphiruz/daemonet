@@ -218,7 +218,7 @@ describe('ArenaPanel last result, reconciled with the match list', () => {
     rendered(fakeClient().client);
     act(() => arenaStore.onResult({ ...last, ratingAfter: 1532, counted: true }));
     expect(screen.getByTestId('arena-last').textContent).toContain('1500 → 1532');
-    act(() => arenaStore.onMatch());
+    act(() => arenaStore.onMatch('m2'));
     act(() => arenaStore.onResult({ ...last, id: 'm2', mode: 'unranked' }));
     expect(screen.getByTestId('arena-last').textContent).not.toContain('pending');
   });

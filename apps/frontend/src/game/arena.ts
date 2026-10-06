@@ -31,8 +31,9 @@ export interface ArenaSnapshot {
   note: string | null;
   challenges: ArenaChallenge[];
   /**
-   * The latest `arenaResult`. The sim sends exactly one per match, possibly after the return home, so it lives outside
-   * the match HUD's lifetime. A result for another match replaces it only once a new match has started.
+   * The latest `arenaResult`. The sim sends exactly one per match, possibly after the return home (or minutes later, while
+   * a ranked result is still being recorded), so it lives outside the match HUD's lifetime. Only the current match's result
+   * replaces it: a late result of an older match arriving during a newer one is dropped.
    */
   lastResult: ArenaResultInfo | null;
 }
@@ -47,8 +48,11 @@ const EMPTY: ArenaSnapshot = { queued: null, note: null, challenges: [], lastRes
 /** What the Arena tab and the HUD know beyond `self.arena`: the queue, incoming challenges, the last result. Fed by events. */
 export function createArenaStore() {
   let snapshot: ArenaSnapshot = EMPTY;
-  /** A match started since `lastResult` was stored: the next result (whatever its id) is newer. */
-  let stale = false;
+  /**
+   * The id of the last `arenaMatch` seen, or null when none was seen since the last clear / reconnect (a match may have
+   * started while we were away, so any result is taken then).
+   */
+  let currentMatch: string | null = null;
   const listeners = new Set<() => void>();
   const set = (patch: Partial<ArenaSnapshot>) => {
     snapshot = { ...snapshot, ...patch };
@@ -58,15 +62,16 @@ export function createArenaStore() {
     onQueued(mode: ArenaMode | null, reason: string | undefined, now: number) {
       set({ queued: mode ? { mode, since: now } : null, note: mode ? null : (reason ?? null) });
     },
-    /** A match started: no longer waiting, and every pending challenge is moot. The previous result stays. */
-    onMatch() {
-      stale = true;
+    /** Match `id` started: no longer waiting, and every pending challenge is moot. The previous result stays. */
+    onMatch(id: string) {
+      currentMatch = id;
       set({ queued: null, note: null, challenges: [] });
     },
     onResult(result: ArenaResultInfo) {
       const held = snapshot.lastResult;
-      if (held && held.id !== result.id && !stale) return;
-      stale = false;
+      // the server decides the order: the current match's result, a newer copy of the held one, or anything when the
+      // current match is unknown; everything else is an older match's late result
+      if (currentMatch !== null && result.id !== currentMatch && result.id !== held?.id) return;
       set({ lastResult: result });
     },
     onChallenge(c: ArenaChallenge) {
@@ -82,11 +87,12 @@ export function createArenaStore() {
     },
     /** The connection came back: a queue entry may not have survived and a challenge may have expired, so forget those (the last result stays). */
     onReconnect() {
+      currentMatch = null;
       set({ queued: null, note: null, challenges: [] });
     },
     /** Logout, a kick or failed connection, close, a new open: forget everything. (Not called on the sandbox snapshot nor on a reconnect.) */
     clear() {
-      stale = false;
+      currentMatch = null;
       set({ ...EMPTY });
     },
     get: (): ArenaSnapshot => snapshot,
