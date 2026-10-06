@@ -333,13 +333,15 @@ test('two operators queue unranked, fight in the sandbox, one forfeits, both com
 
   await pb.getByTestId('arena-forfeit').click();
   await expect(pa.getByTestId('arena-result')).toContainText('you won', { timeout: 10_000 });
-  await expect(pb.getByTestId('arena-result')).toContainText('you lost by forfeit', { timeout: 10_000 });
+  // the HUD goes away 3 s after the end: assert the generic text there, the full wording on the Arena tab after the return
+  await expect(pb.getByTestId('arena-result')).toContainText('you lost', { timeout: 10_000 });
 
   // a few seconds later both are home, with the daemons they brought
   await expect(pa.getByTestId('arena-hud')).toHaveCount(0, { timeout: 15_000 });
   await expect(pa.getByTestId('subnet')).toHaveText('lo', { timeout: 10_000 });
   await expect(pb.getByTestId('subnet')).toHaveText('lo', { timeout: 15_000 });
   await expect(pa.getByTestId('arena-last')).toContainText('you won by forfeit', { timeout: 10_000 });
+  await expect(pb.getByTestId('arena-last')).toContainText('you lost by forfeit', { timeout: 10_000 });
   await expect(pa.getByTestId('arena-history')).toContainText(`vs ${who.b}`, { timeout: 10_000 });
   await pa.getByTestId('tab-ram').click();
   await expect(pa.getByTestId('ram-1-name')).toHaveText('Pingling', { timeout: 10_000 });
