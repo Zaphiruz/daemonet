@@ -32,6 +32,22 @@ describe('Glicko-2', () => {
     expect(after.vol).toBeCloseTo(0.05999, 4);
   });
 
+  it('stays finite when the expected score saturates (an extreme rating gap)', () => {
+    const finite = (r: { rating: number; rd: number; vol: number }) => [r.rating, r.rd, r.vol].every(Number.isFinite);
+    const top = { rating: 9000, rd: 30, vol: 0.06 };
+    const bottom = { rating: -9000, rd: 30, vol: 0.06 };
+    const settled = { rating: 1500, rd: 30, vol: 0.06 };
+    for (const score of [0, 0.5, 1]) {
+      for (const [p, o] of [[top, settled], [settled, top], [top, GLICKO_START], [GLICKO_START, top], [top, bottom], [bottom, top], [{ ...top, rd: 350 }, { ...bottom, rd: 30 }], [settled, { rating: 1500, rd: 1e9 }]] as const) {
+        const after = rate(p, o, score);
+        expect(finite(after), JSON.stringify({ p, o, score, after })).toBe(true);
+        expect(after.rd).toBeLessThanOrEqual(350);
+      }
+    }
+    // the expectation is exactly 1: nothing to learn from the game, the deviation only decays
+    expect(rate(top, settled, 1)).toEqual(decayRd(top, 1));
+  });
+
   it('uses the plan constants', () => {
     expect(GLICKO_START).toEqual({ rating: 1500, rd: 350, vol: 0.06 });
     expect(GLICKO_TAU).toBe(0.5);
