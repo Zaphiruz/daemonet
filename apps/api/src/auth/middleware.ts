@@ -17,7 +17,8 @@ declare module 'fastify' {
   interface FastifyContextConfig {
     /**
      * Opt-in: this route also accepts bots' `Authorization: Bearer` tokens (SP5 spec §3 — the Exchange, `/api/me`,
-     * read-only `/api/disk`, and the dev-bypass helpers). Every other route refuses a bearer request with a generic 401.
+     * read-only `/api/disk`, the read-only `/api/arena/*` routes (SP6), and the dev-bypass helpers). Every other route
+     * refuses a bearer request with a generic 401.
      */
     bearer?: boolean;
   }

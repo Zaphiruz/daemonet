@@ -12,7 +12,7 @@ the workstation.
 | Key | Value | Notes |
 | --- | --- | --- |
 | `DATABASE_URL` | `postgresql://daemonet:<pw>@192.168.40.20:5432/daemonet` | built by `scripts/provision-secrets.sh` |
-| `AUTHENTIK_ISSUER_URL` | `https://authentik.wispy-nook.casa/application/o/daemonet-bot/` | sim and api; issuer of the bot provider (the sim verifies game-socket tokens with it, the api verifies bots' `Authorization: Bearer` tokens on `/api/exchange/*`, `/api/me` and `GET /api/disk`, SP5) |
+| `AUTHENTIK_ISSUER_URL` | `https://authentik.wispy-nook.casa/application/o/daemonet-bot/` | sim and api; issuer of the bot provider (the sim verifies game-socket tokens with it, the api verifies bots' `Authorization: Bearer` tokens on `/api/exchange/*`, `/api/me` and `GET /api/disk` (SP5), and on the read-only `/api/arena/*` routes (SP6)) |
 | `AUTHENTIK_BOT_CLIENT_ID` | client ID of the public provider `daemonet-bot` | sim and api; the accepted token audience |
 | `AUTH_REQUIRED_GROUP` | `daemonet-users` | the access gate |
 | `TRUST_PROXY_HOPS` | `3` | see the warning below |

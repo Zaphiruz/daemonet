@@ -1163,11 +1163,11 @@ describe.skipIf(!url)('API (needs DATABASE_URL)', () => {
     expect((await app.inject({ method: 'POST', url: '/api/dev/bits', cookies, headers: csrf, payload: { amount: 5 } })).statusCode).toBe(200);
   });
 
-  it('bearer scope: only the Exchange, /api/me, GET /api/disk (and the dev helpers) take bearer tokens; the cookie path is unchanged', async () => {
+  it('bearer scope: only the Exchange, /api/me, GET /api/disk, the read-only /api/arena/* (and the dev helpers) take bearer tokens; the cookie path is unchanged', async () => {
     const { cookie } = await login();
     const cookies = { [COOKIE_NAME]: cookie! };
     const bearer = { authorization: 'Bearer good-token' };
-    for (const url of ['/api/exchange/vault', '/api/me', '/api/disk']) {
+    for (const url of ['/api/exchange/vault', '/api/me', '/api/disk', '/api/arena/me']) {
       expect((await app.inject({ method: 'GET', url, headers: bearer })).statusCode, url).toBe(200);
     }
     const refused: Array<{ method: 'GET' | 'POST' | 'PUT' | 'DELETE'; url: string; payload?: object }> = [
