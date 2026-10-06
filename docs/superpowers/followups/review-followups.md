@@ -279,3 +279,16 @@ Fixed before merge: capped pending-result poll with 'could not be recorded' word
 - T3: re-queue after a sub-second reconnect can miss the waiting row (no arenaQueued emitted for an already-queued operator); consider queueUp always emitting
 - T3: pending-result give-up state lives in ArenaPanel, so a remount restarts the ~2 min poll
 - T3: a ranked forfeit during countdown is not counted — the HUD could say so
+
+## 2026-10-05 Fable final re-reviews (SP4p3, SP4p4, SP5p1, SP5p3, SP5p4, SP6p1, SP6p2, SP6p3)
+
+Fixed before merge: Daemon.history capped at 32 Exchange moves; arena client keeps the current match's result when a late previous-match result arrives, and mirrors the queue ack; e2e loser-side HUD assertion; endAll reports a decided-but-unreported match; Glicko-2 saturation guard and iteration caps; bearer-scope docs include read-only /api/arena/*.
+
+- SP4p3: invite can be left for a target who became a member meanwhile (clutter); invites not capped per invitee and /api/orgs/mine returns all; :id params not length-bounded
+- SP4p4: server-wide `cleared` event carries participant ids while /api/incidents hides them — record a policy decision; config guard for kernelspace without backbone; no test for a payout landing mid-arena-match; `current` can show a cleared-but-unrecorded Incident until endsAt
+- SP5p1: operatorForSub first-sight race upserts isAdmin via ensureOperator (re-findUnique on retry); no `typ` pin on bearer verification (ID token from the same client verifies; same user)
+- SP5p3: buy tx default maxWait/timeout turns trailing buyers in a pile-up into 500 instead of 400; map P2028/P2034 → 409/503
+- SP5p4: SDK timeout after a committed confirm has no refetch hint; 402 'needs N bits' doesn't say which side; openTrade target resolved outside the tx; tradeViews fetches daemons for closed trades; OfferBody key count bounded only after parse; history cap drops the origin line after 32 moves (pin history[0] if wanted)
+- SP6p1: failed start emits arenaQueued to both sides on the challenge path; rating() falls back to 1500 while the cache is unloaded; forfeit() during the 3 s over window says 'not in an arena match'
+- SP6p2: previous-season result in the grace hour overwrites the rating cache until the next ranked command; rating carry looks back one season only (decide deliberately); durationMs includes the countdown; season close holds every active operator's lock; saturated-loss Glicko limit now returns decayRd rather than the v→∞ drop (unreachable)
+- SP6p3: nearby challenge buttons named only "ranked"/"unranked" and the live region wraps controls; App subscribes to the whole arena store; after reconnect with no match since, any result is accepted
