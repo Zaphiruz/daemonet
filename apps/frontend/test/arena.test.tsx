@@ -99,6 +99,26 @@ describe('arena helpers', () => {
     expect(s.get().lastResult?.id).toBe('m1');
   });
 
+  it('mirrors a queue ack only when nothing about the queue or a match happened since the command was sent', () => {
+    const s = createArenaStore();
+    let token = s.queueToken();
+    s.onQueueAck('ranked', token, 100);
+    expect(s.get().queued).toEqual({ mode: 'ranked', since: 100 });
+    s.onReconnect();
+    token = s.queueToken();
+    s.onMatch('m1'); // the match started before the ack was handled
+    s.onQueueAck('unranked', token, 200);
+    expect(s.get().queued).toBeNull();
+    token = s.queueToken();
+    s.onQueued(null, 'recall running daemons first', 300); // the server's own event wins
+    s.onQueueAck('ranked', token, 300);
+    expect(s.get()).toMatchObject({ queued: null, note: 'recall running daemons first' });
+    token = s.queueToken();
+    s.clear();
+    s.onQueueAck('ranked', token, 400);
+    expect(s.get().queued).toBeNull();
+  });
+
   it('treats a malformed expiry as expired', () => {
     const s = createArenaStore();
     s.onChallenge({ challengeId: 'x', from: 'bob', name: null, mode: 'ranked', expiresAt: 'garbage' });

@@ -92,7 +92,11 @@ export function ArenaPanel({ client }: { client: GameClient }) {
               : null;
   const disabled = !!blocked || inFlight;
   const blockedId = 'arena-blocked';
-  const queue = (mode: ArenaMode) => send(() => client.arena.queue(mode), 'arena queue');
+  // mirror the ack: re-queueing in the same mode (still queued from before a quick reconnect) emits no arenaQueued
+  const queue = (mode: ArenaMode) => {
+    const token = arenaStore.queueToken();
+    send(() => client.arena.queue(mode), 'arena queue', () => arenaStore.onQueueAck(mode, token, Date.now()));
+  };
   const nearby = client.world.operators.all().filter((o) => o.id !== client.operatorId);
 
   return (

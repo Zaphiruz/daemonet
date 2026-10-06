@@ -53,6 +53,8 @@ export function createArenaStore() {
    * started while we were away, so any result is taken then).
    */
   let currentMatch: string | null = null;
+  /** Bumped by every queue event, match, reconnect and clear: a queue ack is mirrored only if nothing happened since it was sent. */
+  let queueEpoch = 0;
   const listeners = new Set<() => void>();
   const set = (patch: Partial<ArenaSnapshot>) => {
     snapshot = { ...snapshot, ...patch };
@@ -60,11 +62,24 @@ export function createArenaStore() {
   };
   return {
     onQueued(mode: ArenaMode | null, reason: string | undefined, now: number) {
+      queueEpoch += 1;
       set({ queued: mode ? { mode, since: now } : null, note: mode ? null : (reason ?? null) });
+    },
+    /** Taken when a queue command is sent; hand it back to `onQueueAck`. */
+    queueToken: (): number => queueEpoch,
+    /**
+     * The server accepted a queue command (`{ queued: mode }`). Queueing again in the same mode emits no `arenaQueued`
+     * (e.g. still queued from before a sub-second reconnect), so the ack is mirrored, unless a queue event, a match, a
+     * reconnect or a clear came in after the command was sent (those are newer than the ack's view).
+     */
+    onQueueAck(mode: ArenaMode, token: number, now: number) {
+      if (token !== queueEpoch || snapshot.queued?.mode === mode) return;
+      set({ queued: { mode, since: now }, note: null });
     },
     /** Match `id` started: no longer waiting, and every pending challenge is moot. The previous result stays. */
     onMatch(id: string) {
       currentMatch = id;
+      queueEpoch += 1;
       set({ queued: null, note: null, challenges: [] });
     },
     onResult(result: ArenaResultInfo) {
@@ -88,11 +103,13 @@ export function createArenaStore() {
     /** The connection came back: a queue entry may not have survived and a challenge may have expired, so forget those (the last result stays). */
     onReconnect() {
       currentMatch = null;
+      queueEpoch += 1;
       set({ queued: null, note: null, challenges: [] });
     },
     /** Logout, a kick or failed connection, close, a new open: forget everything. (Not called on the sandbox snapshot nor on a reconnect.) */
     clear() {
       currentMatch = null;
+      queueEpoch += 1;
       set({ ...EMPTY });
     },
     get: (): ArenaSnapshot => snapshot,

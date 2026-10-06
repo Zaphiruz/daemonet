@@ -81,6 +81,8 @@ describe('ArenaPanel queue', () => {
     fireEvent.click(btn('arena-queue-unranked'));
     expect(arena.queue).toHaveBeenCalledTimes(1);
     await act(async () => settle[0]!(true));
+    expect(screen.getByTestId('arena-waiting')).toBeTruthy(); // the ack is mirrored
+    act(() => arenaStore.onQueued(null, undefined, Date.now())); // left the queue
     expect(btn('arena-queue-unranked').disabled).toBe(false);
     fireEvent.click(btn('arena-queue-unranked'));
     expect(arena.queue).toHaveBeenLastCalledWith('unranked');
@@ -123,6 +125,35 @@ describe('ArenaPanel queue', () => {
     act(() => arenaStore.onQueued(null, 'recall running daemons first', Date.now()));
     expect(screen.queryByTestId('arena-waiting')).toBeNull();
     expect(screen.getByTestId('arena').textContent).toContain('recall running daemons first');
+  });
+});
+
+describe('ArenaPanel queue ack', () => {
+  it('shows the waiting row from the ack when the server sends no arenaQueued (already queued before a quick reconnect)', async () => {
+    const { client, arena, settle } = fakeClient();
+    rendered(client);
+    fireEvent.click(btn('arena-queue-ranked'));
+    expect(arena.queue).toHaveBeenCalledWith('ranked');
+    await act(async () => settle[0]!(true));
+    expect(screen.getByTestId('arena-waiting').textContent).toContain('waiting for a ranked match');
+  });
+
+  it('does not show the waiting row when a match started before the ack arrived', async () => {
+    const { client, settle } = fakeClient();
+    rendered(client);
+    fireEvent.click(btn('arena-queue-unranked'));
+    act(() => arenaStore.onMatch('m1'));
+    await act(async () => settle[0]!(true));
+    expect(screen.queryByTestId('arena-waiting')).toBeNull();
+    expect(arenaStore.get().queued).toBeNull();
+  });
+
+  it('a refused queue shows no waiting row', async () => {
+    const { client, settle } = fakeClient();
+    rendered(client);
+    fireEvent.click(btn('arena-queue-ranked'));
+    await act(async () => settle[0]!(false));
+    expect(screen.queryByTestId('arena-waiting')).toBeNull();
   });
 });
 
