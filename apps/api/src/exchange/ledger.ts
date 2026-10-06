@@ -85,11 +85,17 @@ export function announce(bus: Bus, log: PublishLog, out: Outbox): void {
 }
 
 /**
- * A daemon's history with one `traded` entry appended (listing sales and direct trades): a non-array history (never
- * expected) starts over rather than failing the move.
+ * Most history entries a daemon keeps after an Exchange move (oldest dropped). Fee-free trades can pass one daemon back
+ * and forth indefinitely, and the whole history is served to every browser of the Exchange and loaded into sim records.
+ */
+export const DAEMON_HISTORY_MAX = 32;
+
+/**
+ * A daemon's history with one `traded` entry appended (listing sales and direct trades), capped to the last
+ * `DAEMON_HISTORY_MAX` entries: a non-array history (never expected) starts over rather than failing the move.
  */
 export function withTraded(history: Prisma.JsonValue, at: Date, detail: string): Prisma.JsonArray {
-  return [...(Array.isArray(history) ? history : []), { at: at.toISOString(), kind: 'traded', detail }];
+  return [...(Array.isArray(history) ? history : []), { at: at.toISOString(), kind: 'traded', detail }].slice(-DAEMON_HISTORY_MAX);
 }
 
 /**
