@@ -245,10 +245,12 @@ export class ArenaService {
 
   /**
    * Shutdown: every match still being played ends without a result and everyone in one goes home (the final
-   * checkpoint follows). A match already over was recorded when it ended; the runtime waits for that write.
+   * checkpoint follows). A match already over is recorded (now, if a forfeit decided it since the last tick); the
+   * runtime waits for that write.
    */
   endAll(): void {
     for (const match of [...this.matches.values()]) {
+      if (match.world.arena!.phase === 'over' && !match.reported) this.report(match);
       for (const side of match.sides) this.sendHome(match, side);
       this.matches.delete(match.id);
     }

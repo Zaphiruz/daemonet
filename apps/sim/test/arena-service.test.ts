@@ -418,6 +418,19 @@ describe('ArenaService', () => {
     expect(h.of('arenaResult')).toEqual([]);
   });
 
+  it('shutdown right after a decided forfeit still records the match', async () => {
+    const h = harness(['alice', 'bob']);
+    h.arena.accept('bob', h.challenge('alice', 'bob', 'ranked'));
+    h.tick(COUNTDOWN);
+    expect(h.arena.forfeit('bob')).toEqual({ ok: true });
+    h.arena.endAll(); // before the next tick could report it
+    await h.settled();
+    expect(h.arena.worlds()).toEqual([]);
+    expect([...h.home.operators.keys()].sort()).toEqual(['alice', 'bob']);
+    expect(h.recorded).toHaveLength(1);
+    expect(h.recorded[0]).toMatchObject({ mode: 'ranked', winnerId: 'alice', reason: 'forfeit', live: true });
+  });
+
   it('caps concurrent matches at 16 and ranked matches between the same pair at 4 a day', () => {
     const names = Array.from({ length: 2 * ARENA_MAX_MATCHES + 2 }, (_, i) => `op${i}`);
     const h = harness(names);
