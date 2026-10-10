@@ -132,8 +132,8 @@ if "192.168.40.20:5432:5432" not in s:
     open(p,"w").write(s)
 EOF
   sudo docker compose up -d postgresql && \
-  sudo iptables -C DOCKER-USER -i end0 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL ! -s 192.168.40.21 -j DROP 2>/dev/null || \
-  sudo iptables -I DOCKER-USER -i end0 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL ! -s 192.168.40.21 -j DROP && \
+  sudo iptables -C DOCKER-USER -i enp4s0 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL ! -s 192.168.40.21 -j DROP 2>/dev/null || \
+  sudo iptables -I DOCKER-USER -i enp4s0 -p tcp -m conntrack --ctorigdstport 5432 --ctdir ORIGINAL ! -s 192.168.40.21 -j DROP && \
   (dpkg -s iptables-persistent >/dev/null 2>&1 || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent) && sudo netfilter-persistent save'
 ```
 

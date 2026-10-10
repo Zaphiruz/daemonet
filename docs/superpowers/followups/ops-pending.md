@@ -11,14 +11,14 @@ Before merging the branch `feat/sp1-plan4-infra-deploy` to `main`:
 - [ ] Be aware that merging queues a Deploy run automatically (CI succeeds, then `deploy.yml` fires). It stays queued
       until a runner labelled `daemonet` exists, so nothing deploys by accident, but it must be cancelled before the
       runner is registered (see below).
-- [ ] Create the GitHub `production` environment now (Settings > Environments) with deployment branches set to `main`
+- [x] (2026-10-10) Create the GitHub `production` environment now (Settings > Environments) with deployment branches set to `main`
       only (OPERATIONS Step 2b). A queued run may auto-create it without that restriction; set it either way.
 
 Before registering the runner (OPERATIONS Step 2, "Before registering the runner"):
 
 - [x] ~~Cancel queued Deploy runs~~ — not needed: checked 2026-10-05, every Deploy run completes as `skipped` because
       `DAEMONET_DEPLOY_ENABLED` is unset; nothing is queued waiting for a runner.
-- [ ] After the runner is registered and the `production` environment is configured, set the repository variable
+- [ ] (runner + env done 2026-10-10; set after the first secrets fetch) After the runner is registered and the `production` environment is configured, set the repository variable
       `DAEMONET_DEPLOY_ENABLED` to `true` (GitHub → Settings → Secrets and variables → Actions → Variables, or
       `gh variable set DAEMONET_DEPLOY_ENABLED --body true --repo Zaphiruz/daemonet`); until then deploys are skipped.
 
@@ -27,16 +27,16 @@ Then, in order:
 - [x] Task 2a: S1 baseline (Step 1) — verified 2026-10-05: `server1`, `192.168.40.21`, Docker 29.1.3, `runner` in
       `docker`, 41 GB free, `vault.wispy-nook.casa` resolves. **Gap:** `curl` is not installed on S1, so the Vault
       HTTP probe could not run; install it (`apt install curl`) and re-run the probe.
-- [ ] Task 2b: runner user `.ssh` setup, deploy key, clone, runner registration (Steps 2, 2b). Checked 2026-10-05:
+- [x] (2026-10-10; the private key is not yet copied into Vault `deploy-keys/daemonet`) Task 2b: runner user `.ssh` setup, deploy key, clone, runner registration (Steps 2, 2b). Checked 2026-10-05:
       none present yet (no `/home/runner/.ssh`, `/opt/daemonet`, `/opt/actions-runner-daemonet`; GitHub has no deploy
       key, runner, `production` environment or `DAEMONET_DEPLOY_ENABLED` variable).
-- [ ] Task 3: PostgreSQL user, database and LAN-only publishing on S2 with the `DOCKER-USER` rule (Step 3). Do it at a
+- [ ] (user + database created 2026-10-10; publishing/firewall pending — S2's NIC is `enp4s0`, not `end0`) Task 3: PostgreSQL user, database and LAN-only publishing on S2 with the `DOCKER-USER` rule (Step 3). Do it at a
       quiet time: it briefly restarts the shared database.
-- [ ] Task 4: Authentik public client `daemonet-bot` with the device flow, groups `daemonet-users`/`daemonet-admins`
+- [x] (2026-10-10) Task 4: Authentik public client `daemonet-bot` with the device flow, groups `daemonet-users`/`daemonet-admins`
       (Step 4).
-- [ ] Task 5: Vault secrets and the app token: `bash scripts/provision-secrets.sh`, then the token and `.env` on S1
+- [x] (2026-10-10) Task 5: Vault secrets and the app token: `bash scripts/provision-secrets.sh`, then the token and `.env` on S1
       (Steps 5 and 6).
-- [ ] Task 6: nginx on LC2 and the Cloudflare Tunnel hostname (Step 7).
+- [x] (2026-10-10) Task 6: nginx on LC2 and the Cloudflare Tunnel hostname (Step 7).
 - [ ] Task 7: first deploy and the acceptance checklist, including the staging load test (Steps 8 and 9).
 - [ ] Task 8, after the first deploy has been accepted:
   - [ ] Add the Daemonet entries to the homelab doc `D:\docs\MikroTik\CLAUDE.md` (OPERATIONS Step 10): S1 hosts
@@ -52,10 +52,10 @@ Then, in order:
 
 Before the first deploy that includes `apps/api` (OPERATIONS Steps 4 item 5, 5, 8, 9 item 6):
 
-- [ ] Authentik: create the **confidential** provider `daemonet` (web login) and the application `Daemonet Web` (slug
+- [x] (2026-10-10) Authentik: create the **confidential** provider `daemonet` (web login) and the application `Daemonet Web` (slug
       `daemonet`), bound to `daemonet-users`; redirect URI = `FRONTEND_ORIGIN` + `/api/auth/callback`, i.e.
       `https://daemonet.wispy-nook.casa/api/auth/callback`; same scopes incl. `groups`. Note Client ID and Secret.
-- [ ] Vault: re-run `bash scripts/provision-secrets.sh` (it now also asks for the web client ID and secret and adds
+- [x] (2026-10-10) Vault: re-run `bash scripts/provision-secrets.sh` (it now also asks for the web client ID and secret and adds
       `SESSION_SECRET`, `SESSION_COOKIE_SECURE`, `FRONTEND_ORIGIN`, `AUTHENTIK_WEB_ISSUER_URL`, `AUTHENTIK_CLIENT_ID`, `AUTHENTIK_CLIENT_SECRET`,
       `AUTHENTIK_REDIRECT_URI`, `AUTH_ADMIN_GROUP`): expect `kv written: 17 keys`. It is a full replace, so re-apply any
       `vault kv patch` changes afterwards.
