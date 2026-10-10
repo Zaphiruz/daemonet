@@ -5,6 +5,7 @@ import { setControls, useControls } from '../game/controls.ts';
 import { phaseLabel, useLiveIncident, useSeedIncident } from '../game/incident.ts';
 import { log } from '../game/log.ts';
 import { taggedName } from '../game/names.ts';
+import { ReportBug } from './ReportBug.tsx';
 
 const reconnect = (role: Role) => void open(role).catch(() => {});
 
@@ -48,6 +49,7 @@ export function TopBar({ me }: { me: Me }) {
       </span>
       <IncidentBanner />
       <span className="ml-auto flex items-center gap-2">
+        <ReportBug />
         <label className="text-neutral-400">
           zoom
           <select className="ml-1 rounded bg-neutral-800 px-1" value={controls.zoom} onChange={(e) => setControls({ zoom: Number(e.target.value) as 1 | 2 | 3 | 4 })}>

@@ -1,0 +1,40 @@
+name: Bug report
+description: Something in Daemonet misbehaved
+title: "[bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+  - type: input
+    id: operator
+    attributes:
+      label: Operator name
+      description: Your in-game name, so the server log can be matched to you.
+  - type: input
+    id: when
+    attributes:
+      label: Approximate time (UTC)
+      placeholder: 2026-10-10 17:05
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS
+      placeholder: Firefox 145 on Windows 11
+  - type: textarea
+    id: log
+    attributes:
+      label: Log tab
+      description: Paste the last lines of the Log tab if they are relevant.
+      render: text

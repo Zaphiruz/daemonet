@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useMeQuery } from './api.ts';
 import { ArenaHud } from './components/ArenaHud.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
+import { ReportBug } from './components/ReportBug.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { run, WorldCanvas } from './components/WorldCanvas.tsx';
 import { createForfeit, useArena } from './game/arena.ts';
@@ -36,6 +37,7 @@ export function Login() {
         <a className="block rounded bg-sky-700 px-3 py-2 text-center hover:bg-sky-600" href="/api/auth/login">
           Sign in with Authentik
         </a>
+        <ReportBug className="block text-center text-xs" />
         {dev && (
           <form
             className="flex gap-2"
