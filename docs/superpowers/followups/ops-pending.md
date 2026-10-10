@@ -18,7 +18,7 @@ Before registering the runner (OPERATIONS Step 2, "Before registering the runner
 
 - [x] ~~Cancel queued Deploy runs~~ — not needed: checked 2026-10-05, every Deploy run completes as `skipped` because
       `DAEMONET_DEPLOY_ENABLED` is unset; nothing is queued waiting for a runner.
-- [ ] (runner + env done 2026-10-10; set after the first secrets fetch) After the runner is registered and the `production` environment is configured, set the repository variable
+- [x] (2026-10-10) After the runner is registered and the `production` environment is configured, set the repository variable
       `DAEMONET_DEPLOY_ENABLED` to `true` (GitHub → Settings → Secrets and variables → Actions → Variables, or
       `gh variable set DAEMONET_DEPLOY_ENABLED --body true --repo Zaphiruz/daemonet`); until then deploys are skipped.
 
@@ -30,14 +30,14 @@ Then, in order:
 - [x] (2026-10-10; the private key is not yet copied into Vault `deploy-keys/daemonet`) Task 2b: runner user `.ssh` setup, deploy key, clone, runner registration (Steps 2, 2b). Checked 2026-10-05:
       none present yet (no `/home/runner/.ssh`, `/opt/daemonet`, `/opt/actions-runner-daemonet`; GitHub has no deploy
       key, runner, `production` environment or `DAEMONET_DEPLOY_ENABLED` variable).
-- [ ] (user + database created 2026-10-10; publishing/firewall pending — S2's NIC is `enp4s0`, not `end0`) Task 3: PostgreSQL user, database and LAN-only publishing on S2 with the `DOCKER-USER` rule (Step 3). Do it at a
+- [x] (2026-10-10; S2's NIC is `enp4s0`, not `end0`) Task 3: PostgreSQL user, database and LAN-only publishing on S2 with the `DOCKER-USER` rule (Step 3). Do it at a
       quiet time: it briefly restarts the shared database.
 - [x] (2026-10-10) Task 4: Authentik public client `daemonet-bot` with the device flow, groups `daemonet-users`/`daemonet-admins`
       (Step 4).
 - [x] (2026-10-10) Task 5: Vault secrets and the app token: `bash scripts/provision-secrets.sh`, then the token and `.env` on S1
       (Steps 5 and 6).
 - [x] (2026-10-10) Task 6: nginx on LC2 and the Cloudflare Tunnel hostname (Step 7).
-- [ ] Task 7: first deploy and the acceptance checklist, including the staging load test (Steps 8 and 9).
+- [ ] (first deploy succeeded 2026-10-10, Step 8 checks pass; acceptance in progress) Task 7: first deploy and the acceptance checklist, including the staging load test (Steps 8 and 9).
 - [ ] Task 8, after the first deploy has been accepted:
   - [ ] Add the Daemonet entries to the homelab doc `D:\docs\MikroTik\CLAUDE.md` (OPERATIONS Step 10): S1 hosts
         Daemonet on 3010, shared PostgreSQL published on `192.168.40.20:5432` restricted to S1, the nginx
@@ -59,11 +59,11 @@ Before the first deploy that includes `apps/api` (OPERATIONS Steps 4 item 5, 5, 
       `SESSION_SECRET`, `SESSION_COOKIE_SECURE`, `FRONTEND_ORIGIN`, `AUTHENTIK_WEB_ISSUER_URL`, `AUTHENTIK_CLIENT_ID`, `AUTHENTIK_CLIENT_SECRET`,
       `AUTHENTIK_REDIRECT_URI`, `AUTH_ADMIN_GROUP`): expect `kv written: 17 keys`. It is a full replace, so re-apply any
       `vault kv patch` changes afterwards.
-- [ ] `TRUST_PROXY_HOPS` is one key shared by the sim and the api (value `3`); confirm it still matches the chain
+- [x] (2026-10-10: api logs the real public IP) `TRUST_PROXY_HOPS` is one key shared by the sim and the api (value `3`); confirm it still matches the chain
       (acceptance 5 and 6).
 - [ ] The first deploy log shows `Ignored non-allowlisted key(s)` for both services: expected (each app drops the
       other's keys).
-- [ ] After the deploy: `curl https://daemonet.wispy-nook.casa/api/ready` returns `{"ok":true}` and the OPERATIONS
+- [x] (2026-10-10, `{"ok":true}`; login check pending) After the deploy: `curl https://daemonet.wispy-nook.casa/api/ready` returns `{"ok":true}` and the OPERATIONS
       Step 9 item 6 login check passes.
 
 ## SP2 plan 3 (web client)
@@ -71,11 +71,11 @@ Before the first deploy that includes `apps/api` (OPERATIONS Steps 4 item 5, 5, 
 The frontend image now serves the Vite build (the SP1 placeholder page is gone) plus the static player-script
 sandbox. Nothing new is needed in Vault or Authentik; the checks below happen after the first deploy that includes it.
 
-- [ ] Deploy as usual (push `main` with CI green; the CI `e2e` job runs the Playwright smoke first). The frontend image
+- [x] (2026-10-10) Deploy as usual (push `main` with CI green; the CI `e2e` job runs the Playwright smoke first). The frontend image
       build now compiles the libraries and the client, so the first build on S1 takes a few minutes.
 - [ ] OPERATIONS Step 9 item 6, "Web client (SP2 plan 3)": log in, claim/see RAM, move, capture panel, Script tab run
       (`online as …` in the Log), spectate.
-- [ ] In the browser devtools confirm there are no Content-Security-Policy violations on `/` and that
+- [ ] (sandbox.html headers and the three sandbox scripts verified 2026-10-10; devtools check pending) In the browser devtools confirm there are no Content-Security-Policy violations on `/` and that
       `curl -sI https://daemonet.wispy-nook.casa/sandbox.html` shows the strict `default-src 'none'; script-src 'self' blob:`
       policy and `X-Frame-Options: SAMEORIGIN`, reachable without logging in. If a Cloudflare rule or the nginx
       server block on LC2 adds its own `Content-Security-Policy`, remove it for `/sandbox.html` (two policies would
