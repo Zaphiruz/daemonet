@@ -1,5 +1,6 @@
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from 'jose';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { IDP_DISCOVERY_TIMEOUT_MS, IDP_FETCH_TIMEOUT_MS } from '@daemonet/auth';
 import { AuthError, combineVerifiers, createDevVerifier, createOidcVerifier, type TokenVerifier } from '../src/runtime/auth.js';
 
 const ISSUER = 'https://authentik.test/application/o/daemonet-bot/';
@@ -77,6 +78,35 @@ describe('createOidcVerifier resilience', () => {
     // Second call re-runs discovery (it succeeds; the unreachable JWKS then fails verification, still an AuthError).
     await expect(v(await token({ sub: 'u1', groups: [GROUP] }))).rejects.toBeInstanceOf(AuthError);
     expect(calls).toBe(2);
+  });
+
+  it('warms discovery at creation with the longer budget, and retries a failed warm-up on the first token', async () => {
+    const seen: { url: string; timeoutMs: number | null }[] = [];
+    let fail = true;
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      if (!String(url).includes('openid-configuration')) throw new TypeError('jwks unreachable');
+      // AbortSignal.timeout(ms) is opaque; the budget is pinned through the exported constant below
+      seen.push({ url: String(url), timeoutMs: init?.signal instanceof AbortSignal ? 1 : null });
+      if (fail) throw new TypeError('network down');
+      return discoveryDoc();
+    }) as typeof fetch;
+    const v = createOidcVerifier({ issuer: ISSUER, audiences: [CLIENT], requiredGroup: GROUP, fetch: fetchImpl, warm: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe(`${ISSUER}.well-known/openid-configuration`);
+    expect(seen[0]!.timeoutMs).toBe(1);
+    expect(IDP_DISCOVERY_TIMEOUT_MS).toBeGreaterThan(IDP_FETCH_TIMEOUT_MS);
+    fail = false;
+    // the warm-up failed and was not cached: the first token re-runs discovery (then the unreachable JWKS fails it)
+    await expect(v(await token({ sub: 'u1', groups: [GROUP] }))).rejects.toBeInstanceOf(AuthError);
+    expect(seen).toHaveLength(2);
+  });
+
+  it('does not touch the network at creation without warm', async () => {
+    let calls = 0;
+    createOidcVerifier({ issuer: ISSUER, audiences: [CLIENT], requiredGroup: GROUP, fetch: (async () => { calls += 1; return discoveryDoc(); }) as typeof fetch });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toBe(0);
   });
 
   it('maps a userinfo 500 and a non-JSON userinfo body to AuthError', async () => {

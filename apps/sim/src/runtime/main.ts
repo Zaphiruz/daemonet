@@ -28,7 +28,7 @@ for (const id of config.subnets) {
 // The dev verifier only exists when AUTH_DEV_BYPASS=true (loadConfig refuses that in production).
 const verify = combineVerifiers(
   config.oidc
-    ? createOidcVerifier({ issuer: config.oidc.issuer, audiences: [config.oidc.clientId], requiredGroup: config.requiredGroup })
+    ? createOidcVerifier({ issuer: config.oidc.issuer, audiences: [config.oidc.clientId], requiredGroup: config.requiredGroup, warm: true })
     : null,
   config.devBypass ? createDevVerifier(config.requiredGroup) : null,
   createTicketVerifier(store.prisma, config.requiredGroup),

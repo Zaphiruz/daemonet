@@ -28,10 +28,14 @@ export interface OidcClientOptions {
   clientSecret: string;
   redirectUri: string;
   scope?: string;
+  /** Start discovery now rather than on the first login, so the first player does not wait for it; a failure is retried then. */
+  warm?: boolean;
 }
 
-/** Every IdP request (discovery, token, userinfo) is bounded to 5 s. */
-const IDP_TIMEOUT_SECONDS = 5;
+/** Token and userinfo requests are bounded to 5 s. */
+export const IDP_TIMEOUT_SECONDS = 5;
+/** Discovery gets more: Authentik takes ~2 s to serve its document, and it is fetched once, then cached. */
+export const DISCOVERY_TIMEOUT_SECONDS = 15;
 
 const asGroups = (v: unknown): string[] => (Array.isArray(v) && v.every((g) => typeof g === 'string') ? v : []);
 
@@ -45,7 +49,11 @@ export function createOidcClient(opts: OidcClientOptions): OidcClient {
   let configPromise: Promise<oidc.Configuration> | null = null;
   const config = (): Promise<oidc.Configuration> => {
     if (!configPromise) {
-      const p = oidc.discovery(new URL(opts.issuer), opts.clientId, opts.clientSecret, undefined, { timeout: IDP_TIMEOUT_SECONDS });
+      // the discovery timeout is also inherited by every later request: reset it once the document is in
+      const p = oidc.discovery(new URL(opts.issuer), opts.clientId, opts.clientSecret, undefined, { timeout: DISCOVERY_TIMEOUT_SECONDS }).then((c) => {
+        c.timeout = IDP_TIMEOUT_SECONDS;
+        return c;
+      });
       configPromise = p;
       p.catch(() => {
         if (configPromise === p) configPromise = null;
@@ -53,6 +61,7 @@ export function createOidcClient(opts: OidcClientOptions): OidcClient {
     }
     return configPromise;
   };
+  if (opts.warm) void config().catch(() => {});
 
   return {
     async start() {

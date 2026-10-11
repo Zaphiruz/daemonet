@@ -38,10 +38,14 @@ export interface OidcOptions {
   userinfo?: (token: string) => Promise<{ groups?: unknown }>;
   /** Used for discovery, the JWKS and userinfo. */
   fetch?: typeof fetch;
+  /** Start discovery now rather than on the first token, so the first player does not wait for it; a failure is retried then. */
+  warm?: boolean;
 }
 
 const UNAVAILABLE = 'identity provider unavailable';
 export const IDP_FETCH_TIMEOUT_MS = 5000;
+/** Discovery gets a longer budget: Authentik takes ~2 s to serve its document, and it is fetched once, then cached. */
+export const IDP_DISCOVERY_TIMEOUT_MS = 15_000;
 /** Allowed clock skew between Authentik and us for exp / nbf / iat. */
 export const CLOCK_TOLERANCE = '30s';
 
@@ -49,10 +53,10 @@ export const CLOCK_TOLERANCE = '30s';
  * Fetches JSON from the identity provider with a 5 s timeout; every failure is an AuthError. A status in `refusals`
  * (userinfo's 401 / 403: the provider rejected the token) is a plain refusal, anything else is "unavailable".
  */
-async function fetchJson(fetchImpl: typeof fetch, input: string | URL, init: RequestInit = {}, refusals: readonly number[] = []): Promise<unknown> {
+async function fetchJson(fetchImpl: typeof fetch, input: string | URL, init: RequestInit = {}, refusals: readonly number[] = [], timeoutMs = IDP_FETCH_TIMEOUT_MS): Promise<unknown> {
   let res: Response;
   try {
-    res = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(IDP_FETCH_TIMEOUT_MS) });
+    res = await fetchImpl(input, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     throw new AuthError(`${UNAVAILABLE}: ${(err as Error).message}`, true);
   }
@@ -72,7 +76,7 @@ interface Discovery {
 
 async function discover(issuer: string, fetchImpl: typeof fetch): Promise<Discovery> {
   const base = issuer.endsWith('/') ? issuer : `${issuer}/`;
-  const doc = (await fetchJson(fetchImpl, new URL('.well-known/openid-configuration', base))) as Partial<Discovery> | null;
+  const doc = (await fetchJson(fetchImpl, new URL('.well-known/openid-configuration', base), {}, [], IDP_DISCOVERY_TIMEOUT_MS)) as Partial<Discovery> | null;
   if (typeof doc?.jwks_uri !== 'string' || typeof doc.userinfo_endpoint !== 'string') throw new AuthError(`${UNAVAILABLE}: bad discovery document`, true);
   return { jwks_uri: doc.jwks_uri, userinfo_endpoint: doc.userinfo_endpoint };
 }
@@ -112,6 +116,7 @@ export function createOidcVerifier(opts: OidcOptions): TokenVerifier {
         throw err;
       },
     ));
+  if (opts.warm) void getSetup().catch(() => {});
 
   return async (token) => {
     const keys = opts.jwks ?? (await getSetup()).keys;
