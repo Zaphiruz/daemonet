@@ -1,16 +1,36 @@
 import {
   CHAIN_STAGE_MAX_SIZE,
   MAX_CHALLENGE_SIZE,
+  SHOP,
   TYPES,
   checkAnswer,
   createRng,
   generateChallenge,
+  getSubnet,
+  getTool,
   publicChallenge,
   type Noise,
+  type ToolId,
   type TypeId,
 } from '@daemonet/rules';
 import { describe, expect, it } from 'vitest';
-import { solve } from '../full-loop.js';
+import {
+  GATEWAYS,
+  HOSTS,
+  ROUTE,
+  TOOLS,
+  attackable,
+  chooseTool,
+  dangerAt,
+  escapePoint,
+  evolutionReady,
+  nextGateway,
+  nextToRun,
+  solve,
+  storeCandidates,
+  ticketsToAccept,
+  toolsToBuy,
+} from '../full-loop.js';
 
 /** Small to the largest sizes the sim uses: a single challenge up to MAX_CHALLENGE_SIZE, a chain stage up to CHAIN_STAGE_MAX_SIZE. */
 const SIZES = [8, 9, 16, 31, 33, 64, 100, 128, 200, CHAIN_STAGE_MAX_SIZE, 300, 512, 777, MAX_CHALLENGE_SIZE];
@@ -98,3 +118,128 @@ describe('solver speed', () => {
   });
 });
 
+describe('loop helpers', () => {
+  it('chooseTool prefers dump > mirror > tap > sniff and returns null with no tools', () => {
+    expect(chooseTool({ sniff: 3, tap: 1, mirror: 1, dump: 1 })?.id).toBe('dump');
+    expect(chooseTool({ sniff: 3, tap: 1, mirror: 1, dump: 0 })?.id).toBe('mirror');
+    expect(chooseTool({ sniff: 3, tap: 1 })?.id).toBe('tap');
+    expect(chooseTool({ sniff: 1, restore: 4 })?.id).toBe('sniff');
+    expect(chooseTool({ restore: 4 })).toBeNull();
+    expect(chooseTool({ sniff: 0, tap: 0 })).toBeNull();
+  });
+
+  it('storeCandidates keeps the best of each species and anything running, lowest level first', () => {
+    const ram = [
+      { id: 'a1', species: 'pingling', level: 9, xp: 0 },
+      { id: 'a2', species: 'pingling', level: 4, xp: 0 },
+      { id: 'a3', species: 'pingling', level: 6, xp: 0 },
+      { id: 'b1', species: 'hashling', level: 3, xp: 0 },
+      { id: 'c1', species: 'nullbit', level: 5, xp: 10 },
+      { id: 'c2', species: 'nullbit', level: 5, xp: 20 },
+    ];
+    expect(storeCandidates(ram, [])).toEqual(['a2', 'c1', 'a3']);
+    // a running duplicate stays in RAM
+    expect(storeCandidates(ram, ['a2'])).toEqual(['c1', 'a3']);
+    // singles are never stored
+    expect(storeCandidates([{ id: 'x', species: 's', level: 1 }], [])).toEqual([]);
+  });
+
+  it('nextToRun picks the highest-level healthy daemon that is not running', () => {
+    const ram = [
+      { id: 'a', level: 10, crashed: true, hp: 0 },
+      { id: 'b', level: 8, crashed: false, hp: 5 },
+      { id: 'c', level: 9, crashed: false, hp: 5 },
+    ];
+    expect(nextToRun(ram, [])).toBe('c');
+    expect(nextToRun(ram, ['c'])).toBe('b');
+    expect(nextToRun(ram, ['b', 'c'])).toBeNull();
+  });
+
+  it('nextGateway climbs lo -> lan -> dmz -> backbone -> darknet -> cloudnet when the level allows', () => {
+    expect(nextGateway('lo', 7, 0)).toBeNull();
+    expect(nextGateway('lo', 8, 0)?.id).toBe('lo-lan');
+    expect(nextGateway('lan', 15, 1)).toBeNull();
+    expect(nextGateway('lan', 16, 1)?.id).toBe('lan-dmz');
+    expect(nextGateway('dmz', 24, 2)?.id).toBe('dmz-backbone');
+    expect(nextGateway('backbone', 32, 3)?.id).toBe('backbone-darknet');
+    // after darknet the goal is cloudnet, through backbone; darknet is left only once level 40 is met
+    expect(nextGateway('darknet', 39, 4)).toBeNull();
+    expect(nextGateway('darknet', 40, 4)?.id).toBe('darknet-backbone');
+    expect(nextGateway('backbone', 40, 4)?.id).toBe('backbone-cloudnet');
+    // the end of the route, and never kernelspace
+    expect(nextGateway('cloudnet', 64, 5)).toBeNull();
+    expect(nextGateway('kernelspace', 64, 3)).toBeNull();
+    // starting further along than `reached` aims past the current subnet
+    expect(nextGateway('dmz', 30, 0)?.id).toBe('dmz-backbone');
+  });
+
+  it('the inlined gateway, host and tool tables match the rules content', () => {
+    for (const subnet of ROUTE) {
+      const real = getSubnet(subnet).gateways.filter((g) => g.to !== 'kernelspace' && !g.incidentOnly);
+      expect(GATEWAYS[subnet as keyof typeof GATEWAYS]).toEqual(real.map((g) => ({ id: g.id, to: g.to, level: g.requires.level })));
+      expect(HOSTS[subnet as keyof typeof HOSTS]).toEqual(getSubnet(subnet).host);
+    }
+    for (const t of TOOLS) {
+      expect(getTool(t.id as ToolId).range).toBe(t.range);
+      expect(SHOP[t.id as ToolId]).toBe(t.price);
+    }
+  });
+
+  it('attackable skips owned daemons, other tags and shielded bosses', () => {
+    expect(attackable({ owner: null, taggedBy: null }, 'me')).toBe(true);
+    expect(attackable({ owner: null, taggedBy: 'me' }, 'me')).toBe(true);
+    expect(attackable({ owner: null, taggedBy: 'them' }, 'me')).toBe(false);
+    expect(attackable({ owner: 'them', taggedBy: null }, 'me')).toBe(false);
+    expect(attackable({ owner: null, taggedBy: null, boss: true, shielded: true }, 'me')).toBe(false);
+  });
+
+  it('escapePoint leaves the circle; dangerAt only counts blasts still to land', () => {
+    const circle = { x: 50, y: 50, radius: 4, atTick: 100 };
+    const out = escapePoint({ x: 51, y: 50 }, circle);
+    expect(Math.hypot(out.x - 50, out.y - 50)).toBeGreaterThan(circle.radius);
+    expect(escapePoint({ x: 50, y: 50 }, circle)).toEqual({ x: 56, y: 50 });
+    expect(dangerAt({ x: 51, y: 50 }, [circle], 90)).toBe(circle);
+    expect(dangerAt({ x: 51, y: 50 }, [circle], 101)).toBeNull();
+    expect(dangerAt({ x: 60, y: 50 }, [circle], 90)).toBeNull();
+  });
+
+  it('ticketsToAccept takes untried clear/capture tickets while there is room', () => {
+    const board = [
+      { index: 0, kind: 'clear' },
+      { index: 1, kind: 'deliver' },
+      { index: 2, kind: 'capture' },
+      { index: 3, kind: 'evolve' },
+      { index: 4, kind: 'clear' },
+    ];
+    const me = { tickets: [{ index: 4, subnet: 'lo', day: 'd' }], ticketsToday: 1 };
+    expect(ticketsToAccept(board, me, 'lo', 'd', new Set())).toEqual([0, 2]);
+    expect(ticketsToAccept(board, me, 'lo', 'd', new Set(['d|lo|0']))).toEqual([2]);
+    expect(ticketsToAccept(board, { tickets: [...me.tickets, ...me.tickets], ticketsToday: 2 }, 'lo', 'd', new Set())).toEqual([]);
+    expect(ticketsToAccept(board, { tickets: [], ticketsToday: 8 }, 'lo', 'd', new Set())).toEqual([]);
+  });
+
+  it('toolsToBuy tops sniff and tap up to the floor as far as the bits go', () => {
+    expect(toolsToBuy({ sniff: 1, tap: 3 }, 1000, 3)).toEqual([{ item: 'sniff', qty: 2 }]);
+    expect(toolsToBuy({}, 32 * 3 + 128 * 2, 3)).toEqual([
+      { item: 'sniff', qty: 3 },
+      { item: 'tap', qty: 2 },
+    ]);
+    expect(toolsToBuy({}, 31, 3)).toEqual([]);
+  });
+
+  it('evolutionReady needs both the level and a met requirement', () => {
+    const ram = [
+      { id: 'a', level: 10, evolutions: [{ form: 'x', level: 16, met: true }] },
+      {
+        id: 'b',
+        level: 20,
+        evolutions: [
+          { form: 'y', level: 16, met: false },
+          { form: 'z', level: 18, met: true },
+        ],
+      },
+    ];
+    expect(evolutionReady(ram)).toEqual({ daemonId: 'b', form: 'z' });
+    expect(evolutionReady([{ id: 'c', level: 5 }])).toBeNull();
+  });
+});
