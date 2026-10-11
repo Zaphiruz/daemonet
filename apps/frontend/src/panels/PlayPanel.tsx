@@ -5,6 +5,7 @@ import { run } from '../components/WorldCanvas.tsx';
 import { useCaptureChallenge } from '../game/capture.ts';
 import { parseAnswer, setControls, useControls } from '../game/controls.ts';
 import { useLiveIncident } from '../game/incident.ts';
+import { ClaimStarter } from './ClaimStarter.tsx';
 
 const TOOLS: ToolId[] = ['sniff', 'tap', 'mirror', 'dump'];
 
@@ -13,28 +14,8 @@ export function PlayPanel({ client }: { client: GameClient }) {
   const me = client.self;
   const manual = client.role === 'controller';
   const target = controls.targetId ? client.entities.get(controls.targetId) : undefined;
-  const starters = ['pingling', 'hashling', 'glitchmite', 'nullpup'];
-  const [starter, setStarter] = useState(starters[0]!);
-  const [name, setName] = useState('');
 
-  if (!me.starterClaimed) {
-    return (
-      <div className="space-y-2 p-3 text-sm">
-        <p className="text-neutral-300">Claim a starter to enter the network.</p>
-        <input className="w-full rounded bg-neutral-800 px-2 py-1" placeholder="operator name (a-z 0-9 _ -)" value={name} onChange={(e) => setName(e.target.value)} data-testid="name-input" />
-        <select className="w-full rounded bg-neutral-800 px-2 py-1" value={starter} onChange={(e) => setStarter(e.target.value)} data-testid="starter-select">
-          {starters.map((s) => (
-            <option key={s} value={s}>
-              {getSpecies(s).name}
-            </option>
-          ))}
-        </select>
-        <button className="rounded bg-sky-700 px-3 py-1 hover:bg-sky-600 disabled:opacity-50" disabled={!manual} onClick={() => run(client.operator.claimStarter(starter, name), 'claimStarter')} data-testid="claim">
-          claim
-        </button>
-      </div>
-    );
-  }
+  if (!me.starterClaimed) return <ClaimStarter client={client} />;
 
   return (
     <div className="space-y-3 p-3 text-sm">

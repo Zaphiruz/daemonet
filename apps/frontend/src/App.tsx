@@ -10,6 +10,7 @@ import { open, useConnection } from './game/connection.ts';
 import { CodexPanel, ItemsPanel } from './panels/CodexPanel.tsx';
 import { IncidentsPanel } from './panels/IncidentsPanel.tsx';
 import { ArenaPanel } from './panels/ArenaPanel.tsx';
+import { ClaimStarter } from './panels/ClaimStarter.tsx';
 import { AdminPanel } from './panels/AdminPanel.tsx';
 import { ChatPanel } from './panels/ChatPanel.tsx';
 import { DiskPanel } from './panels/DiskPanel.tsx';
@@ -103,6 +104,17 @@ export function App() {
           )}
         </div>
         <aside className="flex w-[26rem] shrink-0 flex-col border-l border-neutral-800">
+          {/* an unclaimed operator can only claim: the sim refuses every other command until the claim commits */}
+          {client?.self && !client.self.starterClaimed ? (
+            client.role === 'controller' ? (
+              <ClaimStarter client={client} />
+            ) : (
+              <p className="p-3 text-sm text-neutral-500" data-testid="unclaimed-note">
+                this operator hasn't claimed a starter yet
+              </p>
+            )
+          ) : (
+            <>
           <nav className="flex border-b border-neutral-800 text-xs">
             {tabs.map((t) => (
               <button key={t} className={`flex-1 py-1.5 uppercase tracking-wide ${tab === t ? 'bg-neutral-800 text-sky-300' : 'text-neutral-400 hover:text-neutral-200'}`} onClick={() => setTab(t)} data-testid={`tab-${t}`}>
@@ -132,6 +144,8 @@ export function App() {
             {tab === 'log' && <LogPanel />}
             </ErrorBoundary>
           </div>
+            </>
+          )}
         </aside>
       </div>
     </div>
