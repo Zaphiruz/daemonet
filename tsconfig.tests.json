@@ -9,12 +9,14 @@
     "lib": [
       "ES2023",
       "DOM"
-    ]
+    ],
+    "allowJs": true
   },
   "include": [
     "packages/*/test/**/*.ts",
     "apps/*/test/**/*.ts",
-    "packages/sandbox/verify/**/*.ts"
+    "packages/sandbox/verify/**/*.ts",
+    "examples/*/test/**/*.ts"
   ],
   "exclude": [
     "apps/frontend/**"
