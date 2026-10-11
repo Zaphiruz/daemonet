@@ -21,29 +21,45 @@ export const CAPTURE_HP_PCT = 0.35;
 
 export const RAM_SLOTS = 8;
 export const RUNNING_MAX = 2;
-const TICK_HZ = 16;
-/** Commands that need the host (store/load/buy/restoreAll/acceptTicket) work within this many tiles of it. */
-const HOST_RADIUS = 2;
+export const TICK_HZ = 16;
 /** Travel works within this many tiles of the gateway. */
-const GATEWAY_RADIUS = 2;
+export const GATEWAY_RADIUS = 2;
+export const OPEN_TICKETS_MAX = 2;
+export const TICKETS_PER_DAY = 8;
+/**
+ * Commands that need the host (store/load/buy/restoreAll/acceptTicket) work within this many tiles of it.
+ * HOST_RADIUS and LEASH_TILES live only in the sim (apps/sim), not in the public rules, so no test pins them.
+ */
+const HOST_RADIUS = 2;
+/** Daemons stay within this many tiles of their operator (sim-only, see above). */
+const LEASH_TILES = 8;
 /** Fighting distance the operator keeps from its target. */
 const ENGAGE_RANGE = 3;
-/** Daemons stay within this many tiles of their operator. */
-const LEASH_TILES = 8;
-const OPEN_TICKETS_MAX = 2;
-const TICKETS_PER_DAY = 8;
 const STATUS_EVERY_MS = 30_000;
-/** After a refusal the same action waits this long before it is tried again (no spinning). */
-const REFUSAL_COOLDOWN_TICKS = 2 * TICK_HZ;
-/** Refusals that will not change soon (evolve, travel, ticket) wait a minute. */
-const LONG_COOLDOWN_TICKS = 60 * TICK_HZ;
+/** After a refusal the same action waits this long before it is tried again; repeats double it up to LONG_COOLDOWN_TICKS. */
+export const REFUSAL_COOLDOWN_TICKS = 2 * TICK_HZ;
+/** The longest refusal cooldown; refusals that will not change soon (evolve, travel) start here. */
+export const LONG_COOLDOWN_TICKS = 60 * TICK_HZ;
+/** After a failed capture the target is hardened for 8192 ms (132 ticks): leave it to the daemons a little longer. */
+export const FAILED_CAPTURE_COOLDOWN_TICKS = Math.ceil((8192 * TICK_HZ) / 1000) + TICK_HZ / 4;
 
-/** Capture tools, best first: link range in tiles and NPC shop price in bits. */
+/**
+ * Sandbox log budget: a script may send 500 log lines in its whole lifetime (never refilled). Acks are quiet; event
+ * lines are capped per status window; near the end only a rare status line is kept.
+ */
+export const LOG_BUDGET = 500;
+/** Event lines (refusals, captures, travel, evolutions, tickets) allowed per 30 s status window. */
+export const EVENT_LINES_PER_WINDOW = 4;
+
+/**
+ * Capture tools, cheapest first: link range in tiles, NPC shop price in bits, challenge deadline. The solvers answer
+ * every noise level and size, so the cheapest tool whose range covers the distance is always the right pick.
+ */
 export const TOOLS = Object.freeze([
-  { id: 'dump', range: 8, price: 2048 },
-  { id: 'mirror', range: 8, price: 512 },
-  { id: 'tap', range: 6, price: 128 },
-  { id: 'sniff', range: 4, price: 32 },
+  { id: 'sniff', range: 4, price: 32, deadlineMs: 2048 },
+  { id: 'tap', range: 6, price: 128, deadlineMs: 4096 },
+  { id: 'mirror', range: 8, price: 512, deadlineMs: 4096 },
+  { id: 'dump', range: 8, price: 2048, deadlineMs: 8192 },
 ]);
 
 /** Every subnet's host node (all open subnets share the same layout; kernelspace is the Incident arena). */
@@ -487,12 +503,17 @@ export async function solve(challenge) {
 const dist = (/** @type {Point} */ a, /** @type {Point} */ b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 /**
- * The best capture tool held: dump > mirror > tap > sniff, or null when none is left.
+ * The cheapest capture tool held whose range covers `distance` (with half a tile to spare), or null when none does.
+ * Without a distance: the cheapest tool held.
  * @param {Record<string, number>} inventory
+ * @param {number} [distance]
  */
-export function chooseTool(inventory) {
-  return TOOLS.find((t) => (inventory[t.id] ?? 0) > 0) ?? null;
+export function chooseTool(inventory, distance = 0) {
+  return TOOLS.find((t) => (inventory[t.id] ?? 0) > 0 && distance <= t.range - 0.5) ?? null;
 }
+
+/** Whether any capture tool is held. */
+export const holdsTool = (/** @type {Record<string, number>} */ inventory) => TOOLS.some((t) => (inventory[t.id] ?? 0) > 0);
 
 /**
  * A wild daemon this operator may fight: not owned, not tagged by another operator, not an immune Incident boss.
@@ -505,8 +526,8 @@ export function attackable(d, myId) {
 
 /**
  * RAM daemons to store at the host: the duplicates of each species (everything but the best one, by level then xp),
- * never a running daemon, lowest level first.
- * @param {Array<{ id: string, species: string, level: number, xp?: number }>} ram
+ * never a running daemon; crashed ones first, then lowest level first.
+ * @param {Array<{ id: string, species: string, level: number, xp?: number, crashed?: boolean }>} ram
  * @param {readonly string[]} running
  */
 export function storeCandidates(ram, running) {
@@ -525,7 +546,7 @@ export function storeCandidates(ram, running) {
     // The best of the species stays; a running duplicate stays too.
     for (const d of ranked.slice(1)) if (!running.includes(d.id)) out.push(d);
   }
-  return out.sort((a, b) => a.level - b.level).map((d) => d.id);
+  return out.sort((a, b) => Number(!a.crashed) - Number(!b.crashed) || a.level - b.level).map((d) => d.id);
 }
 
 /**
@@ -633,9 +654,15 @@ export function toolsToBuy(inventory, bits, floor = TOOL_FLOOR) {
   return out;
 }
 
-/** A RAM daemon's first evolution that is met and reached, as `{ daemonId, form }`, or null. */
-export function evolutionReady(/** @type {Array<{ id: string, level: number, evolutions?: Array<{ form: string, level: number, met: boolean }> }>} */ ram) {
+/**
+ * A RAM daemon's first evolution that is met and reached, as `{ daemonId, form }`, or null. Daemons for which
+ * `ready(id)` is false (an evolve refusal cooling down) are skipped so they do not block the others.
+ * @param {Array<{ id: string, level: number, evolutions?: Array<{ form: string, level: number, met: boolean }> }>} ram
+ * @param {(daemonId: string) => boolean} [ready]
+ */
+export function evolutionReady(ram, ready = () => true) {
   for (const d of ram) {
+    if (!ready(d.id)) continue;
     const option = (d.evolutions ?? []).find((o) => o.met && d.level >= o.level);
     if (option) return { daemonId: d.id, form: option.form };
   }
@@ -649,12 +676,19 @@ export function evolutionReady(/** @type {Array<{ id: string, level: number, evo
 /** @param {import('@daemonet/sdk').GameClient} game */
 export default async function main(game) {
   const op = game.operator;
-  const log = (/** @type {unknown[]} */ ...args) => console.log(`[t${game.tick}]`, ...args);
 
   // --- loop state -----------------------------------------------------------------------------------------------
   let busy = false;
   /** label -> tick before which the action is not retried (after a refusal) */
   const cooldown = new Map();
+  /** label -> refusals in a row (each one doubles the cooldown, up to LONG_COOLDOWN_TICKS) */
+  const refusals = new Map();
+  /** wild daemon id -> tick before which it is not captured again (after a failed capture) */
+  const targetCooldown = new Map();
+  /** captureId -> what the result line reports */
+  const captures = new Map();
+  /** @type {string | null} the target of the last capture command (until its captureStart names it) */
+  let lastCaptureTarget = null;
   let diskFull = false;
   let diskCapacity = game.self.diskCapacity;
   let reached = ROUTE.indexOf(game.subnet);
@@ -668,34 +702,53 @@ export default async function main(game) {
   let lastMove = null;
   let wanderIndex = 0;
   let lastStatus = 0;
-  let toolUsed = 'sniff';
-  const stats = { captured: 0, failed: 0, evolved: 0, tickets: 0 };
+  const stats = { captured: 0, failed: 0, evolved: 0, tickets: 0, bitsEarned: 0, levelUps: 0 };
   /** daemon id -> tick of its last move order */
   const daemonMoves = new Map();
 
+  // --- logging within the sandbox's lifetime budget ---------------------------------------------------------------
+  let linesUsed = 0;
+  let windowLines = 0;
+  let suppressed = 0;
+  const write = (/** @type {string} */ line) => {
+    linesUsed++;
+    console.log(`[t${game.tick}] ${line}`);
+  };
+  /** An event line: at most EVENT_LINES_PER_WINDOW per status window, none once the budget runs low. */
+  const event = (/** @type {string} */ line) => {
+    if (windowLines >= EVENT_LINES_PER_WINDOW || linesUsed >= LOG_BUDGET - 50) {
+      suppressed++;
+      return;
+    }
+    windowLines++;
+    write(line);
+  };
+  const ready = (/** @type {string} */ label) => (cooldown.get(label) ?? -1) <= game.tick;
+
   /**
-   * Issue one command if nothing is in flight. A refusal is logged and puts `label` on cooldown.
+   * Issue one command if nothing is in flight. Acks are silent; a refusal is logged (as an event line) and puts
+   * `label` on a cooldown that doubles with every refusal in a row.
    * @param {string} label
    * @param {() => Promise<unknown>} run
-   * @param {{ ok?: (result: any) => void, err?: (message: string) => void, quiet?: boolean, cooldownTicks?: number }} [after]
+   * @param {{ ok?: (result: any) => void, err?: (message: string) => void, cooldownTicks?: number }} [after]
    */
   const act = (label, run, after = {}) => {
-    if (busy || (cooldown.get(label) ?? -1) > game.tick) return false;
+    if (busy || !ready(label)) return false;
     busy = true;
     run()
       .then(
         (result) => {
-          if (!after.quiet) log(label, 'ok');
+          refusals.delete(label);
           after.ok?.(result);
         },
         (err) => {
           const message = String(err?.message ?? err);
-          log(`refused ${label}: ${err?.code ?? 'E?'} ${message}`);
-          cooldown.set(label, game.tick + (after.cooldownTicks ?? REFUSAL_COOLDOWN_TICKS));
-          if (/Disk is full|RAM and Disk are full/.test(message)) {
-            diskFull = true;
-            log('Disk is full: captures are off, fighting only');
-          }
+          const n = (refusals.get(label) ?? 0) + 1;
+          refusals.set(label, n);
+          const wait = Math.min(LONG_COOLDOWN_TICKS, (after.cooldownTicks ?? REFUSAL_COOLDOWN_TICKS) * 2 ** (n - 1));
+          cooldown.set(label, game.tick + wait);
+          event(`refused ${label}: ${err?.code ?? 'E?'} ${message} (retry in ${Math.round(wait / TICK_HZ)} s)`);
+          if (/Disk is full|RAM and Disk are full/.test(message)) diskFull = true;
           after.err?.(message);
         },
       )
@@ -709,29 +762,37 @@ export default async function main(game) {
   const walk = (/** @type {Point} */ to, label = 'move') => {
     const me = game.self;
     if (lastMove && dist(lastMove, to) < 1 && game.tick - lastMove.tick < 2 * TICK_HZ && dist(me, to) > 0.5) return true;
-    return act(label, () => op.moveTo(to.x, to.y), { quiet: true, ok: () => (lastMove = { x: to.x, y: to.y, tick: game.tick }) });
+    return act(label, () => op.moveTo(to.x, to.y), { ok: () => (lastMove = { x: to.x, y: to.y, tick: game.tick }) });
   };
 
   const tools = () => TOOLS.map((t) => `${t.id}:${game.self.inventory[t.id] ?? 0}`).join(' ');
   const status = () => {
     const me = game.self;
-    log(
-      `status ${game.subnet} | running ${me.running.length}/${RUNNING_MAX} | RAM ${me.ram.length}/${RAM_SLOTS} | disk ${diskFull ? 'FULL' : 'ok'} (cap ${me.diskCapacity})` +
-        ` | bits ${me.bits} | ${tools()} | captured ${stats.captured} failed ${stats.failed} evolved ${stats.evolved} tickets ${stats.tickets}`,
+    const best = me.ram.reduce((m, d) => Math.max(m, d.level), 0);
+    const quiet = suppressed ? ` | ${suppressed} lines muted` : '';
+    write(
+      `status ${game.subnet} | running ${me.running.length}/${RUNNING_MAX} | RAM ${me.ram.length}/${RAM_SLOTS} best L${best} | disk ${diskFull ? 'FULL' : 'ok'}` +
+        ` | bits ${me.bits} (+${stats.bitsEarned}) | ${tools()} | caught ${stats.captured} failed ${stats.failed} lvl+ ${stats.levelUps}` +
+        ` evolved ${stats.evolved} tickets ${stats.tickets} | log ${linesUsed + 1}/${LOG_BUDGET}${quiet}`,
     );
+    suppressed = 0;
+    windowLines = 0;
   };
+  const statusEveryMs = () => (linesUsed >= LOG_BUDGET - 50 ? 10 * STATUS_EVERY_MS : STATUS_EVERY_MS);
 
   // --- events ---------------------------------------------------------------------------------------------------
   game.on('captureStart', async (ev) => {
     const started = Date.now();
+    const kind = ev.challenge.kind === 'chain' ? `chain ${ev.challenge.families.join('>')}` : ev.challenge.families[0];
+    captures.set(ev.captureId, { targetId: ev.targetId, kind, ms: 0 });
     try {
       const answer = await solve(ev.challenge);
-      const kind = ev.challenge.kind === 'chain' ? `chain ${ev.challenge.families.join('>')}` : ev.challenge.families[0];
+      const info = captures.get(ev.captureId);
+      if (info) info.ms = Date.now() - started;
       // submitCapture completes the capture already in flight; retry briefly if the per-tick budget was spent.
       for (let attempt = 0; attempt < 4; attempt++) {
         try {
           await op.submitCapture(ev.captureId, answer);
-          log(`submitted ${kind} in ${Date.now() - started} ms`);
           return;
         } catch (err) {
           if (/** @type {any} */ (err)?.code !== 'E_RATE') throw err;
@@ -739,48 +800,59 @@ export default async function main(game) {
         }
       }
     } catch (err) {
-      log(`capture ${ev.captureId} not submitted: ${String(/** @type {any} */ (err)?.message ?? err)}`);
+      event(`capture ${kind} not submitted: ${String(/** @type {any} */ (err)?.message ?? err)}`);
     }
   });
   game.on('captureResult', (ev) => {
+    const info = captures.get(ev.captureId) ?? { targetId: lastCaptureTarget, kind: '?', ms: 0 };
+    captures.delete(ev.captureId);
     if (ev.ok) stats.captured++;
-    else stats.failed++;
+    else {
+      stats.failed++;
+      // Failed: the target is hardened (and a territorial one hits back). Let the daemons fight it for a while.
+      if (info.targetId) targetCooldown.set(info.targetId, game.tick + FAILED_CAPTURE_COOLDOWN_TICKS);
+    }
     const d = /** @type {any} */ (ev).daemon;
-    log(`captureResult ${ev.ok ? 'OK' : `FAILED (${ev.reason ?? '?'})`}${d ? ` ${d.species} L${d.level}` : ''} [${toolUsed}]`);
+    event(`capture ${info.kind} ${ev.ok ? 'OK' : `FAILED (${ev.reason ?? '?'})`}${d ? ` ${d.species} L${d.level}` : ''} solved in ${info.ms} ms`);
   });
   game.on('levelUp', (ev) => {
-    if (game.self.ram.some((d) => d.id === ev.daemon)) log(`levelUp ${ev.daemon} -> L${ev.level}`);
+    if (game.self.ram.some((d) => d.id === ev.daemon)) stats.levelUps++;
   });
   game.on('evolved', (ev) => {
     stats.evolved++;
-    log(`evolved ${ev.daemon}: ${ev.from} -> ${ev.to}`);
+    event(`evolved ${ev.from} -> ${ev.to}`);
   });
   game.on('ticketDone', (ev) => {
     stats.tickets++;
-    log(`ticketDone ${ev.ticketId} +${ev.reward} bits${ev.unpaid ? ' (unpaid)' : ''}`);
+    event(`ticket done +${ev.reward} bits${ev.unpaid ? ' (unpaid)' : ''}`);
   });
-  game.on('bits', (ev) => log(`bits ${ev.delta >= 0 ? '+' : ''}${ev.delta} (${ev.reason}) = ${ev.balance}`));
+  game.on('bits', (ev) => {
+    if (ev.delta > 0) stats.bitsEarned += ev.delta;
+  });
   game.on('travelled', (ev) => {
     reached = Math.max(reached, ROUTE.indexOf(ev.to));
     lastMove = null;
     dangers = [];
-    log(`travelled ${ev.from} -> ${ev.to}`);
+    event(`travelled ${ev.from} -> ${ev.to}`);
   });
   game.on('telegraph', (ev) => {
     dangers.push(ev);
-    log(`telegraph: blast r${ev.radius} at (${ev.x.toFixed(1)}, ${ev.y.toFixed(1)}) on tick ${ev.atTick}`);
   });
 
-  log(`full-loop online as ${game.self.name ?? game.operatorId} in ${game.subnet} | RAM ${game.self.ram.length}/${RAM_SLOTS} | ${tools()}`);
+  write(`full-loop online as ${game.self.name ?? game.operatorId} in ${game.subnet} | RAM ${game.self.ram.length}/${RAM_SLOTS} | ${tools()}`);
+
+  /** A target that failed a capture recently is left to the daemons. */
+  const captureCooling = (/** @type {string} */ id) => (targetCooldown.get(id) ?? -1) > game.tick;
 
   // --- operator: one decision per tick ------------------------------------------------------------------------------
   op.script(({ me, world, tick }) => {
-    if (Date.now() - lastStatus >= STATUS_EVERY_MS) {
+    if (Date.now() - lastStatus >= statusEveryMs() && linesUsed < LOG_BUDGET - 1) {
       lastStatus = Date.now();
       status();
     }
     if (!me.starterClaimed || me.arena || busy) return;
     dangers = dangers.filter((d) => d.atTick >= tick);
+    for (const [id, until] of targetCooldown) if (until <= tick) targetCooldown.delete(id);
     if (me.diskCapacity > diskCapacity) diskFull = false; // a Disk expansion landed
     diskCapacity = me.diskCapacity;
     reached = Math.max(reached, ROUTE.indexOf(game.subnet));
@@ -800,16 +872,9 @@ export default async function main(game) {
     const atHost = host !== null && dist(me, host) <= HOST_RADIUS - 0.25;
     const enemiesNear = world.wild.filter((d) => attackable(d, me.id)).within(LEASH_TILES).length > 0;
 
-    // 2. A crashed daemon still listed as running is recalled so the next healthy one can run.
-    const crashedRunning = me.running.find((id) => me.ram.find((d) => d.id === id)?.crashed);
-    if (crashedRunning && swapReady) {
-      act(`recall ${crashedRunning}`, () => op.recall(crashedRunning));
-      return;
-    }
-
-    // 3. Evolution: evolve any RAM daemon with a met requirement (recall it first when it is running and out of combat).
-    const evo = evolutionReady(me.ram);
-    if (evo && (cooldown.get(`evolve ${evo.daemonId}`) ?? -1) <= tick) {
+    // 2. Evolution: evolve any RAM daemon with a met requirement (recall it first when it is running and out of combat).
+    const evo = evolutionReady(me.ram, (id) => ready(`evolve ${id}`));
+    if (evo) {
       if (!me.running.includes(evo.daemonId)) {
         act(`evolve ${evo.daemonId}`, () => op.evolve(evo.daemonId, evo.form), { cooldownTicks: LONG_COOLDOWN_TICKS });
         return;
@@ -820,7 +885,7 @@ export default async function main(game) {
       }
     }
 
-    // 4. Host upkeep: tickets, store duplicates, restoreAll, tools.
+    // 3. Host upkeep: tickets, store duplicates, restoreAll, tools.
     const tasks = hostTasks(me, world, atHost);
     if (tasks.length && host) {
       if (!atHost) {
@@ -830,12 +895,12 @@ export default async function main(game) {
       if (runHostTask(me, world)) return;
     }
 
-    // 5. Travel up the route when the best daemon is strong enough.
+    // 4. Travel up the route when the best daemon is strong enough.
     if (TRAVEL) {
       const best = me.ram.reduce((m, d) => Math.max(m, d.level), 0);
       const hop = nextGateway(game.subnet, best, reached);
       const gate = hop && world.gateways.find((g) => g.id === hop.id);
-      if (hop && gate && (cooldown.get(`travel ${hop.id}`) ?? -1) <= tick) {
+      if (hop && gate && ready(`travel ${hop.id}`)) {
         if (dist(me, gate.at) > GATEWAY_RADIUS - 0.25) {
           walk(gate.at, `to gateway ${hop.id}`);
           return;
@@ -849,25 +914,25 @@ export default async function main(game) {
       }
     }
 
-    // 6. Keep RUNNING_MAX daemons running.
+    // 5. Keep RUNNING_MAX daemons running (the sim takes a crashed daemon out of `running` itself).
     if (me.running.length < RUNNING_MAX && swapReady) {
       const id = nextToRun(me.ram, me.running);
-      if (id && (cooldown.get(`run ${id}`) ?? -1) <= tick) {
+      if (id && ready(`run ${id}`)) {
         act(`run ${id}`, () => op.run(id));
         return;
       }
     }
 
-    // 7. Restore a crashed daemon in place when a restore item is held.
+    // 6. Restore a crashed daemon in place when a restore item is held.
     if (crashed.length && (me.inventory.restore ?? 0) > 0) {
-      const d = crashed.find((c) => (cooldown.get(`restore ${c.id}`) ?? -1) <= tick);
+      const d = crashed.find((c) => ready(`restore ${c.id}`));
       if (d) {
         act(`restore ${d.id}`, () => op.useRestore(d.id), { cooldownTicks: 4 * TICK_HZ });
         return;
       }
     }
 
-    // 8. Fight and capture the nearest wild daemon.
+    // 7. Fight and capture the nearest wild daemon.
     const target = world.wild.nearest((d) => attackable(d, me.id));
     if (!target) {
       const spot = REGION_CENTRES[wanderIndex % REGION_CENTRES.length];
@@ -875,16 +940,17 @@ export default async function main(game) {
       walk(REGION_CENTRES[wanderIndex % REGION_CENTRES.length], 'wander');
       return;
     }
-    const tool = canCapture(me) ? chooseTool(me.inventory) : null;
     const d = dist(me, target);
-    if (tool && target.hpPct < CAPTURE_HP_PCT && !target.boss) {
-      if (d > tool.range - 0.5) {
+    if (capturesOn(me) && target.hpPct < CAPTURE_HP_PCT && !target.boss && !captureCooling(target.id)) {
+      const tool = chooseTool(me.inventory, d);
+      if (!tool) {
         walk(target, 'close in to capture');
         return;
       }
-      toolUsed = tool.id;
-      act(`capture ${target.species} with ${tool.id}`, () => op.capture(target, /** @type {any} */ (tool.id)), {
-        err: (m) => cooldown.set(`capture ${target.species} with ${tool.id}`, tick + (/out of tool range/.test(m) ? 4 : REFUSAL_COOLDOWN_TICKS)),
+      const label = `capture ${target.id}`;
+      act(label, () => {
+        lastCaptureTarget = target.id;
+        return op.capture(target, /** @type {any} */ (tool.id));
       });
       return;
     }
@@ -892,43 +958,43 @@ export default async function main(game) {
   });
 
   /** Captures are on while a tool is held and RAM or Disk can take the daemon. */
-  function canCapture(/** @type {import('@daemonet/sdk').OperatorSelf} */ me) {
-    return !(diskFull && me.ram.length >= RAM_SLOTS) && chooseTool(me.inventory) !== null;
+  function capturesOn(/** @type {import('@daemonet/sdk').OperatorSelf} */ me) {
+    return !(diskFull && me.ram.length >= RAM_SLOTS) && holdsTool(me.inventory);
   }
 
-  /** What the host should do for us right now (empty: no trip needed). */
+  /** Store candidates whose `store` is not cooling down. */
+  const storable = (/** @type {import('@daemonet/sdk').OperatorSelf} */ me) => storeCandidates(me.ram, me.running).filter((id) => ready(`store ${id}`));
+  /** Tool purchases whose `buy` is not cooling down. */
+  const buyable = (/** @type {import('@daemonet/sdk').OperatorSelf} */ me) => toolsToBuy(me.inventory, me.bits).filter((b) => ready(`buy ${b.item}`));
+  const needsRestoreAll = (/** @type {import('@daemonet/sdk').OperatorSelf} */ me) => me.ram.some((d) => d.crashed) && (me.inventory.restore ?? 0) === 0 && ready('restoreAll');
+
+  /** What the host should do for us right now (empty: no trip needed). Uses the same cooldowns as runHostTask. */
   function hostTasks(/** @type {import('@daemonet/sdk').OperatorSelf} */ me, /** @type {import('@daemonet/sdk').WorldView} */ world, /** @type {boolean} */ atHost) {
     const tasks = [];
-    if (ticketsToAccept(world.tickets, me, game.subnet, game.self.ticketsDay ?? '', triedTickets).length) tasks.push('tickets');
-    const dupes = storeCandidates(me.ram, me.running);
-    if (!diskFull && dupes.length && (me.ram.length >= RAM_SLOTS || (atHost && me.ram.length > RAM_SLOTS / 2))) tasks.push('store');
-    if (me.ram.some((d) => d.crashed) && (me.inventory.restore ?? 0) === 0 && (cooldown.get('restoreAll') ?? -1) <= game.tick) tasks.push('restoreAll');
-    if (SPEND_BITS) {
-      const buys = toolsToBuy(me.inventory, me.bits);
+    if (ticketsToAccept(world.tickets, me, game.subnet, me.ticketsDay ?? '', triedTickets).length) tasks.push('tickets');
+    if (!diskFull && storable(me).length && (me.ram.length >= RAM_SLOTS || (atHost && me.ram.length > RAM_SLOTS / 2))) tasks.push('store');
+    if (needsRestoreAll(me)) tasks.push('restoreAll');
+    if (SPEND_BITS && buyable(me).length) {
       const held = TOOLS.reduce((n, t) => n + (me.inventory[t.id] ?? 0), 0);
       // A trip only when the toolbox runs low; at the host anyway, top up to the floor.
-      if (buys.length && (held < TOOL_FLOOR || atHost)) tasks.push('buy');
+      if (held < TOOL_FLOOR || atHost) tasks.push('buy');
     }
     return tasks;
   }
 
-  /** One host action; false when there was nothing to do (or it is cooling down). */
+  /** One host action; false when there was nothing to do. */
   function runHostTask(/** @type {import('@daemonet/sdk').OperatorSelf} */ me, /** @type {import('@daemonet/sdk').WorldView} */ world) {
     const day = me.ticketsDay ?? '';
     for (const index of ticketsToAccept(world.tickets, me, game.subnet, day, triedTickets)) {
-      const key = `${day}|${game.subnet}|${index}`;
-      triedTickets.add(key);
+      triedTickets.add(`${day}|${game.subnet}|${index}`);
       const t = world.tickets.find((x) => x.index === index);
-      return act(`accept ticket ${index} (${t?.title ?? t?.kind})`, () => op.acceptTicket(index));
+      return act(`accept ticket ${index}`, () => op.acceptTicket(index), { ok: () => event(`ticket accepted: ${t?.title ?? t?.kind}`) });
     }
     if (!diskFull && me.ram.length > RAM_SLOTS / 2) {
-      for (const id of storeCandidates(me.ram, me.running)) {
-        if ((cooldown.get(`store ${id}`) ?? -1) > game.tick) continue;
-        const d = me.ram.find((x) => x.id === id);
-        return act(`store ${id} (${d?.species} L${d?.level})`, () => op.store(id));
-      }
+      const [id] = storable(me);
+      if (id) return act(`store ${id}`, () => op.store(id));
     }
-    if (me.ram.some((d) => d.crashed) && (me.inventory.restore ?? 0) === 0 && (cooldown.get('restoreAll') ?? -1) <= game.tick) {
+    if (needsRestoreAll(me)) {
       return act('restoreAll', () => op.restoreAll(), {
         ok: (r) => {
           holdUntil = typeof r?.untilTick === 'number' ? r.untilTick + 1 : game.tick + 2 * TICK_HZ;
@@ -937,10 +1003,8 @@ export default async function main(game) {
       });
     }
     if (SPEND_BITS) {
-      for (const { item, qty } of toolsToBuy(me.inventory, me.bits)) {
-        if ((cooldown.get(`buy ${item}`) ?? -1) > game.tick) continue;
-        return act(`buy ${item}`, () => op.buy(item, qty), { ok: () => log(`bought ${qty} ${item}`) });
-      }
+      const [buy] = buyable(me);
+      if (buy) return act(`buy ${buy.item}`, () => op.buy(buy.item, buy.qty));
     }
     return false;
   }
@@ -960,9 +1024,9 @@ export default async function main(game) {
       return;
     }
     const captureTarget = me.capture?.targetId;
-    const capturing = canCapture(me);
+    const holdFire = capturesOn(me);
     const foe = enemies.nearest(
-      (d) => attackable(d, me.id) && d.id !== captureTarget && !(capturing && d.hpPct < CAPTURE_HP_PCT && !d.boss),
+      (d) => attackable(d, me.id) && d.id !== captureTarget && !(holdFire && d.hpPct < CAPTURE_HP_PCT && !d.boss && !captureCooling(d.id)),
     );
     if (!foe) return;
     const move = self.bestMoveAgainst(foe);

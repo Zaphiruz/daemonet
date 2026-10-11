@@ -1,13 +1,21 @@
 import {
   CHAIN_STAGE_MAX_SIZE,
   MAX_CHALLENGE_SIZE,
+  GATEWAY_RADIUS as RULES_GATEWAY_RADIUS,
+  HARDENED_MS,
+  OPEN_TICKETS_MAX as RULES_OPEN_TICKETS_MAX,
+  RAM_SLOTS as RULES_RAM_SLOTS,
+  RUNNING_MAX as RULES_RUNNING_MAX,
   SHOP,
+  TICKETS_PER_DAY as RULES_TICKETS_PER_DAY,
+  TICK_HZ as RULES_TICK_HZ,
   TYPES,
   checkAnswer,
   createRng,
   generateChallenge,
   getSubnet,
   getTool,
+  msToTicks,
   publicChallenge,
   type Noise,
   type ToolId,
@@ -15,9 +23,16 @@ import {
 } from '@daemonet/rules';
 import { describe, expect, it } from 'vitest';
 import {
+  FAILED_CAPTURE_COOLDOWN_TICKS,
   GATEWAYS,
+  GATEWAY_RADIUS,
   HOSTS,
+  OPEN_TICKETS_MAX,
+  RAM_SLOTS,
   ROUTE,
+  RUNNING_MAX,
+  TICKETS_PER_DAY,
+  TICK_HZ,
   TOOLS,
   attackable,
   chooseTool,
@@ -119,11 +134,16 @@ describe('solver speed', () => {
 });
 
 describe('loop helpers', () => {
-  it('chooseTool prefers dump > mirror > tap > sniff and returns null with no tools', () => {
-    expect(chooseTool({ sniff: 3, tap: 1, mirror: 1, dump: 1 })?.id).toBe('dump');
-    expect(chooseTool({ sniff: 3, tap: 1, mirror: 1, dump: 0 })?.id).toBe('mirror');
-    expect(chooseTool({ sniff: 3, tap: 1 })?.id).toBe('tap');
-    expect(chooseTool({ sniff: 1, restore: 4 })?.id).toBe('sniff');
+  it('chooseTool picks the cheapest tool held whose range covers the distance', () => {
+    const all = { sniff: 3, tap: 1, mirror: 1, dump: 1 };
+    expect(chooseTool(all)?.id).toBe('sniff');
+    expect(chooseTool(all, 3)?.id).toBe('sniff');
+    expect(chooseTool(all, 3.5)?.id).toBe('sniff');
+    expect(chooseTool(all, 4.5)?.id).toBe('tap');
+    expect(chooseTool(all, 6)?.id).toBe('mirror');
+    expect(chooseTool({ dump: 1, mirror: 0 }, 7)?.id).toBe('dump');
+    expect(chooseTool(all, 9)).toBeNull();
+    expect(chooseTool({ tap: 2, dump: 1 }, 2)?.id).toBe('tap');
     expect(chooseTool({ restore: 4 })).toBeNull();
     expect(chooseTool({ sniff: 0, tap: 0 })).toBeNull();
   });
@@ -142,6 +162,13 @@ describe('loop helpers', () => {
     expect(storeCandidates(ram, ['a2'])).toEqual(['c1', 'a3']);
     // singles are never stored
     expect(storeCandidates([{ id: 'x', species: 's', level: 1 }], [])).toEqual([]);
+    // a crashed duplicate goes before a healthy lower-level one
+    const crashed = [
+      { id: 'p1', species: 'p', level: 9, crashed: false },
+      { id: 'p2', species: 'p', level: 7, crashed: true },
+      { id: 'p3', species: 'p', level: 3, crashed: false },
+    ];
+    expect(storeCandidates(crashed, [])).toEqual(['p2', 'p3']);
   });
 
   it('nextToRun picks the highest-level healthy daemon that is not running', () => {
@@ -173,6 +200,18 @@ describe('loop helpers', () => {
     expect(nextGateway('dmz', 30, 0)?.id).toBe('dmz-backbone');
   });
 
+  it('the inlined constants match the rules content', () => {
+    // HOST_RADIUS and LEASH_TILES live only in apps/sim, not in the public rules, so they are not pinned here.
+    expect(RAM_SLOTS).toBe(RULES_RAM_SLOTS);
+    expect(RUNNING_MAX).toBe(RULES_RUNNING_MAX);
+    expect(TICK_HZ).toBe(RULES_TICK_HZ);
+    expect(GATEWAY_RADIUS).toBe(RULES_GATEWAY_RADIUS);
+    expect(OPEN_TICKETS_MAX).toBe(RULES_OPEN_TICKETS_MAX);
+    expect(TICKETS_PER_DAY).toBe(RULES_TICKETS_PER_DAY);
+    // a failed capture's cooldown outlasts the target's hardening
+    expect(FAILED_CAPTURE_COOLDOWN_TICKS).toBeGreaterThanOrEqual(msToTicks(HARDENED_MS));
+  });
+
   it('the inlined gateway, host and tool tables match the rules content', () => {
     for (const subnet of ROUTE) {
       const real = getSubnet(subnet).gateways.filter((g) => g.to !== 'kernelspace' && !g.incidentOnly);
@@ -181,6 +220,7 @@ describe('loop helpers', () => {
     }
     for (const t of TOOLS) {
       expect(getTool(t.id as ToolId).range).toBe(t.range);
+      expect(getTool(t.id as ToolId).deadlineMs).toBe(t.deadlineMs);
       expect(SHOP[t.id as ToolId]).toBe(t.price);
     }
   });
@@ -241,5 +281,11 @@ describe('loop helpers', () => {
     ];
     expect(evolutionReady(ram)).toEqual({ daemonId: 'b', form: 'z' });
     expect(evolutionReady([{ id: 'c', level: 5 }])).toBeNull();
+    // a daemon whose evolve is cooling down does not block the next one
+    const two = [
+      { id: 'a', level: 20, evolutions: [{ form: 'x', level: 16, met: true }] },
+      { id: 'b', level: 20, evolutions: [{ form: 'y', level: 16, met: true }] },
+    ];
+    expect(evolutionReady(two, (id) => id !== 'a')).toEqual({ daemonId: 'b', form: 'y' });
   });
 });

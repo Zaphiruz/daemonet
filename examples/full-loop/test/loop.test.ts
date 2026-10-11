@@ -1,6 +1,6 @@
 import { checkAnswer, createRng, generateChallenge, publicChallenge } from '@daemonet/rules';
 import { describe, expect, it, vi } from 'vitest';
-import main from '../full-loop.js';
+import main, { EVENT_LINES_PER_WINDOW, FAILED_CAPTURE_COOLDOWN_TICKS } from '../full-loop.js';
 
 /** A tiny stand-in for the SDK's Query (origin = the operator). */
 class FakeQuery<T extends { x: number; y: number }> {
@@ -55,6 +55,7 @@ const wild = (id: string, x: number, y: number, hpPct: number, types = ['packet'
 function fakeGame(self: Record<string, unknown>, opts: { subnet?: string; wild?: ReturnType<typeof wild>[]; gateways?: unknown[] } = {}) {
   const handlers = new Map<string, (v: unknown) => void>();
   const scripts: Array<() => void> = [];
+  const daemonScripts: Array<(ctx: unknown) => void> = [];
   const ok = () => vi.fn(() => Promise.resolve({}));
   const operator = {
     moveTo: ok(),
@@ -104,7 +105,19 @@ function fakeGame(self: Record<string, unknown>, opts: { subnet?: string; wild?:
       tickets: [],
     },
     operator,
-    daemons: { script: () => () => {} },
+    daemons: {
+      script: (fn: (ctx: unknown) => void) => {
+        daemonScripts.push(fn);
+        return () => {};
+      },
+    },
+    /** Run the daemon script once for a fake running daemon next to the operator; returns its `use` mock. */
+    runDaemon() {
+      const use = vi.fn(() => Promise.resolve({}));
+      const self = { id: 'a', x: game.self.x, y: game.self.y, bestMoveAgainst: () => 'zap', use, moveTo: vi.fn(() => Promise.resolve({})), distanceTo: () => 1 };
+      for (const fn of daemonScripts) fn({ self, enemies: new FakeQuery(opts.wild ?? [], self), world: game.world, tick: game.tick });
+      return use;
+    },
     on: (name: string, h: (v: unknown) => void) => {
       handlers.set(name, h);
       return () => {};
@@ -127,15 +140,92 @@ describe('the loop (fake client)', () => {
     expect(game.operator.run).toHaveBeenCalledWith('b');
   });
 
-  it('captures a weakened target in range with the best tool held', async () => {
+  it('captures a weakened target with the cheapest tool whose range covers it', async () => {
     const target = wild('w1', 62, 60, 0.2);
     const game = fakeGame(
-      { ram: [ramDaemon('a', 'pingling', 3), ramDaemon('b', 'hashling', 5)], running: ['a', 'b'], inventory: { sniff: 2, dump: 1 } },
+      { ram: [ramDaemon('a', 'pingling', 3), ramDaemon('b', 'hashling', 5)], running: ['a', 'b'], inventory: { sniff: 2, tap: 1, dump: 1 } },
       { wild: [target] },
     );
     await main(game as never);
     await game.step();
-    expect(game.operator.capture).toHaveBeenCalledWith(target, 'dump');
+    expect(game.operator.capture).toHaveBeenCalledWith(target, 'sniff');
+    // the daemons hold fire on a capture-ready target
+    expect(game.runDaemon()).not.toHaveBeenCalled();
+  });
+
+  it('uses tap when sniff does not reach, and walks closer when nothing held reaches', async () => {
+    const target = wild('w1', 65, 60, 0.2);
+    const game = fakeGame({ ram: [ramDaemon('a', 'pingling', 3)], running: ['a'], swapReadyTick: 999, inventory: { sniff: 2, tap: 1 } }, { wild: [target] });
+    await main(game as never);
+    await game.step();
+    expect(game.operator.capture).toHaveBeenCalledWith(target, 'tap');
+
+    const far = wild('w2', 66, 60, 0.2);
+    const game2 = fakeGame({ ram: [ramDaemon('a', 'pingling', 3)], running: ['a'], swapReadyTick: 999, inventory: { sniff: 2 } }, { wild: [far] });
+    await main(game2 as never);
+    await game2.step();
+    expect(game2.operator.capture).not.toHaveBeenCalled();
+    expect(game2.operator.moveTo).toHaveBeenCalledWith(66, 60);
+  });
+
+  it('leaves a target to the daemons until the hardening after a failed capture has passed', async () => {
+    const target = wild('w1', 62, 60, 0.2);
+    const game = fakeGame({ ram: [ramDaemon('a', 'pingling', 3)], running: ['a'], swapReadyTick: 999, inventory: { sniff: 5 } }, { wild: [target] });
+    await main(game as never);
+    await game.step();
+    expect(game.operator.capture).toHaveBeenCalledTimes(1);
+    game.emit('captureResult', { captureId: 'c1', ok: false, reason: 'packet_loss' });
+    for (let i = 0; i < 10; i++) await game.step();
+    expect(game.operator.capture).toHaveBeenCalledTimes(1);
+    // meanwhile the daemons keep attacking it
+    expect(game.runDaemon()).toHaveBeenCalledWith('zap', target);
+    game.tick += FAILED_CAPTURE_COOLDOWN_TICKS;
+    await game.step();
+    expect(game.operator.capture).toHaveBeenCalledTimes(2);
+  });
+
+  it('turns captures off once RAM and Disk are full, and keeps fighting', async () => {
+    const target = wild('w1', 62, 60, 0.2);
+    const ram = Array.from({ length: 8 }, (_, i) => ramDaemon(`d${i}`, `s${i}`, i + 1));
+    const game = fakeGame({ ram, running: ['d7', 'd6'], inventory: { sniff: 5 } }, { wild: [target] });
+    game.operator.capture.mockImplementation(() => Promise.reject(Object.assign(new Error('RAM and Disk are full'), { code: 'E_STATE' })));
+    await main(game as never);
+    await game.step();
+    expect(game.operator.capture).toHaveBeenCalledTimes(1);
+    game.tick += 10 * 16 * 60;
+    for (let i = 0; i < 5; i++) await game.step();
+    expect(game.operator.capture).toHaveBeenCalledTimes(1);
+    expect(game.runDaemon()).toHaveBeenCalledWith('zap', target);
+  });
+
+  it('does not resend a refused store, nor walk back to the host while it cools down', async () => {
+    const ram = [ramDaemon('d0', 'pingling', 1), ...Array.from({ length: 7 }, (_, i) => ramDaemon(`d${i + 1}`, i === 0 ? 'pingling' : `s${i}`, i + 2))];
+    const game = fakeGame({ ram, running: ['d7', 'd6'], x: 16.5, y: 16.5 }, { wild: [wild('w1', 40, 40, 1)] });
+    game.operator.store.mockImplementation(() => Promise.reject(Object.assign(new Error('daemon is busy'), { code: 'E_STATE' })));
+    await main(game as never);
+    await game.step();
+    expect(game.operator.store).toHaveBeenCalledTimes(1);
+    expect(game.operator.store).toHaveBeenCalledWith('d0');
+    await game.step();
+    expect(game.operator.store).toHaveBeenCalledTimes(1);
+    // the operator leaves for the field and does not come back for the cooling store
+    game.self.x = 40;
+    game.self.y = 38;
+    game.operator.moveTo.mockClear();
+    for (let i = 0; i < 5; i++) await game.step();
+    expect(game.operator.moveTo).not.toHaveBeenCalledWith(16.5, 16.5);
+    // after the cooldown the store is tried again (and a second refusal doubles the wait)
+    game.self.x = 16.5;
+    game.self.y = 16.5;
+    game.tick += 2 * 16;
+    await game.step();
+    expect(game.operator.store).toHaveBeenCalledTimes(2);
+    game.tick += 2 * 16;
+    await game.step();
+    expect(game.operator.store).toHaveBeenCalledTimes(2);
+    game.tick += 2 * 16;
+    await game.step();
+    expect(game.operator.store).toHaveBeenCalledTimes(3);
   });
 
   it('engages a healthy target by walking within 3 tiles', async () => {
@@ -193,5 +283,26 @@ describe('the loop (fake client)', () => {
     await game.step();
     expect(game.operator.moveTo).toHaveBeenCalledWith(60, 55);
     expect(game.operator.run).not.toHaveBeenCalled();
+  });
+});
+
+describe('log budget', () => {
+  it('stays within EVENT_LINES_PER_WINDOW event lines per status window however many refusals happen', async () => {
+    const lines = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const target = wild('w1', 62, 60, 0.2);
+      const game = fakeGame({ ram: [ramDaemon('a', 'pingling', 3)], running: ['a'], swapReadyTick: 1e9, inventory: { sniff: 5 } }, { wild: [target] });
+      game.operator.capture.mockImplementation(() => Promise.reject(Object.assign(new Error('not a wild daemon'), { code: 'E_STATE' })));
+      await main(game as never);
+      for (let i = 0; i < 200; i++) {
+        game.tick += 64;
+        await game.step();
+      }
+      expect(game.operator.capture.mock.calls.length).toBeGreaterThan(EVENT_LINES_PER_WINDOW);
+      // the online line, one status line (the clock does not move in this test) and the capped event lines
+      expect(lines.mock.calls.length).toBeLessThanOrEqual(2 + EVENT_LINES_PER_WINDOW);
+    } finally {
+      lines.mockRestore();
+    }
   });
 });
