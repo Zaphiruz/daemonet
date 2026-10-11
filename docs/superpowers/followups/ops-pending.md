@@ -37,7 +37,7 @@ Then, in order:
 - [x] (2026-10-10) Task 5: Vault secrets and the app token: `bash scripts/provision-secrets.sh`, then the token and `.env` on S1
       (Steps 5 and 6).
 - [x] (2026-10-10) Task 6: nginx on LC2 and the Cloudflare Tunnel hostname (Step 7).
-- [ ] (first deploy succeeded 2026-10-10, Step 8 checks pass; acceptance items 7 and 8 done — item 8 is 2x over the p99 bar, see review-followups.md; items 1–6 pending) Task 7: first deploy and the acceptance checklist, including the staging load test (Steps 8 and 9).
+- [ ] (first deploy succeeded 2026-10-10, Step 8 checks pass; acceptance items 1 (via the web client), 2, 5, 7 and 8 done — item 8 is 2x over the p99 bar, see review-followups.md; items 3, 4 and 6 (devtools CSP check) pending) Task 7: first deploy and the acceptance checklist, including the staging load test (Steps 8 and 9).
 - [ ] Task 8, after the first deploy has been accepted:
   - [ ] Add the Daemonet entries to the homelab doc `D:\docs\MikroTik\CLAUDE.md` (OPERATIONS Step 10): S1 hosts
         Daemonet on 3010, shared PostgreSQL published on `192.168.40.20:5432` restricted to S1, the nginx
